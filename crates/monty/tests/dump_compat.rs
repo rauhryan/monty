@@ -94,6 +94,30 @@ part = functools.partial(add5, 1)
 cycle = []
 cycle.append(cycle)
 
+
+def generator(value):
+    try:
+        received = yield value
+        assert received is value
+    finally:
+        yield value
+
+
+new_generator = generator(cycle)
+dormant_generator = generator(cycle)
+assert next(dormant_generator) is cycle
+
+
+def delegating():
+    yield from generator(cycle)
+    return cycle
+
+
+delegated_generator = delegating()
+assert next(delegated_generator) is cycle
+owned_completion = StopIteration(cycle)
+cycle.append(owned_completion)
+
 day = datetime.date(2024, 5, 6)
 tz = datetime.timezone(datetime.timedelta(hours=2), 'X')
 tm = datetime.time(1, 2, 3)
@@ -176,6 +200,11 @@ assert str(err) == 'boom' and isinstance(err, ValueError)
 assert dt.microsecond == 678901 and dlt.days == 1
 assert m.groups() == ('12', 'ab') and pat.sub('X', '1-a 2-b') == 'X X'
 assert cycle[0] is cycle
+assert next(new_generator) is cycle
+assert new_generator.send(cycle) is cycle
+assert dormant_generator.send(cycle) is cycle
+assert next(new_generator, 'done') == 'done'
+assert next(dormant_generator, 'done') == 'done'
 assert day == datetime.date(2024, 5, 6) and tm == datetime.time(1, 2, 3)
 assert tz.utcoffset(None) == datetime.timedelta(hours=2) and tz.tzname(None) == 'X'
 assert raw == b'\x07\x08\x09' and list(rg) == [2, 5, 8]
@@ -224,6 +253,8 @@ fn fixture_dump_loads_and_resumes() {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, bytes).unwrap();
         eprintln!("updated {}", path.display());
+        // Snapshots own manual heap references; abandon them contextually.
+        drop(progress.into_function_call().unwrap().into_repl());
         return;
     }
     let bytes = fs::read(&path).unwrap_or_else(|err| {
@@ -266,9 +297,34 @@ fn fixture_dump_loads_and_resumes() {
     let (mut repl, value) = progress.into_complete().expect("host_call resumed to completion");
     assert_eq!(value, MontyObject::int(42));
     repl.feed_run("result = 42", vec![], PrintWriter::Stdout).unwrap();
+    repl.feed_run(
+        "assert owned_completion.value is cycle and cycle[1] is owned_completion\nassert owned_completion.args is owned_completion.args\nassert delegated_generator.send(cycle) is cycle\ntry:\n    next(delegated_generator)\n    assert False\nexcept StopIteration as done:\n    assert done.value is cycle and done.args[0] is cycle",
+        vec![], PrintWriter::Stdout,
+    ).unwrap();
     let checked = repl.feed_run(FIXTURE_CHECK, vec![], PrintWriter::Stdout).unwrap();
     assert_eq!(
         checked,
+        MontyObject::tuple(vec![MontyObject::int(42), MontyObject::int(13)])
+    );
+}
+
+/// Preserve the actual v15 bytes, including New/Suspended generator state.
+#[test]
+fn previous_generator_fixture_resumes() {
+    let Session::Suspended(progress) = Dump::load(include_bytes!("fixtures/dump_v15.bin")).unwrap().state else {
+        panic!("v15 host cut")
+    };
+    let (mut repl, value) = progress
+        .into_function_call()
+        .unwrap()
+        .resume(MontyObject::int(41), PrintWriter::Stdout)
+        .unwrap()
+        .into_complete()
+        .unwrap();
+    assert_eq!(value, MontyObject::int(42));
+    repl.feed_run("result = 42", vec![], PrintWriter::Stdout).unwrap();
+    assert_eq!(
+        repl.feed_run(FIXTURE_CHECK, vec![], PrintWriter::Stdout).unwrap(),
         MontyObject::tuple(vec![MontyObject::int(42), MontyObject::int(13)])
     );
 }
@@ -618,4 +674,25 @@ fn layout_edits_load_older_encodings() {
         let bytes = minicbor_serde::to_vec(&old).unwrap();
         assert_eq!(minicbor_serde::from_slice::<RecordV2>(&bytes).unwrap(), expected);
     }
+}
+
+/// Preserve accepted v16 bytes after adding the host context opcode.
+#[test]
+fn previous_delegating_fixture_resumes() {
+    let Session::Suspended(progress) = Dump::load(include_bytes!("fixtures/dump_v16.bin")).unwrap().state else {
+        panic!("v16 host cut")
+    };
+    let (mut repl, value) = progress
+        .into_function_call()
+        .unwrap()
+        .resume(MontyObject::int(41), PrintWriter::Stdout)
+        .unwrap()
+        .into_complete()
+        .unwrap();
+    assert_eq!(value, MontyObject::int(42));
+    repl.feed_run("result = 42", vec![], PrintWriter::Stdout).unwrap();
+    assert_eq!(
+        repl.feed_run(FIXTURE_CHECK, vec![], PrintWriter::Stdout).unwrap(),
+        MontyObject::tuple(vec![MontyObject::int(42), MontyObject::int(13)])
+    );
 }

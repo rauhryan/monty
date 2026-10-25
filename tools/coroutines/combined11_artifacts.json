@@ -1,0 +1,57 @@
+{
+  "source_sha256": "c6a06bacd68a122dcfaf3db7367c227f5ff8a0ad054453acb968699b3f4d8d2f",
+  "runtime_sha256": "e620f2749e07734d6a8b41efd0bdd14c0c835f147c41a3f5db9ac6eaba270b63",
+  "accepted_source_sha256": "355990c6c98fe187e76fe4bc459569dbeb00c86b82c1d35b444ff94abc0de795",
+  "association": "Runtime unchanged from syntax10. Only generator_runtime.rs appended tests differ in full source; normalized prefix reproduces prior full source. Runtime adapters reused, not rebuilt.",
+  "inputs": {
+    "tools/coroutines/scope10.py": "c0d68b60bd987a3d8e169954bfe67a368b0b6d61431ccf1818ca670133cce023",
+    "tools/coroutines/scope10_bodies.py": "d383418cf7122280113030d898be38ea61e4f2988e2e45576a52711ac0eaad9d",
+    "tools/coroutines/async10_guest.py": "548935ad36fe9b6ba87d0bfd22bf15e84887ae998069423b92e8ebb4297f672f",
+    "tools/coroutines/async10.py": "8c3cac5fbdbd52892a465453b46f536421b7073e8c2dcf2daa7322ea7d960fb7",
+    "tools/coroutines/async10_driver.py": "4917af65112b4235fb08faf4a240de6857cf9456ecc4ac4b5b0baf63235c352e",
+    "tools/coroutines/async10_reference.py": "859a780ce206b457d7865c4c31aa2321166019382a3b997fa3d9679906b3f4d9",
+    "playground/coroutine-baseline/build.py": "0b4d0bc93f37ebc45730e5be046010c929a824d5c5548da56b6aaf3fa2b032af"
+  },
+  "native": {
+    "source_head": "9000dc6cfaffa34a652c5d8e33a55b7cee58c251",
+    "source_sha256": "c6a06bacd68a122dcfaf3db7367c227f5ff8a0ad054453acb968699b3f4d8d2f",
+    "association": "Runtime unchanged from syntax10. Only generator_runtime.rs appended tests differ in full source; normalized prefix reproduces prior full source. Runtime adapters reused, not rebuilt.",
+    "build_reports": [
+      "playground/coroutine-implementation/async10-build-native.json"
+    ],
+    "artifacts": {
+      "playground/coroutine-baseline/target/debug/coroutine-baseline": "9d93a4962015ef42eb97dab6b39cc3135de3464d625e3864292a86f4e9b46ecb"
+    }
+  },
+  "wasm": {
+    "source_head": "9000dc6cfaffa34a652c5d8e33a55b7cee58c251",
+    "source_sha256": "c6a06bacd68a122dcfaf3db7367c227f5ff8a0ad054453acb968699b3f4d8d2f",
+    "association": "Runtime unchanged from syntax10. Only generator_runtime.rs appended tests differ in full source; normalized prefix reproduces prior full source. Runtime adapters reused, not rebuilt.",
+    "build_reports": [
+      "playground/coroutine-implementation/async10-build-wasm.json",
+      "playground/coroutine-implementation/async10-build-component.json"
+    ],
+    "artifacts": {
+      "playground/coroutine-baseline/wasm.mjs": "d9293c3fb069d92d55d9fa45655fca6be74f4ae3c7ce132c1de87e93241e5ed2",
+      "crates/monty-js/dist/worker/component/monty.component.js": "ed5564021e466df36e5cca49063208b08bc2c1a9a7191be41ac27480b05d6648",
+      "crates/monty-js/dist/worker/component/monty.component.core.wasm": "94e64fb1cdd9a35acded6a7aa7a5d8d9aef82abe1242e97f9e77d4b95e6fd377",
+      "crates/monty-js/dist/worker/component/monty.component.core2.wasm": "e764a442d40199804739a8fcf8b06897d9cd21dc8aae33c067fbe9d38eaaf73e",
+      "crates/monty-js/dist/worker/component/monty.component.core3.wasm": "f6ca4d98715d3eb51fb58a9cfc6ee558fd2bc7ca8eee48bdea9dda96e6334186",
+      "crates/monty-js/dist/worker/component/monty.component.core4.wasm": "85022c45607e585ab1f7bd648ecd60907ec8ec91d37461a7919c6539714723e8"
+    }
+  },
+  "test_only_delta": {
+    "file": "crates/monty/tests/generator_runtime.rs",
+    "preserved_bytes": 51569,
+    "preserved_sha256": "d99e698661f1e9bb285d058fdc5488f6ad5bda897fc06ad9a41557e851e1dbed",
+    "normalized_full_source_sha256": "2c8bc74254b1155772d60c571dba850b4e38014f81d6399187877ef4a4fc46f0",
+    "current_file_sha256": "ec630a6a3264a9423d2d5ac14c5756491b749e272312cf2f78efafdb8adbfcc9"
+  },
+  "combined_inputs": {
+    "tools/coroutines/combined11.py": "7fc6a3958c0eeb61cd9c6eb4dd8e3f408e61ffa0f2db7cfa1d2a4edacf1c642b",
+    "tools/coroutines/combined11_ownership.py": "ebf2fe060e419f990626581d2e13e57c5b120ca7c9da5de347ab1f85120a06d9",
+    "tools/coroutines/combined11_driver.py": "94e806586b7b6a87cdd75aa4f11754214376aead35e67be1385ae558db3ac390",
+    "tools/coroutines/combined11_guest.py": "0f0c8482287ec23679c9192af6c7acff0ced96a0605cace7f2447592a5f3254f",
+    "tools/coroutines/combined11_reference.py": "f8b1704210015e2926b46f717e683a411a9bef069621caacb7759003716fb26c"
+  }
+}

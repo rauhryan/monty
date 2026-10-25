@@ -846,6 +846,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                             signature,
                             body,
                             is_async,
+                            is_generator,
                         },
                     decorators,
                 } => {
@@ -856,7 +857,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                         .into_iter()
                         .map(|d| self.prepare_expression(d))
                         .collect::<Result<Vec<_>, ParseError>>()?;
-                    let func = self.prepare_function_def(name, &signature, body, is_async)?;
+                    let func = self.prepare_function_def(name, &signature, body, is_async, is_generator)?;
                     // In a class body, the method name becomes a bound member
                     // only now — its own parameter defaults (evaluated in class
                     // scope, above) must see the pre-binding state.
@@ -971,6 +972,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     });
                 }
                 Node::With {
+                    is_async,
                     context,
                     target,
                     body,
@@ -983,6 +985,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     };
                     let body = self.prepare_nodes(body)?;
                     new_nodes.push(Node::With {
+                        is_async,
                         context,
                         target,
                         body,
@@ -1239,6 +1242,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 }
             }
             Expr::Await(value) => Expr::Await(Box::new(self.prepare_expression(*value)?)),
+            Expr::Yield(value) => Expr::Yield(Box::new(self.prepare_expression(*value)?)),
+            Expr::YieldFrom(value) => Expr::YieldFrom(Box::new(self.prepare_expression(*value)?)),
         };
 
         Ok(ExprLoc { position, expr })
@@ -1707,6 +1712,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         parsed_sig: &ParsedSignature,
         body: Vec<ParseNode>,
         is_async: bool,
+        is_generator: bool,
     ) -> Result<PreparedFunctionDef, ParseError> {
         // A `def` (top-level, nested, or method — class bodies are function scopes
         // too) binds its name in the enclosing scope.
@@ -1846,6 +1852,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             cell_param_indices,
             default_exprs,
             is_async,
+            is_generator,
         })
     }
 
@@ -2000,6 +2007,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             cell_param_indices,
             default_exprs: Vec::new(),
             is_async: false,
+            is_generator: false,
         };
 
         Ok(Node::ClassDef {
@@ -2164,6 +2172,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             cell_param_indices,
             default_exprs,
             is_async: false,
+            is_generator: false,
         };
 
         Ok(ExprLoc::new(
@@ -2775,7 +2784,9 @@ fn collect_assigned_names_from_expr(
         | Expr::UnaryMinus(operand)
         | Expr::UnaryPlus(operand)
         | Expr::UnaryInvert(operand)
-        | Expr::Await(operand) => {
+        | Expr::Await(operand)
+        | Expr::Yield(operand)
+        | Expr::YieldFrom(operand) => {
             collect_assigned_names_from_expr(operand, assigned_names, interner);
         }
         Expr::Subscript { object, index } => {
@@ -3357,7 +3368,7 @@ fn collect_cell_vars_from_expr(
             // Only scan the value expression for cell vars
             collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
         }
-        Expr::Await(value) => {
+        Expr::Await(value) | Expr::Yield(value) | Expr::YieldFrom(value) => {
             collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
         }
         // Leaf expressions
@@ -3784,7 +3795,7 @@ fn collect_referenced_names_from_expr(
                 collect_referenced_names_from_expr(expr, referenced, interner);
             }
         }
-        Expr::Await(value) => {
+        Expr::Await(value) | Expr::Yield(value) | Expr::YieldFrom(value) => {
             collect_referenced_names_from_expr(value, referenced, interner);
         }
     }

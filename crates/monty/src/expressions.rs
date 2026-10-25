@@ -304,6 +304,10 @@ pub enum Expr {
     /// Raises `TypeError` for non-awaitable values.
     /// Unlike standard Python, `await` is allowed at module level (like Jupyter notebooks).
     Await(Box<ExprLoc>),
+    /// Suspend a synchronous generator; the resume input is the expression result.
+    Yield(Box<ExprLoc>),
+    /// Delegate to an iterator (runtime forwarding is not yet implemented).
+    YieldFrom(Box<ExprLoc>),
     /// F-string expression containing literal and interpolated parts.
     ///
     /// At evaluation time, each part is processed in sequence:
@@ -889,6 +893,8 @@ pub enum Node<F> {
     /// context. See `parse.rs` for the lowering and `limitations/with.md`
     /// for the user-facing semantics.
     With {
+        #[serde(default)]
+        is_async: bool,
         context: ExprLoc,
         target: Option<UnpackTarget>,
         body: Vec<Self>,
@@ -975,6 +981,8 @@ pub struct PreparedFunctionDef {
     /// When true, calling this function creates a `Coroutine` object instead of
     /// immediately pushing a frame.
     pub is_async: bool,
+    /// Contains a lexical yield, even when its bytecode is unreachable.
+    pub is_generator: bool,
 }
 
 /// Type alias for prepared AST nodes (output of prepare phase).

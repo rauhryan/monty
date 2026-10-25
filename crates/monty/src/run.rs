@@ -218,7 +218,7 @@ impl MontyRun {
                 let vm_result = vm.run_external();
 
                 // Three-phase conversion: convert while VM alive, then snapshot, then build progress
-                let converted = convert_frame_exit(vm_result, &mut vm);
+                let converted = convert_frame_exit(vm_result, &mut vm, |_| Some(&*executor.program.code));
                 let vm_state = check_snapshot_from_converted(&converted, vm);
                 Ok((converted, vm_state))
             })?;
@@ -562,7 +562,8 @@ impl Executor {
                 print.reborrow(),
             );
             populate_inputs(inputs, &mut vm)?;
-            Program::run_to_completion(&mut vm)
+            let result = Program::run_to_completion(&mut vm);
+            result.map_err(|e| e.into_python_exception(vm.interns, |_| Some(&*executor.program.code), vm.heap))
         });
 
         if heap.size() > heap_capacity {
@@ -571,7 +572,7 @@ impl Executor {
 
         // Non-REPL execution has exactly one source, so every frame's filename
         // resolves to the same `self.code`.
-        result.map_err(|e| e.into_python_exception(&self.tables.interns, |_| Some(&*self.program.code)))
+        result
     }
 
     /// Executes the code and returns both the result and reference count data, used for testing only.
@@ -657,8 +658,14 @@ impl Executor {
 
             // Convert return value while VM is still alive (needs access to interns).
             // Non-REPL: single source, so every frame resolves to `executor.code`.
-            let value = frame_exit_to_object(frame_exit_result, &mut vm)
-                .map_err(|e| e.into_python_exception(vm.interns, |_| Some(&*executor.program.code)))?;
+            let value = match frame_exit_to_object(frame_exit_result, &mut vm) {
+                Ok(value) => value,
+                Err(error) => {
+                    let error = error.into_python_exception(vm.interns, |_| Some(&*executor.program.code), vm.heap);
+                    globals.drop_with(vm.heap);
+                    return Err(error);
+                }
+            };
 
             // Drop globals with proper ref counting
             globals.drop_with(vm.heap);
@@ -797,7 +804,9 @@ pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: 
     // so one `drop_with` releases whatever the exit owns, fields added later
     // included.
     let exit = match answer_unserved_lookups(frame_exit_result, vm)? {
-        FrameExit::Return(return_value) => return Ok(MontyObject::export(return_value, vm)),
+        FrameExit::Return(return_value) => {
+            return MontyObject::export(return_value, vm).map_err(|e| e.into_run_error(vm));
+        }
         exit => exit,
     };
     let error: RunError = match &exit {

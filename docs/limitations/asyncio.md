@@ -180,3 +180,29 @@ A session with `max_memory` set can therefore build a nest it cannot await: the 
 `MemoryError: memory limit exceeded`, which sandboxed code cannot catch (see [resource_limits.md](resource_limits.md)).
 The nesting is not charged against the recursion limit in either interpreter, and a session with no memory limit has
 no bound to hit.
+
+
+## Experimental host coroutine dialect
+
+A first module statement `from __monty_host__ import host_coroutines` selects a Monty compiler dialect.
+This reserved directive is not an importable Python module, binds no name, and cannot be aliased or placed after another statement (including a docstring).
+It applies to that source compilation only; a later REPL or `exec` compilation must select it again.
+
+In this dialect all `async def` functions return lazy generators driven by `next`, `send`, and one-argument `throw`.
+`await` delegates to a generator continuation, including another dialect async function.
+It does not await native Coroutine, ExternalFuture, GatherFuture, or arbitrary `__await__` objects, and does not select or run sibling tasks.
+The ordinary `asyncio` scheduler remains the default without the directive; the two kinds of awaitable are not interchangeable.
+`await` outside an async function, in lambdas, or in comprehension bodies is rejected in this dialect.
+Async generators, `async for`, and async comprehensions remain unsupported.
+
+`async with` is available only inside dialect async functions, on simple user-class instances defining class-level `__aenter__` and `__aexit__` methods returning generator continuations.
+Multiple managers and unpacked targets use the same nesting and binding rules as ordinary `with`.
+There are no async contextmanager decorators, inheritance, or general awaitable protocol adapters.
+Missing async methods raise `AttributeError`; non-instance context values raise `TypeError`.
+Invalid await operands (such as `await 3`) and async protocol methods returning non-generators raise `NotImplementedError`, rather than CPython's `TypeError`.
+Exit receives the exception type, exception object and `None` rather than a traceback object.
+As with [ordinary context managers](with.md), exit is looked up again at exit, so replacing `__aexit__` during the body calls the replacement.
+
+Cancellation and resource/child ownership are host/library policy; the syntax itself injects no cancellation and implements no deadlines or task groups.
+The experimental examples in `tools/coroutines/` include a combined `Timebox` resource/child scope with explicit host-driven spawn, join and exit drain requests.
+They do not provide an importable scheduler package or a production authority journal.

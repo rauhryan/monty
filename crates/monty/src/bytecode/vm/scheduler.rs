@@ -31,7 +31,8 @@ enum TaskState {
 impl<C: ContainsHeap> DropWithContext<C> for TaskState {
     fn drop_with(self, heap: &mut C) {
         match self {
-            Self::Ready(_) => {}
+            Self::Ready(Err(error)) => error.drop_with(heap),
+            Self::Ready(Ok(())) => {}
             Self::Blocked(id) => heap.heap_mut().dec_ref(id),
         }
     }
@@ -66,6 +67,7 @@ impl<C: ContainsHeap> DropWithContext<C> for Task {
         self.exception_stack.drain(..).drop_with(heap);
         for frame in self.frames.drain(..) {
             frame.namespace.drop_with(heap);
+            frame.generator_activation.drop_with(heap);
         }
         self.state.drop_with(heap);
         if let Some(coro_id) = self.coroutine_id.take() {
@@ -101,6 +103,9 @@ pub(crate) struct SerializedTaskFrame {
     pub is_initializer: bool,
     /// Frame namespace, owning its dict references (see `CallFrame.namespace`).
     pub namespace: Option<Box<FrameNamespace>>,
+    /// Persisted synchronous generator activation, when this frame drives one.
+    #[serde(default)]
+    pub generator_activation: Option<super::GeneratorActivation>,
     /// The `from ... import` in progress, if the frame parked inside one.
     #[serde(default)]
     pub import_from_module: Option<StringId>,

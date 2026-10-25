@@ -298,7 +298,9 @@ impl MontyRepl {
                 let vm_result = vm.run_external();
 
                 // Convert while VM alive, then snapshot or reclaim globals
-                let converted = convert_frame_exit(vm_result, &mut vm);
+                let converted = convert_frame_exit(vm_result, &mut vm, |fname| {
+                    this.sources.get(fname).map(|source| &**source)
+                });
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
@@ -386,7 +388,13 @@ impl MontyRepl {
                     return Err(e);
                 }
 
-                let result = Program::run_to_completion(&mut vm);
+                let result = Program::run_to_completion(&mut vm).map_err(|e| {
+                    e.into_python_exception(
+                        vm.interns,
+                        |fname| self.sources.get(fname).map(|source| &**source),
+                        vm.heap,
+                    )
+                });
 
                 // Reclaim globals (and any directory change or seed) before cleanup.
                 reclaim_vm_state(&mut self.globals, &mut self.cwd, &mut self.random, &mut vm);
@@ -401,9 +409,7 @@ impl MontyRepl {
 
         // Resolve every traceback frame against the source of the snippet that
         // produced it — frames from earlier snippets live in `self.sources`.
-        result?.map_err(|e| {
-            e.into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source))
-        })
+        result?
     }
 
     /// Calls a Python function defined in the session by name.
@@ -424,20 +430,34 @@ impl MontyRepl {
         // The synthetic call site is `name(*args)`: keyword arguments have
         // no slot, so they are refused rather than silently dropped.
         if args.kwargs().len() != 0 {
-            return Err(ExcType::type_error("call_function() takes positional arguments only")
-                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source)));
+            return Err(
+                ExcType::type_error("call_function() takes positional arguments only").into_python_exception(
+                    &self.interns,
+                    |fname| self.sources.get(fname).map(|source| &**source),
+                    &mut self.heap,
+                ),
+            );
         }
         let Some(name_id) = self.interns.get_string_id_by_name(name) else {
-            return Err(RunError::from(ExcType::name_error(name))
-                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source)));
+            return Err(RunError::from(ExcType::name_error(name)).into_python_exception(
+                &self.interns,
+                |fname| self.sources.get(fname).map(|source| &**source),
+                &mut self.heap,
+            ));
         };
         let Some(slot_idx) = self.global_names.get(name_id) else {
-            return Err(RunError::from(ExcType::name_error(name))
-                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source)));
+            return Err(RunError::from(ExcType::name_error(name)).into_python_exception(
+                &self.interns,
+                |fname| self.sources.get(fname).map(|source| &**source),
+                &mut self.heap,
+            ));
         };
         if matches!(self.globals.get(slot_idx.index()), None | Some(Value::Undefined)) {
-            return Err(RunError::from(ExcType::name_error(name))
-                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source)));
+            return Err(RunError::from(ExcType::name_error(name)).into_python_exception(
+                &self.interns,
+                |fname| self.sources.get(fname).map(|source| &**source),
+                &mut self.heap,
+            ));
         }
 
         let input_script_name = self.next_input_script_name();
@@ -489,7 +509,15 @@ impl MontyRepl {
                         let mut run_result = vm.run_external();
                         loop {
                             run_result = match run_result {
-                                Ok(FrameExit::Return(value)) => break Ok(MontyObject::export(value, vm)),
+                                Ok(FrameExit::Return(value)) => {
+                                    break MontyObject::export(value, vm).map_err(|e| {
+                                        e.into_run_error(vm).into_python_exception(
+                                            vm.interns,
+                                            |fname| self.sources.get(fname).map(|source| &**source),
+                                            vm.heap,
+                                        )
+                                    });
+                                }
                                 // No host answers inside a host-driven call, so the
                                 // lookup is `Undefined`: `hasattr()` is False,
                                 // `getattr()` yields its default.
@@ -505,9 +533,11 @@ impl MontyRepl {
                                     vm.resume_with_exception(error)
                                 }
                                 Err(error) => {
-                                    break Err(error.into_python_exception(vm.interns, |fname| {
-                                        self.sources.get(fname).map(|source| &**source)
-                                    }));
+                                    break Err(error.into_python_exception(
+                                        vm.interns,
+                                        |fname| self.sources.get(fname).map(|source| &**source),
+                                        vm.heap,
+                                    ));
                                 }
                             };
                         }
@@ -1001,7 +1031,9 @@ impl ReplNameLookup {
                 let vm_result = resume_lookup(&mut vm, answer, effect, &scope, &name);
 
                 // Convert while VM alive, then snapshot or reclaim globals
-                let converted = convert_frame_exit(vm_result, &mut vm);
+                let converted = convert_frame_exit(vm_result, &mut vm, |fname| {
+                    repl.sources.get(fname).map(|source| &**source)
+                });
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
@@ -1134,7 +1166,9 @@ impl ReplResolveFutures {
                 let vm_result = vm.resume_with_resolved_futures(results);
 
                 // Convert while VM alive, then snapshot or reclaim globals
-                let converted = convert_frame_exit(vm_result, &mut vm);
+                let converted = convert_frame_exit(vm_result, &mut vm, |fname| {
+                    repl.sources.get(fname).map(|source| &**source)
+                });
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
@@ -1267,7 +1301,9 @@ fn abort_restored(
                 print.reborrow(),
             );
             let vm_result = vm.abort(exc);
-            let converted = convert_frame_exit(vm_result, &mut vm);
+            let converted = convert_frame_exit(vm_result, &mut vm, |fname| {
+                repl.sources.get(fname).map(|source| &**source)
+            });
             // Uncatchable exceptions cannot suspend, so no snapshot is needed.
             reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
             converted
@@ -1360,7 +1396,9 @@ impl ReplSnapshot {
                 let vm_result = resume_with_result(&mut vm, ext_result, eager_call_id);
 
                 // Convert while VM alive, then snapshot or reclaim globals
-                let converted = convert_frame_exit(vm_result, &mut vm);
+                let converted = convert_frame_exit(vm_result, &mut vm, |fname| {
+                    repl.sources.get(fname).map(|source| &**source)
+                });
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
@@ -1491,9 +1529,7 @@ fn build_repl_progress(
             // is still required because it holds the StringIds referenced by
             // the in-flight frames; `repl.sources` holds every snippet's
             // source text and is what owns any older snippets' sources.
-            let error = err.into_python_exception(&executor.tables.interns, |fname| {
-                repl.sources.get(fname).map(|source| &**source)
-            });
+            let error = err;
             // Commit compiler metadata even on runtime errors, matching feed() behavior.
             // Snippets can create new variables or functions before raising, and those
             // values may reference FunctionId/StringId values from the new tables.

@@ -12,6 +12,7 @@ mod compare;
 mod context_manager;
 mod exceptions;
 mod format;
+mod generator;
 mod namespace;
 mod pattern;
 mod recursion;
@@ -23,6 +24,8 @@ pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
 pub(crate) use collections::unpack_exact;
 use exceptions::CaughtException;
+pub(crate) use generator::Generator;
+use generator::GeneratorActivation;
 use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
 pub(crate) use namespace::{FrameNamespace, function_namespace};
 use recursion::frame_recursion_depth;
@@ -349,6 +352,9 @@ pub struct CallFrame<'code> {
     /// `cleanup_frame_state`, or taken by `serialize` for a snapshot.
     namespace: Option<Box<FrameNamespace>>,
 
+    /// Owning generator pin and caller destination; never a nested Rust return.
+    generator_activation: Option<GeneratorActivation>,
+
     /// Whether this frame is a class `__init__` running for `Foo(...)`.
     ///
     /// When `true`, the `ReturnValue` handler discards the frame's return value
@@ -399,6 +405,7 @@ impl<'code> CallFrame<'code> {
             should_return: false,
             is_parked: false,
             namespace: None,
+            generator_activation: None,
             is_initializer: false,
             import_from_module: None,
         }
@@ -456,6 +463,7 @@ impl<'code> CallFrame<'code> {
             should_return: false,
             is_parked: false,
             namespace,
+            generator_activation: None,
             is_initializer: false,
             import_from_module: None,
         }
@@ -605,9 +613,23 @@ pub struct SerializedFrame {
     #[serde(rename = "N")]
     namespace: Option<Box<FrameNamespace>>,
 
+    #[serde(default, rename = "G")]
+    generator_activation: Option<GeneratorActivation>,
+
     /// The `from ... import` in progress, if the frame suspended inside one.
     #[serde(default, rename = "M")]
     import_from_module: Option<StringId>,
+}
+
+impl SerializedFrame {
+    /// Owned namespace edges of a dormant frame. Its activation was moved out
+    /// before suspension, so the frame never holds a self-reference to its generator.
+    fn for_each_child_id(&self, visit: &mut impl FnMut(HeapId)) {
+        debug_assert!(self.generator_activation.is_none());
+        if let Some(namespace) = &self.namespace {
+            namespace.for_each_child_id(visit);
+        }
+    }
 }
 
 impl CallFrame<'_> {
@@ -628,6 +650,7 @@ impl CallFrame<'_> {
             call_offset: self.call_offset,
             is_initializer: self.is_initializer,
             namespace: mem::take(&mut self.namespace),
+            generator_activation: self.generator_activation.take(),
             import_from_module: self.import_from_module,
         }
     }
@@ -713,6 +736,7 @@ impl VMSnapshot {
             stack.drop_with(heap);
             for frame in frames {
                 frame.namespace.drop_with(heap);
+                frame.generator_activation.drop_with(heap);
             }
             scheduler.cleanup(heap);
         });
@@ -936,6 +960,7 @@ impl<'h> VM<'h> {
                     should_return: false,
                     is_parked: false,
                     namespace: sf.namespace,
+                    generator_activation: sf.generator_activation,
                     is_initializer: sf.is_initializer,
                     import_from_module: sf.import_from_module,
                 }
@@ -1144,8 +1169,9 @@ impl<'h> VM<'h> {
         match self.heap.tracker.check_memory_time() {
             Ok(()) => result,
             Err(e) => {
-                if let Ok(value) = result {
-                    value.drop_with(self);
+                match result {
+                    Ok(value) => value.drop_with(self),
+                    Err(error) => error.drop_with(self),
                 }
                 Err(e.into())
             }
@@ -1163,6 +1189,15 @@ impl<'h> VM<'h> {
                 return Ok(None);
             }
             CallResult::FramePushed => return Ok(None),
+            CallResult::ResumeGenerator {
+                generator,
+                input,
+                throwing,
+                default,
+            } => {
+                self.activate_generator(generator, input, default, throwing)?;
+                return Ok(None);
+            }
             CallResult::External(name, args) => FrameExit::ExternalCall {
                 function_name: name,
                 args,
@@ -1917,9 +1952,21 @@ impl<'h> VM<'h> {
                         Err(err) => catch!(self, err),
                     }
                 }
+                Opcode::Yield => {
+                    let mode = self.current_frame.fetch_u8();
+                    if mode != 0 {
+                        try_catch!(self, self.delegate_generator());
+                    } else {
+                        try_catch!(self, self.suspend_generator());
+                    }
+                }
                 // Return
                 Opcode::ReturnValue => {
                     let value = self.pop();
+                    if self.current_frame.generator_activation.is_some() {
+                        try_catch!(self, self.finish_generator(value));
+                        continue;
+                    }
                     if self.suspended_frames.is_empty() {
                         // Last frame - check if this is main task or spawned task
                         let is_main_task = self.is_main_task();
@@ -2046,6 +2093,10 @@ impl<'h> VM<'h> {
                     handle_call_result!(self, Ok(self.load_module(module_id)));
                 }
                 // Context Managers
+                Opcode::HostContext => {
+                    let mode = self.current_frame.fetch_u8();
+                    handle_call_result!(self, self.exec_host_context(mode));
+                }
                 Opcode::BeforeWith => {
                     handle_call_result!(self, self.exec_before_with());
                 }
@@ -2434,6 +2485,7 @@ impl<'h> VM<'h> {
             .drain(frame.stack_base()..)
             .for_each(|value| value.drop_with(&mut *self.heap));
         // Almost every frame has no namespace; skip the release call for those.
+        frame.generator_activation.drop_with(self.heap);
         if let Some(namespace) = frame.namespace {
             namespace.drop_with(self.heap);
         }
@@ -2446,8 +2498,10 @@ impl<'h> VM<'h> {
         self.exception_stack.drain(..).drop_with(self.heap);
         for frame in self.suspended_frames.drain(..) {
             frame.namespace.drop_with(self.heap);
+            frame.generator_activation.drop_with(self.heap);
         }
         self.current_frame.namespace.take().drop_with(self.heap);
+        self.current_frame.generator_activation.take().drop_with(self.heap);
         self.current_frame.park(self.module_code);
     }
 
@@ -2503,7 +2557,7 @@ impl<'h> VM<'h> {
     }
 
     /// Returns the source position for the instruction currently executing.
-    pub(super) fn current_position(&self) -> CodeRange {
+    pub(crate) fn current_position(&self) -> CodeRange {
         self.current_frame
             .code
             .location_for_offset(self.instruction_ip)

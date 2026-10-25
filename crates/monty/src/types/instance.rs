@@ -96,6 +96,44 @@ pub(crate) struct BoundMethod {
 }
 
 impl<'h> HeapObjectRead<'h, Instance> {
+    /// Class-only async context protocol for the explicit host dialect.
+    pub(crate) fn call_host_context(&self, vm: &mut VM<'h>, enter: bool, exc: Option<HeapId>) -> RunResult<CallResult> {
+        let class_id = self.get(vm.heap).class;
+        let name = if enter { "__aenter__" } else { "__aexit__" };
+        if enter && !class_defines(class_id, "__aexit__", vm) {
+            return Err(ExcType::attribute_error(
+                class_name(class_id, vm.heap, vm.interns),
+                "__aexit__",
+            ));
+        }
+        let Some(member) = class_member(class_id, name, vm) else {
+            return Err(ExcType::attribute_error(
+                class_name(class_id, vm.heap, vm.interns),
+                name,
+            ));
+        };
+        defer_drop!(member, vm);
+        let args = if enter {
+            ArgValues::Empty
+        } else {
+            let (typ, value) = if let Some(id) = exc {
+                let HeapData::Exception(error) = vm.heap.get(id) else {
+                    unreachable!("exception")
+                };
+                let typ = Value::Builtin(Builtins::ExcType(error.exc_type()));
+                vm.heap.inc_ref(id);
+                (typ, Value::Ref(id))
+            } else {
+                (Value::None, Value::None)
+            };
+            ArgValues::ArgsKargs {
+                args: vec![typ, value, Value::None],
+                kwargs: KwargsValues::Empty,
+            }
+        };
+        call_member_bound(member, self.id(), args, vm)
+    }
+
     /// Dispatches class-only `__iter__` for the frozen wrapper to validate after any suspension.
     pub(crate) fn call_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let class_id = self.get(vm.heap).class();
@@ -487,7 +525,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         match self.call_next(vm).and_then(|call| call.require_synchronous(vm)) {
             Ok(value) => Ok(Some(value)),
-            Err(e) if e.is_stop_iteration() => Ok(None),
+            Err(e) if e.is_stop_iteration() => {
+                e.drop_with(vm);
+                Ok(None)
+            }
             Err(e) => Err(e),
         }
     }

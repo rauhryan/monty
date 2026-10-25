@@ -1,0 +1,41 @@
+{
+  "native": {
+    "source_head": "9000dc6cfaffa34a652c5d8e33a55b7cee58c251",
+    "source_sha256": "ff4b12d58bb88f882e0c3df047d652f2182a502b084ffd704628865d4709522e",
+    "association": "Repair5 artifacts reused: runtime byte-identical; only generator_runtime.rs appended. Normalizing that test hash reproduces accepted source identity. No runtime rebuild.",
+    "build_reports": [
+      "playground/coroutine-implementation/repair5-final-native.json"
+    ],
+    "artifacts": {
+      "playground/coroutine-baseline/target/debug/coroutine-baseline": "dc6e29b4faa9030a078265fd49428e6a6d212500eff686b0d1a04d0f87a0a46e"
+    },
+    "accepted_source_sha256": "355990c6c98fe187e76fe4bc459569dbeb00c86b82c1d35b444ff94abc0de795"
+  },
+  "wasm": {
+    "source_head": "9000dc6cfaffa34a652c5d8e33a55b7cee58c251",
+    "source_sha256": "ff4b12d58bb88f882e0c3df047d652f2182a502b084ffd704628865d4709522e",
+    "association": "Repair5 artifacts reused: runtime byte-identical; only generator_runtime.rs appended. Normalizing that test hash reproduces accepted source identity. No runtime rebuild.",
+    "build_reports": [
+      "playground/coroutine-implementation/repair5-final-wasm.json",
+      "playground/coroutine-implementation/repair5-final-component.json"
+    ],
+    "artifacts": {
+      "playground/coroutine-baseline/wasm.mjs": "d9293c3fb069d92d55d9fa45655fca6be74f4ae3c7ce132c1de87e93241e5ed2",
+      "crates/monty-js/dist/worker/component/monty.component.js": "ed5564021e466df36e5cca49063208b08bc2c1a9a7191be41ac27480b05d6648",
+      "crates/monty-js/dist/worker/component/monty.component.core.wasm": "da42a11f081cec5016e5dda9f78a34e0b3204ab46acb34f282dcc184eb64e690",
+      "crates/monty-js/dist/worker/component/monty.component.core2.wasm": "e764a442d40199804739a8fcf8b06897d9cd21dc8aae33c067fbe9d38eaaf73e",
+      "crates/monty-js/dist/worker/component/monty.component.core3.wasm": "f6ca4d98715d3eb51fb58a9cfc6ee558fd2bc7ca8eee48bdea9dda96e6334186",
+      "crates/monty-js/dist/worker/component/monty.component.core4.wasm": "85022c45607e585ab1f7bd648ecd60907ec8ec91d37461a7919c6539714723e8"
+    },
+    "accepted_source_sha256": "355990c6c98fe187e76fe4bc459569dbeb00c86b82c1d35b444ff94abc0de795"
+  },
+  "accepted_source_sha256": "355990c6c98fe187e76fe4bc459569dbeb00c86b82c1d35b444ff94abc0de795",
+  "runtime_sha256": "576403f5fe3c27ade856a3bb59b8f9122b50046db6ad8437728cb874177b993b",
+  "association": "Existing accepted repair5 runtime/artifacts. Scope9 adds library/adapter proof and native tests only; runtime digest excludes tests. No runtime rebuild.",
+  "test_delta": {
+    "file": "crates/monty/tests/generator_runtime.rs",
+    "accepted_prefix_sha256": "7181b703301af077591e9dd4a7a30aa8c167e182559404a86d38ed0360d83524",
+    "current_sha256": "7590086978cb9b1fffef880d232350c02320af00ed9e291076c1c9b959ab5ba3",
+    "normalized_source_sha256": "355990c6c98fe187e76fe4bc459569dbeb00c86b82c1d35b444ff94abc0de795"
+  }
+}

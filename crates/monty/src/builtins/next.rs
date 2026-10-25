@@ -50,6 +50,12 @@ pub fn builtin_next(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let NextArgs { iterator, default } = NextArgs::from_args(args, vm)?;
     defer_drop!(iterator, vm);
     match iterator.read_heap(vm) {
+        Some(HeapReadOutput::Generator(_)) => Ok(CallResult::ResumeGenerator {
+            generator: iterator.clone_with_heap(vm.heap),
+            input: Value::None,
+            throwing: false,
+            default,
+        }),
         Some(HeapReadOutput::Instance(instance)) => {
             if let Some(default) = default {
                 vm.call_frozen_exact(

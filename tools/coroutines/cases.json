@@ -1,0 +1,98 @@
+{
+  "host_normal": {
+    "fixture": "host.py",
+    "replies": [
+      {
+        "send": 7
+      },
+      {
+        "send": "clean"
+      }
+    ]
+  },
+  "host_error": {
+    "fixture": "host.py",
+    "replies": [
+      {
+        "raise": "host failure"
+      },
+      {
+        "send": "clean"
+      }
+    ]
+  },
+  "host_cleanup_error": {
+    "fixture": "host.py",
+    "replies": [
+      {
+        "raise": "host failure"
+      },
+      {
+        "raise": "cleanup failure"
+      }
+    ]
+  },
+  "combined_throw": {
+    "fixture": "combined.py",
+    "replies": [
+      {
+        "send": "active-ack"
+      },
+      {
+        "throw": "injected"
+      },
+      {
+        "send": "cleanup-ack"
+      }
+    ]
+  },
+  "completion_identity": {
+    "fixture": "completion.py",
+    "replies": [
+      {
+        "send": "return-ack"
+      },
+      {
+        "send": "cycle-ack"
+      }
+    ]
+  },
+  "generator_normal": {
+    "fixture": "generator.py",
+    "replies": [
+      {
+        "send": 2
+      },
+      {
+        "send": "clean"
+      }
+    ]
+  },
+  "generator_throw": {
+    "fixture": "generator.py",
+    "replies": [
+      {
+        "throw": "injected"
+      },
+      {
+        "send": "clean"
+      }
+    ]
+  },
+  "basic": {
+    "fixture": "basic.py",
+    "replies": []
+  },
+  "lexical": {
+    "fixture": "lexical.py",
+    "replies": []
+  },
+  "single_cut": {
+    "fixture": "single_cut.py",
+    "replies": [
+      {},
+      {},
+      {}
+    ]
+  }
+}

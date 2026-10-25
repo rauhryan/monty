@@ -44,6 +44,8 @@ and function-attributes-become-methods), bound methods, class variables
 [typing.md](typing.md)), `type(obj)`/`isinstance(obj, Foo)`, and the 3-arg
 `type()` constructor. The `__enter__`/`__exit__` divergences are in
 [with.md](with.md).
+Class-only `__aenter__`/`__aexit__` dispatch is available in the explicit
+[host coroutine dialect](asyncio.md#experimental-host-coroutine-dialect).
 
 ## Dynamic class creation — `type(name, bases, dict)`
 
@@ -425,7 +427,7 @@ every construction request. Divergences:
 - `__next__` is looked up on the class only, never the instance `__dict__`, and
     a `StopIteration` raised anywhere inside it ends the iteration, including one
     that propagates out of a nested call, where CPython's PEP 479 protections
-    apply only to generators, which Monty does not have.
+    apply only to generators.
 - **A `__contains__` returning a user instance is always `True`.** The result is
     coerced by Monty's truthiness, which reports every instance as truthy (see
     above), where CPython's `PyObject_IsTrue` consults the returned object's

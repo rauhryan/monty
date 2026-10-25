@@ -56,7 +56,7 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 ///
 /// Before bumping, check there's already been a bump since the last release - multiple bumps
 /// between releases is unnecessary and can lead to confusion.
-pub const DUMP_VERSION: u16 = 14;
+pub const DUMP_VERSION: u16 = 17;
 
 /// The oldest dump version this build loads. `Dump::load` runs `dump_upgrade`
 /// over an older dump, rebuilding what the newer versions changed.
@@ -367,7 +367,7 @@ mod tests {
     fn serialized_components_match_dump_version() {
         assert_eq!(
             opcode_fingerprint(),
-            0xa78a_9e6c_3fab_abed,
+            0x581f_151a_05d0_c340,
             "opcodes changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(opcode_fingerprint())
         );

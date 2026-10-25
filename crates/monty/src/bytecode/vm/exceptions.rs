@@ -1,6 +1,9 @@
 //! Exception handling helpers for the VM.
 
-use std::fmt::{self, Write};
+use std::{
+    fmt::{self, Write},
+    mem,
+};
 
 use super::VM;
 use crate::{
@@ -8,7 +11,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId},
     intern::{StaticStrings, StringId},
     types::{LazyHeapSet, PyTrait, Type},
     value::Value,
@@ -26,8 +29,28 @@ pub(super) enum CaughtException {
 }
 
 impl CaughtException {
+    #[cfg(feature = "memory-model-checks")]
+    pub(super) fn forget_owned_value(&mut self) {
+        match self {
+            Self::Value(value) => value.dec_ref_forget(),
+            Self::Frozen { value, error } => {
+                value.dec_ref_forget();
+                error.forget_owned_value();
+            }
+        }
+    }
+
+    pub(super) fn for_each_owned_id(&self, mut visit: impl FnMut(HeapId)) {
+        if let Value::Ref(id) = self.value() {
+            visit(*id);
+        }
+        if let Self::Frozen { error, .. } = self {
+            error.for_each_owned_id(visit);
+        }
+    }
+
     /// Borrows the exception object without exposing its internal traceback metadata.
-    fn value(&self) -> &Value {
+    pub(super) fn value(&self) -> &Value {
         match self {
             Self::Value(value) | Self::Frozen { value, .. } => value,
         }
@@ -37,7 +60,11 @@ impl CaughtException {
 impl<C: ContainsHeap> DropWithContext<C> for CaughtException {
     fn drop_with(self, ctx: &mut C) {
         match self {
-            Self::Value(value) | Self::Frozen { value, .. } => value.drop_with(ctx),
+            Self::Value(value) => value.drop_with(ctx),
+            Self::Frozen { value, error } => {
+                value.drop_with(ctx);
+                error.drop_with(ctx);
+            }
         }
     }
 }
@@ -116,7 +143,7 @@ impl VM<'_> {
             // Exception instance on heap
             Value::Ref(heap_id) => {
                 if let HeapData::Exception(exc) = self.heap.get(*heap_id) {
-                    exc.clone()
+                    exc.simple.clone()
                 } else {
                     // Not an exception type
                     SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException")
@@ -139,6 +166,12 @@ impl VM<'_> {
 
         RunError::Exc(ExceptionRaise {
             exc: simple_exc,
+            object: match exc_value {
+                Value::Ref(id) if matches!(self.heap.get(*id), HeapData::Exception(_)) => {
+                    Some(exc_value.clone_with_heap(self.heap))
+                }
+                _ => None,
+            },
             frame,
             snippet_frame: None,
             hide_caret: false,
@@ -152,7 +185,7 @@ impl VM<'_> {
             let error = if self.current_frame_is_frozen()
                 && let CaughtException::Frozen { error, .. } = caught
             {
-                RunError::Exc((**error).clone())
+                RunError::Exc(error.clone_with_heap(self.heap))
             } else {
                 self.make_exception(&raised, true)
             };
@@ -208,10 +241,14 @@ impl VM<'_> {
 
     /// Converts best-effort detail into an `AssertionError` message.
     /// Catchable formatting errors fall back to no detail; terminal errors propagate.
-    fn assert_failure(&self, detail: RunResult<Option<String>>) -> RunError {
+    fn assert_failure(&mut self, detail: RunResult<Option<String>>) -> RunError {
         match detail {
             Ok(Some(detail)) => self.assertion_error(Some(format!("assert {detail}"))),
-            Ok(None) | Err(RunError::Exc(_)) => self.assertion_error(None),
+            Ok(None) => self.assertion_error(None),
+            Err(error @ RunError::Exc(_)) => {
+                error.drop_with(self);
+                self.assertion_error(None)
+            }
             Err(e) => e,
         }
     }
@@ -228,7 +265,10 @@ impl VM<'_> {
         // the message itself fails to stringify.
         let detail = match this.assert_detail(cmp_op) {
             Ok(detail) => detail,
-            Err(RunError::Exc(_)) => None,
+            Err(error @ RunError::Exc(_)) => {
+                error.drop_with(this);
+                None
+            }
             Err(e) => return e,
         };
         let msg = match assert_msg_str(msg_value, this) {
@@ -236,7 +276,10 @@ impl VM<'_> {
             // show only the detail — avoids a stray leading `\n` before `assert`.
             Ok(msg) if msg.is_empty() => None,
             Ok(msg) => Some(msg),
-            Err(RunError::Exc(_)) => None,
+            Err(error @ RunError::Exc(_)) => {
+                error.drop_with(this);
+                None
+            }
             Err(e) => return e,
         };
         let full = match (msg, detail) {
@@ -279,6 +322,7 @@ impl VM<'_> {
             .then(|| RawStackFrame::from_raise(self.current_position(), self.current_frame_name()));
         RunError::Exc(ExceptionRaise {
             exc: SimpleException::new(ExcType::AssertionError, msg),
+            object: None,
             frame,
             snippet_frame: None,
             hide_caret: false,
@@ -342,13 +386,24 @@ impl VM<'_> {
             self.create_exception_value(exc)
         };
 
+        // Once materialized, the diagnostic and handler must share this exact
+        // identity, including when a Frozen handler or task caches the error.
+        if let RunError::Exc(exc) = &mut error
+            && exc.object.is_none()
+        {
+            exc.object = Some(exc_value.clone_with_heap(self.heap));
+        }
+
         // Use DropGuard because exc_value is conditionally consumed (pushed onto
         // exception_stack when handler found) or dropped (when no handler found)
         let mut exc_guard = DropGuard::new(exc_value, self);
 
         // Search for handler in current and outer frames
         loop {
-            let (exc_value, this) = exc_guard.as_parts();
+            let (exc_value, this) = exc_guard.as_parts_mut();
+            if let Some(activation) = &mut this.current_frame.generator_activation {
+                activation.delegating = false;
+            }
             let frame = this.current_frame();
             let code = frame.code;
             let ip = u32::try_from(this.instruction_ip).unwrap_or(u32::MAX);
@@ -397,6 +452,7 @@ impl VM<'_> {
                         error: Box::new(error),
                     }
                 } else {
+                    error.drop_with(this);
                     CaughtException::Value(exc_value)
                 };
                 this.exception_stack.push(caught);
@@ -429,13 +485,31 @@ impl VM<'_> {
                 return ExceptionHandlingResult::Unhandled(error);
             }
 
+            // PEP 479 applies only after the body's handlers have declined the
+            // error. A normal generator return bypasses this path entirely.
+            if this.current_frame.generator_activation.is_some() && error.is_stop_iteration() {
+                error.drop_with(this);
+                error = this.attach_frame_to_error(
+                    SimpleException::new_msg(ExcType::RuntimeError, "generator raised StopIteration").into(),
+                );
+                let RunError::Exc(exc) = &error else {
+                    unreachable!("catchable generator error")
+                };
+                let replacement = this.create_exception_value(exc);
+                mem::replace(exc_value, replacement).drop_with(this);
+            }
+
             // Get the caller's call-site offset before popping frame.
             // This is where the caller invoked the function that's failing.
             let call_offset = this.current_frame().call_offset;
 
             // Synchronous evaluation stops unwinding here, but its caller still
             // belongs in the traceback when the error crosses that boundary.
+            let was_generator = this.current_frame.generator_activation.is_some();
             let should_return = this.pop_frame();
+            if was_generator && let Some(offset) = call_offset {
+                this.instruction_ip = offset as usize;
+            }
 
             // Add caller frame info to traceback (if we have a call site).
             // Resolve the offset now — against the caller, which is the current
@@ -490,9 +564,12 @@ impl VM<'_> {
     /// Creates an exception Value from exception info.
     ///
     /// Allocates an Exception on the heap and returns a Value::Ref to it.
-    fn create_exception_value(&mut self, exc: &ExceptionRaise) -> Value {
+    pub(crate) fn create_exception_value(&mut self, exc: &ExceptionRaise) -> Value {
+        if let Some(object) = &exc.object {
+            return object.clone_with_heap(self.heap);
+        }
         let exception = exc.exc.clone();
-        let heap_id = self.heap.allocate(HeapData::Exception(exception));
+        let heap_id = self.heap.allocate(HeapData::Exception(Box::new(exception.into())));
         Value::Ref(heap_id)
     }
 
@@ -574,7 +651,10 @@ fn assert_operand_repr(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
         Ok(()) => Ok(writer.into_string()),
         // The cap abort is ours: the partial repr is the result. Genuine
         // errors can only surface before the cap (post-cap writes do no VM work).
-        Err(_) if writer.truncated => Ok(writer.into_string()),
+        Err(error) if writer.truncated && !matches!(error, RunError::UncatchableExc(_)) => {
+            error.drop_with(vm);
+            Ok(writer.into_string())
+        }
         Err(e) => Err(e),
     }
 }

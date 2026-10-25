@@ -1,9 +1,9 @@
 # Python language / parser
 
 Monty parses Python source with Ruff's parser but rejects several constructs
-at parse time. Anything listed below raises `NotImplementedError` (prefixed
-with "The monty syntax parser does not yet support ") at compile time, before
-any code runs.
+at parse time. Constructs in the rejection lists below raise `NotImplementedError`
+(prefixed with "The monty syntax parser does not yet support ") at compile time,
+before any code runs. Other restrictions are described in their feature sections.
 
 ## Statements rejected at parse time
 
@@ -18,11 +18,8 @@ any code runs.
     scope and applied bottom-up. Rejected at parse time on **methods**, so
     `@classmethod`, `@staticmethod`, `@property` and any decorator on a `def`
     inside a class body are unavailable. See [classes.md](classes.md).
-- **`async with` statements** — not yet supported.
-- **`yield` / `yield from` expressions** — no generator functions. Generator
-    *expressions* (`(x for x in ...)`) parse but currently materialize to a
-    `list` rather than a lazy iterator, a known temporary divergence; see
-    `iter__generator_expr_type.py`.
+- **`async with` statements** — rejected by default; available in the explicit experimental
+    [host coroutine dialect](asyncio.md#experimental-host-coroutine-dialect).
 - **`del` statements** — neither `del x` nor `del d[k]` parse.
 - **`try*` / `except*` exception groups** — PEP 654 syntax rejected.
 - **`type` aliases** (PEP 695 `type Foo = int`).
@@ -33,6 +30,24 @@ any code runs.
 ## Expressions rejected at parse time
 
 - **Template strings (t-strings)** — PEP 750.
+
+## Generator functions
+
+Synchronous generator functions support direct `next(g[, default])`, `g.send(value)`,
+`g.throw(exception)` and nested delegation to other generator functions.
+
+- `yield from` currently requires a generator delegate; other iterables raise `NotImplementedError`.
+- `throw` accepts one exception instance or built-in exception class. The legacy
+    multiple-argument throw form is unavailable.
+- `close`, `__next__`, saved method attributes such as `resume = g.send`,
+    and generator inspection attributes are unavailable.
+- `for`, comprehensions, collection constructors and native iterator consumers
+    cannot advance these generators.
+- Generator lambdas and async generators are rejected with `SyntaxError`.
+- Releasing a generator, including one suspended in `try/finally`, does not run
+    guest cleanup.
+- Generator *expressions* (`(x for x in ...)`) still materialize to a `list`
+    rather than a lazy iterator.
 
 ## Starred unpacking
 

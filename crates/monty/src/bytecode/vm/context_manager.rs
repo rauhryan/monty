@@ -11,11 +11,35 @@ use super::{CallResult, VM};
 use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    heap::HeapReadOutput,
     types::PyTrait,
     value::Value,
 };
 
 impl VM<'_> {
+    /// Class-only async methods for the explicit host continuation dialect.
+    pub(super) fn exec_host_context(&mut self, mode: u8) -> RunResult<CallResult> {
+        let this = self;
+        let index = this.stack.len() - if mode == 2 { 2 } else { 1 };
+        let Value::Ref(ctx_id) = this.stack[index] else {
+            return Err(ExcType::type_error("host async context requires a user instance"));
+        };
+        let exc = if mode == 2 {
+            let Value::Ref(id) = this.stack[index + 1] else {
+                unreachable!("exception")
+            };
+            Some(id)
+        } else {
+            None
+        };
+        let owned = if mode == 1 { Some(this.pop()) } else { None };
+        defer_drop!(owned, this);
+        let HeapReadOutput::Instance(ctx) = this.heap.read(ctx_id) else {
+            return Err(ExcType::type_error("host async context requires a user instance"));
+        };
+        ctx.call_host_context(this, mode == 0, exc)
+    }
+
     /// `BeforeWith`: peek the context manager at TOS, call `__enter__`, and push
     /// the result. The context manager stays on the stack across the body so the
     /// matching `WithExit` / `WithExceptStart` can find it.

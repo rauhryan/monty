@@ -1,0 +1,12 @@
+[package]
+name = "coroutine-baseline"
+version = "0.0.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+monty = { path = "../../../crates/monty" }
+monty-types = { path = "../../../crates/monty-types" }
+serde_json = "1"
+

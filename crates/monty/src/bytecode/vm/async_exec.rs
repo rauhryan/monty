@@ -24,8 +24,8 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{
-        ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadMut,
-        HeapReadOutput, HeapReader,
+        ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapReadMut, HeapReadOutput,
+        HeapReader,
     },
     intern::FunctionId,
     object_bridge::MontyObjectExt,
@@ -189,7 +189,8 @@ impl<'h> VM<'h> {
 
         match outcome {
             Ok(poll) => Ok(poll),
-            Err(err) => {
+            Err(mut err) => {
+                err.materialize_object(self.heap);
                 self.unwind_gather_commits(stack, &err);
                 Err(err)
             }
@@ -333,7 +334,7 @@ impl<'h> VM<'h> {
             let HeapReadOutput::GatherFuture(gather) = self.heap.read(frame.gather) else {
                 panic!("gather commit frame id is not a GatherFuture")
             };
-            gather.get_mut(self.heap).state = GatherState::Failed(err.clone());
+            gather.get_mut(self.heap).state = GatherState::Failed(err.clone_with_heap(self.heap));
             drop(gather);
 
             frame.drop_with(self.heap);
@@ -361,7 +362,19 @@ impl<'h> VM<'h> {
                 let value = value.clone_with_heap(this);
                 Ok(Poll::Ready(value))
             }
-            ExternalFutureState::Failed(err) => Err(err.clone()),
+            ExternalFutureState::Failed(_) => {
+                // Older snapshots can contain a metadata-only cached failure.
+                let ExternalFutureState::Failed(mut error) = mem::replace(
+                    &mut fut.get_mut(this.heap).state,
+                    ExternalFutureState::Pending { awaiter: None },
+                ) else {
+                    unreachable!("failed future")
+                };
+                error.materialize_object(this.heap);
+                let raised = error.clone_with_heap(this.heap);
+                fut.get_mut(this.heap).state = ExternalFutureState::Failed(error);
+                Err(raised)
+            }
             ExternalFutureState::Pending { awaiter: Some(_) } => {
                 Err(SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited future").into())
             }
@@ -476,7 +489,12 @@ impl<'h> VM<'h> {
         debug_assert!(!task_id.is_main(), "handle_task_failure called for main task");
 
         let awaiter = self.scheduler.get_task_mut(task_id).awaiter.take();
-        let delivery = awaiter.and_then(|awaiter| self.deliver_awaiter_failure(awaiter, error));
+        let delivery = if let Some(awaiter) = awaiter {
+            self.deliver_awaiter_failure(awaiter, error)
+        } else {
+            error.drop_with(self);
+            None
+        };
         self.cleanup_current_task();
         self.scheduler.cancel_task(task_id, self.heap);
         self.resume_after_task_exit(delivery)?;
@@ -517,6 +535,7 @@ impl<'h> VM<'h> {
                 call_offset: f.call_offset,
                 is_initializer: f.is_initializer,
                 namespace: f.namespace,
+                generator_activation: f.generator_activation,
                 import_from_module: f.import_from_module,
             })
             .collect();
@@ -531,6 +550,7 @@ impl<'h> VM<'h> {
             call_offset: current.call_offset,
             is_initializer: current.is_initializer,
             namespace: mem::take(&mut current.namespace),
+            generator_activation: current.generator_activation.take(),
             import_from_module: current.import_from_module,
         });
 
@@ -598,6 +618,7 @@ impl<'h> VM<'h> {
                         should_return: false,
                         is_parked: false,
                         namespace: sf.namespace,
+                        generator_activation: sf.generator_activation,
                         is_initializer: sf.is_initializer,
                         import_from_module: sf.import_from_module,
                     }
@@ -773,9 +794,10 @@ impl<'h> VM<'h> {
     /// Fails each gather in the awaiter chain and queues its terminal task to raise `error`.
     /// Returns that task's ID, or `None` if the task is gone or a gather already settled.
     /// The task raises the exception on activation; its own gather is notified only if it escapes.
-    fn deliver_awaiter_failure(&mut self, awaiter: Awaiter, error: RunError) -> Option<TaskId> {
+    fn deliver_awaiter_failure(&mut self, awaiter: Awaiter, mut error: RunError) -> Option<TaskId> {
         let this = self;
         defer_drop_mut!(awaiter, this);
+        error.materialize_object(this.heap);
         let target = loop {
             let next = match awaiter {
                 Awaiter::Task(t) => break *t,
@@ -785,12 +807,18 @@ impl<'h> VM<'h> {
                     };
                     // A gather that already settled has handed its waiter on;
                     // this failure arrives after the fact and stops here.
-                    gather.fail(this.heap, &error)?
+                    let Some(next) = gather.fail(this.heap, &error) else {
+                        drop(gather);
+                        error.drop_with(this);
+                        return None;
+                    };
+                    next
                 }
             };
             mem::replace(awaiter, next).drop_with(this);
         };
         if !this.scheduler.is_blocked(target) {
+            error.drop_with(this);
             return None;
         }
         this.scheduler.make_ready(target, Err(error), this.heap);
@@ -799,8 +827,9 @@ impl<'h> VM<'h> {
 
     /// Records a host rejection and queues the task that must raise it.
     /// Task selection waits until the whole batch has been ingested.
-    pub fn fail_future(&mut self, call_id: u32, error: RunError) {
+    pub fn fail_future(&mut self, call_id: u32, mut error: RunError) {
         let Some(future_id) = self.scheduler.take_pending_external(CallId::new(call_id)) else {
+            error.drop_with(self);
             return;
         };
         let fut_val = Value::Ref(future_id);
@@ -810,10 +839,9 @@ impl<'h> VM<'h> {
         let HeapReadOutput::ExternalFuture(fut) = this.heap.read(future_id) else {
             panic!("pending_externals entry doesn't point to an ExternalFuture")
         };
-        let awaiter = match mem::replace(
-            &mut fut.get_mut(this.heap).state,
-            ExternalFutureState::Failed(error.clone()),
-        ) {
+        error.materialize_object(this.heap);
+        let cached = error.clone_with_heap(this.heap);
+        let awaiter = match mem::replace(&mut fut.get_mut(this.heap).state, ExternalFutureState::Failed(cached)) {
             ExternalFutureState::Pending { awaiter } => awaiter,
             ExternalFutureState::Resolved(_) | ExternalFutureState::Failed(_) => {
                 panic!("fail_future: future was already resolved")
@@ -825,6 +853,8 @@ impl<'h> VM<'h> {
         sleep_result.drop_with(this);
         if let Some(awaiter) = awaiter {
             this.deliver_awaiter_failure(awaiter, error);
+        } else {
+            error.drop_with(this);
         }
     }
 
@@ -1017,13 +1047,22 @@ fn check_commit_stack_growth(len: usize, capacity: usize, tracker: &ResourceTrac
 /// states: a cached result to replay, a cached error to re-raise, an in-flight
 /// gather someone else owns, or work to do.
 fn poll_settled_gather<'h>(
-    gather: &HeapRead<'h, GatherFuture>,
-    heap: &HeapReader<'h>,
+    gather: &HeapReadMut<'h, GatherFuture>,
+    heap: &mut HeapReader<'h>,
 ) -> Result<Option<Value>, RunError> {
     match &gather.get(heap).state {
         GatherState::Pending => Ok(None),
         GatherState::Completed(value) => Ok(Some(value.clone_with_heap(heap))),
-        GatherState::Failed(err) => Err(err.clone()),
+        GatherState::Failed(_) => {
+            let GatherState::Failed(mut error) = mem::replace(&mut gather.get_mut(heap).state, GatherState::Pending)
+            else {
+                unreachable!("failed gather")
+            };
+            error.materialize_object(heap);
+            let raised = error.clone_with_heap(heap);
+            gather.get_mut(heap).state = GatherState::Failed(error);
+            Err(raised)
+        }
         // TODO: support concurrent re-await (CPython does).
         GatherState::Awaited(_) => Err(SimpleException::new_msg(
             ExcType::RuntimeError,
@@ -1149,7 +1188,7 @@ impl<'h> HeapReadMut<'h, GatherFuture> {
         };
 
         // Cache a clone so re-awaits replay the same exception.
-        self.get_mut(heap).state = GatherState::Failed(error.clone());
+        self.get_mut(heap).state = GatherState::Failed(error.clone_with_heap(heap));
 
         // Drop fanned-out result Values that won't reach the waiter. The
         // `pending_children` map goes with the `Awaited` payload; its keys are

@@ -1,4 +1,4 @@
-use std::{borrow::Cow, cmp::Ordering, fmt};
+use std::{borrow::Cow, cmp::Ordering, fmt, mem};
 
 use ahash::AHashSet;
 use monty_types::{FormatComplex, FormatFloat, MontyException, StackFrame, StringRepr, bytes_repr};
@@ -148,6 +148,8 @@ pub struct RawFunctionDef {
     pub body: Vec<ParseNode>,
     /// Whether this is an async function (`async def`).
     pub is_async: bool,
+    /// A yield in this lexical body, including unreachable statements.
+    pub is_generator: bool,
 }
 
 /// Type alias for parsed AST nodes (output of the parser).
@@ -232,7 +234,20 @@ pub(crate) fn parse_module_with_filename_id(
         .map(Ranged::start)
         .collect();
     let mut parser = Parser::new(code, filename_id, interner, class_keyword_offsets);
-    parser.parse_statements(parsed.into_syntax().body)
+    let mut body = parsed.into_syntax().body;
+    // A reserved compiler directive, only as the first module statement.
+    // It is not a stdlib import and never binds a guest value.
+    if let Some(Stmt::ImportFrom(import)) = body.first()
+        && import.level == 0
+        && import.module.as_ref().is_some_and(|m| m.as_str() == "__monty_host__")
+        && import.names.len() == 1
+        && import.names[0].name.id.as_str() == "host_coroutines"
+        && import.names[0].asname.is_none()
+    {
+        parser.host_coroutines = true;
+        body.remove(0);
+    }
+    parser.parse_statements(body)
 }
 
 /// Parses `code` as a single expression, as `eval()` does.
@@ -325,6 +340,11 @@ pub struct Parser<'a, 'i> {
     /// Starts at MAX_NESTING_DEPTH and decrements on each nested level.
     /// When it reaches zero, we return a "Source is too deeply nested" syntax error.
     depth_remaining: u16,
+    /// None outside a supported synchronous function; nested bodies restore it.
+    generator_scope: Option<bool>,
+    /// Explicit compiler dialect, separate from asyncio.
+    host_coroutines: bool,
+    host_async_body: bool,
     /// Ascending source offsets of every `class` keyword, taken from the lexer.
     ///
     /// Ruff's AST is abstract — a `StmtClassDef` *is* a class statement, so it
@@ -347,6 +367,9 @@ impl<'a, 'i> Parser<'a, 'i> {
             filename_id,
             interner,
             depth_remaining: MAX_NESTING_DEPTH,
+            generator_scope: None,
+            host_coroutines: false,
+            host_async_body: false,
             class_keyword_offsets,
         }
     }
@@ -737,9 +760,9 @@ impl<'a, 'i> Parser<'a, 'i> {
                 range,
                 ..
             }) => {
-                if is_async {
+                if is_async && !self.host_async_body {
                     return Err(ParseError::not_implemented(
-                        "async context managers (async with)",
+                        "async context managers (async with) outside the host_coroutines dialect",
                         self.convert_range(range),
                     ));
                 }
@@ -780,6 +803,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                 // the same pattern used by `parse_elif_else_clauses`.
                 let (last_context, last_target) = parsed_items.pop().expect("checked non-empty above");
                 let mut node = Node::With {
+                    is_async,
                     context: last_context,
                     target: last_target,
                     body,
@@ -790,6 +814,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                     self.decr_depth_remaining(|| range)?;
                     levels += 1;
                     node = Node::With {
+                        is_async,
                         context,
                         target,
                         body: vec![node],
@@ -879,6 +904,12 @@ impl<'a, 'i> Parser<'a, 'i> {
                 ..
             }) => {
                 let position = self.convert_range(range);
+                if level == 0 && module.as_ref().is_some_and(|m| m.as_str() == "__monty_host__") {
+                    return Err(ParseError::syntax(
+                        "host_coroutines must be the first module statement without aliases",
+                        position,
+                    ));
+                }
                 // Compiler directives, not real imports: they bind nothing and lower
                 // to a no-op, so real-world modules import cleanly. Anything Monty
                 // does not implement is rejected rather than quietly failing to do
@@ -1031,8 +1062,17 @@ impl<'a, 'i> Parser<'a, 'i> {
 
         let name = self.identifier(&function.name.id, function.name.range);
         // Parse function body recursively
+        let outer_scope = self.generator_scope.replace(false);
+        let outer_host_body = self.host_async_body;
+        self.host_async_body = function.is_async && self.host_coroutines;
+        if function.is_async {
+            self.generator_scope = if self.host_async_body { Some(true) } else { None };
+        }
         let body = self.parse_statements(function.body)?;
-        let is_async = function.is_async;
+        let is_generator = self.generator_scope.unwrap_or(false);
+        self.generator_scope = outer_scope;
+        let is_async = function.is_async && !self.host_async_body;
+        self.host_async_body = outer_host_body;
 
         Ok((
             RawFunctionDef {
@@ -1040,6 +1080,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                 signature,
                 body,
                 is_async,
+                is_generator,
             },
             decorators,
         ))
@@ -1110,6 +1151,8 @@ impl<'a, 'i> Parser<'a, 'i> {
         let doc_target = Identifier::new(self.interner.intern("__doc__"), self.convert_range(class.name.range));
         let mut doc_value = ExprLoc::new(self.convert_range(class.name.range), Expr::Literal(Literal::None));
 
+        let outer_scope = self.generator_scope.take();
+        let outer_host_body = mem::take(&mut self.host_async_body);
         for (i, stmt) in class.body.into_iter().enumerate() {
             match stmt {
                 Stmt::FunctionDef(function) => {
@@ -1211,6 +1254,9 @@ impl<'a, 'i> Parser<'a, 'i> {
             }
         }
 
+        self.generator_scope = outer_scope;
+        self.host_async_body = outer_host_body;
+
         // The synthesized `__doc__` binding runs first (like CPython's docstring
         // store); the namespace assembly loads final local values, so an explicit
         // `__doc__` member still wins.
@@ -1255,6 +1301,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             signature: ParsedSignature::default(),
             body,
             is_async: false,
+            is_generator: false,
         };
 
         Ok(Node::ClassDef {
@@ -1592,8 +1639,10 @@ impl<'a, 'i> Parser<'a, 'i> {
                     ParsedSignature::default()
                 };
 
-                // Parse the body expression
+                // Generator lambdas are not part of the synchronous def kernel yet.
+                let outer_scope = self.generator_scope.take();
                 let body = Box::new(self.parse_expression(*body)?);
+                self.generator_scope = outer_scope;
 
                 Ok(ExprLoc::new(
                     position,
@@ -1645,7 +1694,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             AstExpr::ListComp(ast::ExprListComp {
                 elt, generators, range, ..
             }) => {
-                let elt = Box::new(self.parse_expression(*elt)?);
+                let elt = Box::new(self.parse_comprehension_expression(*elt)?);
                 let generators = self.parse_comprehension_generators(generators)?;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
@@ -1659,7 +1708,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             AstExpr::SetComp(ast::ExprSetComp {
                 elt, generators, range, ..
             }) => {
-                let elt = Box::new(self.parse_expression(*elt)?);
+                let elt = Box::new(self.parse_comprehension_expression(*elt)?);
                 let generators = self.parse_comprehension_generators(generators)?;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
@@ -1688,8 +1737,8 @@ impl<'a, 'i> Parser<'a, 'i> {
                         self.convert_range(range),
                     )
                 })?;
-                let key = Box::new(self.parse_expression(*key)?);
-                let value = Box::new(self.parse_expression(*value)?);
+                let key = Box::new(self.parse_comprehension_expression(*key)?);
+                let value = Box::new(self.parse_comprehension_expression(*value)?);
                 let generators = self.parse_comprehension_generators(generators)?;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
@@ -1707,7 +1756,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                 // TODO: When proper generators are implemented, this should produce
                 // Expr::Generator instead of Expr::ListComp. Currently we treat generator
                 // expressions as list comprehensions since we don't have generator support.
-                let elt = Box::new(self.parse_expression(*elt)?);
+                let elt = Box::new(self.parse_comprehension_expression(*elt)?);
                 let generators = self.parse_comprehension_generators(generators)?;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
@@ -1719,17 +1768,58 @@ impl<'a, 'i> Parser<'a, 'i> {
                 ))
             }
             AstExpr::Await(a) => {
+                if self.host_coroutines && (!self.host_async_body || self.generator_scope.is_none()) {
+                    return Err(ParseError::syntax(
+                        "host await requires an async def body; comprehensions and lambdas are unsupported",
+                        self.convert_range(a.range),
+                    ));
+                }
                 let value = self.parse_expression(*a.value)?;
-                Ok(ExprLoc::new(self.convert_range(a.range), Expr::Await(Box::new(value))))
+                Ok(ExprLoc::new(
+                    self.convert_range(a.range),
+                    if self.host_async_body {
+                        Expr::YieldFrom(Box::new(value))
+                    } else {
+                        Expr::Await(Box::new(value))
+                    },
+                ))
             }
-            AstExpr::Yield(y) => Err(ParseError::not_implemented(
-                "yield expressions",
-                self.convert_range(y.range),
-            )),
-            AstExpr::YieldFrom(y) => Err(ParseError::not_implemented(
-                "yield from expressions",
-                self.convert_range(y.range),
-            )),
+            AstExpr::Yield(y) => {
+                let position = self.convert_range(y.range);
+                if self.host_async_body {
+                    return Err(ParseError::syntax(
+                        "async generators are unsupported in the host dialect",
+                        position,
+                    ));
+                }
+                let Some(seen) = &mut self.generator_scope else {
+                    return Err(ParseError::syntax("yield requires a synchronous def body", position));
+                };
+                *seen = true;
+                let value = match y.value {
+                    Some(value) => self.parse_expression(*value)?,
+                    None => ExprLoc::new(position, Expr::Literal(Literal::None)),
+                };
+                Ok(ExprLoc::new(position, Expr::Yield(Box::new(value))))
+            }
+            AstExpr::YieldFrom(y) => {
+                let position = self.convert_range(y.range);
+                if self.host_async_body {
+                    return Err(ParseError::syntax(
+                        "async generators are unsupported in the host dialect",
+                        position,
+                    ));
+                }
+                let Some(seen) = &mut self.generator_scope else {
+                    return Err(ParseError::syntax(
+                        "yield from requires a synchronous def body",
+                        position,
+                    ));
+                };
+                *seen = true;
+                let value = self.parse_expression(*y.value)?;
+                Ok(ExprLoc::new(position, Expr::YieldFrom(Box::new(value))))
+            }
             AstExpr::Compare(ast::ExprCompare {
                 ops, operands, range, ..
             }) => {
@@ -2230,6 +2320,15 @@ impl<'a, 'i> Parser<'a, 'i> {
             .collect()
     }
 
+    /// Parses an expression in a comprehension's implicit scope, where yield is forbidden.
+    /// Restore the enclosing generator flag even if parsing fails.
+    fn parse_comprehension_expression(&mut self, expr: AstExpr) -> Result<ExprLoc, ParseError> {
+        let outer_scope = self.generator_scope.take();
+        let result = self.parse_expression(expr);
+        self.generator_scope = outer_scope;
+        result
+    }
+
     /// Parses comprehension generators (the `for ... in ... if ...` clauses).
     ///
     /// Each generator represents one `for` clause with zero or more `if` filters.
@@ -2241,19 +2340,28 @@ impl<'a, 'i> Parser<'a, 'i> {
     ) -> Result<Vec<Comprehension>, ParseError> {
         generators
             .into_iter()
-            .map(|comp| {
+            .enumerate()
+            .map(|(index, comp)| {
                 if comp.is_async {
                     return Err(ParseError::not_implemented(
                         "async comprehensions",
                         self.convert_range(comp.range),
                     ));
                 }
-                let target = self.parse_unpack_target_root(comp.target)?;
-                let iter = self.parse_expression(comp.iter)?;
+                // Only the first iterable is evaluated in the enclosing scope.
+                let iter = if index == 0 {
+                    self.parse_expression(comp.iter)?
+                } else {
+                    self.parse_comprehension_expression(comp.iter)?
+                };
+                let outer_scope = self.generator_scope.take();
+                let target = self.parse_unpack_target_root(comp.target);
+                self.generator_scope = outer_scope;
+                let target = target?;
                 let ifs = comp
                     .ifs
                     .into_iter()
-                    .map(|cond| self.parse_expression(cond))
+                    .map(|cond| self.parse_comprehension_expression(cond))
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Comprehension { target, iter, ifs })
             })

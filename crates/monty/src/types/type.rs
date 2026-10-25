@@ -179,7 +179,8 @@ pub enum Type {
     /// The iterator `os.scandir()` returns.
     #[strum(serialize = "posix.ScandirIterator")]
     ScandirIterator,
-    /// The iterator `os.walk()` and `Path.walk()` return; CPython's is a generator.
+    /// Synchronous generators, including the native `os.walk()` / `Path.walk()` iterator.
+    /// Keep the historical variant name for dump compatibility.
     #[strum(serialize = "generator")]
     WalkGenerator,
     // Variants serialize by name into dumps: renaming one needs `#[serde(alias)]`.

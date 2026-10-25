@@ -45,24 +45,29 @@ They exist for development and for agents debugging code that runs on Monty; mos
 
 - Class inheritance and metaclasses (`class Foo(Bar):`)
 - Decorators on methods — so no `@classmethod`, `@staticmethod`, `@property`
-- `yield` / `yield from` — there are no generator functions.
-    Generator *expressions* parse, but currently materialise to a `list`
 - `del`, both `del x` and `del d[k]`
 - `try*` / `except*` exception groups
 - PEP 695 `type` aliases
-- `async with`, `async for` and async comprehensions
+- `async with` outside the experimental [host coroutine dialect](asyncio.md#experimental-host-coroutine-dialect), `async for` and async comprehensions
 - Wildcard imports (`from m import *`)
 - t-strings
 
 **Missing in other ways:**
 
+- Generator functions support direct `next`, `send`, `throw` and delegation to
+    generators, but lack general iteration and `close`. Generator expressions
+    still materialise to a list; see [language.md](language.md#generator-functions).
+
 - User-defined exception classes.
     The built-in exception types are a fixed set, and without inheritance you cannot add to it.
+
 - Function attributes.
     `fn.__name__`, `fn.__doc__` and friends raise `AttributeError`, and new attributes cannot be set — so
     `functools.wraps`-style metadata copying and registries keyed on `fn.__name__` have no equivalent.
+
 - `compile`, `globals`, `__import__` and `super` — all raise `NameError`.
     `eval` and `exec` exist (source text only), and so does `locals()`; see [eval_exec.md](eval_exec.md).
+
 - Third-party packages.
     There is no `sys.path` and no site-packages.
 

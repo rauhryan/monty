@@ -42,6 +42,13 @@ pub(crate) enum CallResult {
     /// A defined function became the VM's current frame.
     /// Propagate or require synchronous completion; dropping this result does not pop the frame.
     FramePushed,
+    /// Owned request handled by the outer VM loop, never evaluate_function.
+    ResumeGenerator {
+        generator: Value,
+        input: Value,
+        throwing: bool,
+        default: Option<Value>,
+    },
     /// External function call requested - VM should pause and return to caller.
     /// The `EitherStr` is the name of the external function (interned or heap-owned).
     External(EitherStr, ArgValues),
@@ -168,6 +175,16 @@ impl<C: ContainsHeap> DropWithContext<C> for CallResult {
             Self::OsCall(call) => call.drop_with(heap),
             Self::AttrLookup { effect, .. } => effect.drop_with(heap),
             Self::FramePushed => {}
+            Self::ResumeGenerator {
+                generator,
+                input,
+                default,
+                ..
+            } => {
+                generator.drop_with(heap);
+                input.drop_with(heap);
+                default.drop_with(heap);
+            }
             Self::OsCallWithEffect { call, effect } => {
                 call.drop_with(heap);
                 // Discarded before it ever became a `FrameExit`.
@@ -477,6 +494,9 @@ impl<'h> VM<'h> {
                 };
                 result.drop_with(self);
                 return error;
+            }
+            CallResult::ResumeGenerator { .. } => {
+                ExcType::not_implemented("cannot resume generator in a synchronous Rust callback")
             }
             CallResult::AwaitValue(_) => ExcType::not_implemented("cannot await a value in this synchronous context"),
             CallResult::Value(_) | CallResult::FramePushed => unreachable!("completed calls are handled above"),
@@ -888,7 +908,7 @@ impl<'h> VM<'h> {
     ) -> Result<CallResult, RunError> {
         let func = self.interns.get_function(func_id);
 
-        if func.is_async {
+        if func.is_async || func.is_generator {
             self.create_coroutine(func_id, func, cells, defaults, globals, args)
         } else {
             self.call_sync_function(func_id, func, cells, defaults, globals, args)
@@ -922,6 +942,11 @@ impl<'h> VM<'h> {
         let (namespace, this) = namespace_guard.into_parts();
         if let Some(globals) = globals {
             this.heap.inc_ref(globals);
+        }
+        if func.is_generator {
+            let generator = super::Generator::new(func_id, namespace, globals);
+            let id = this.heap.allocate(HeapData::Generator(Box::new(generator)));
+            return Ok(CallResult::Value(Value::Ref(id)));
         }
         let coroutine = Coroutine::new(func_id, namespace, globals);
         let coroutine_id = this.heap.allocate(HeapData::Coroutine(coroutine));
@@ -1162,10 +1187,19 @@ impl<'h> VM<'h> {
     /// to decide whether `__init__` can run as a suspendable initializer frame.
     fn is_plain_sync_function(&self, value: &Value) -> bool {
         match value {
-            Value::DefFunction(func_id) => !self.interns.get_function(*func_id).is_async,
+            Value::DefFunction(func_id) => {
+                let f = self.interns.get_function(*func_id);
+                !f.is_async && !f.is_generator
+            }
             Value::Ref(id) => match self.heap.get(*id) {
-                HeapData::Closure(closure) => !self.interns.get_function(closure.func_id).is_async,
-                HeapData::FunctionDefaults(fd) => !self.interns.get_function(fd.func_id).is_async,
+                HeapData::Closure(closure) => {
+                    let f = self.interns.get_function(closure.func_id);
+                    !f.is_async && !f.is_generator
+                }
+                HeapData::FunctionDefaults(fd) => {
+                    let f = self.interns.get_function(fd.func_id);
+                    !f.is_async && !f.is_generator
+                }
                 // Bound methods never wrap another bound method, so this
                 // recursion is at most one level deep.
                 HeapData::BoundMethod(bm) => self.is_plain_sync_function(&bm.func),
