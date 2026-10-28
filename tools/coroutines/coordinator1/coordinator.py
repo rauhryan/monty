@@ -50,10 +50,16 @@ def reconcile(state, current=None):
 def turn(state, messages, budget):
     # All ordered inputs are accepted before any continuation runs.
     for message in messages:
-        if message['run'] != state['run'] or message['event'] in state['seen']:
+        duplicate = message['event'] in state['seen']
+        if not state['retain_history']:
+            duplicate = not isinstance(message['event'], int) or message['event'] <= state['event_watermark']
+        if message['run'] != state['run'] or duplicate:
             state['events'].append(['reject', message])
             continue
-        state['seen'].append(message['event'])
+        if state['retain_history']:
+            state['seen'].append(message['event'])
+        else:
+            state['event_watermark'] = message['event']
         if message['kind'] == 'cancel':
             assert isinstance(message['reason'], str), 'cancel reason must be a string'
             if not state['host_cancelled']:
@@ -92,6 +98,8 @@ def turn(state, messages, budget):
             if task_id not in waiters:
                 waiters.append(task_id)
         reconcile(state, task_id)
+        reclaim(state)
+    reclaim(state)
     if not state['ready'] and not any(t['wait'] is not None for t in state['tasks'].values()):
         assert state['tasks']['T0']['status'] == 'done', 'internal-deadlock'
 
@@ -109,3 +117,31 @@ def observe(state):
     result['host_reason'] = state['host_reason']
     result['boundary'] = 'complete' if result['terminal'] is not None else ('runnable' if state['ready'] else 'blocked')
     return result
+
+
+def reclaim(state):
+    """Release delivered outcomes; transfer required diagnostics before unlinking."""
+    if state['retain_history']:
+        return
+    for task_id in list(state['tasks']):
+        task = state['tasks'][task_id]
+        if task_id == 'T0' or task['status'] != 'done':
+            continue
+        owner = state['scopes'][task['owner']]
+        if not task['consumed'] and owner['phase'] != 'exited':
+            continue
+        # close_scope already transferred all required diagnostics at scope exit.
+        if owner['phase'] != 'exited' and (task['result']['failures'] or task['result']['children']):
+            state['tasks'][owner['task']]['diagnostics'].append(task['result'])
+        owner['children'].remove(task_id)
+        state['tasks'].pop(task_id)
+        state['reclaimed_tasks'] += 1
+    for scope_id in list(state['scopes']):
+        scope = state['scopes'][scope_id]
+        if scope['phase'] == 'exited' and not scope['children']:
+            if scope['task'] in state['tasks']:
+                state['tasks'][scope['task']]['scopes'].remove(scope_id)
+            state['scopes'].pop(scope_id)
+    # Event history is diagnostic, not an operation/outcome ownership root.
+    # Pending waits and replies remain in task records independently of this tail.
+    state['events'] = state['events'][-64:]

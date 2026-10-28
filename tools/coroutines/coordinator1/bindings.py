@@ -9,6 +9,15 @@ def request(message):
     return (yield message)
 
 
+class ChildHandle:
+    """Opaque guest identity; no reference to the task, result, or owning scope."""
+
+    def __init__(self, task_id, owner):
+        self._id = task_id
+        self._owner = owner
+        self._done = False
+
+
 class Scope:
     """Own children and inert cleanup descriptors until an explicit drain barrier."""
 

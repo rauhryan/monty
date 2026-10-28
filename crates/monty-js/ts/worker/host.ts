@@ -27,6 +27,7 @@ export async function instantiateWorker(
   modules: ComponentModules,
 ): Promise<(request: DispatchRequest) => DispatchResult> {
   const component = await instantiate((path) => getModule(modules, path), wasiImports())
+  admitCancellationContract(component.worker)
   return component.worker.dispatch
 }
 
@@ -62,4 +63,19 @@ function getModule(modules: ComponentModules, path: string): WebAssembly.Module 
   const module = modules[path] ?? modules[path.replace(/^\.\//, '')]
   if (!module) throw new Error(`component core module is missing: ${path}`)
   return module
+}
+
+/** Pure admission on this instance, before any configure or guest dispatch. */
+export function admitCancellationContract(worker: { cancellationContract?: unknown }): void {
+  try {
+    if (typeof worker.cancellationContract !== 'function') throw new Error('missing capability export')
+    const revision: unknown = worker.cancellationContract()
+    if (typeof revision !== 'number' || !Number.isInteger(revision) || revision !== 7) {
+      throw new Error('unsupported capability revision')
+    }
+  } catch (cause) {
+    throw Object.assign(new Error('Monty cancellation contract unsupported', { cause }), {
+      code: 'MONTY_CANCELLATION_CONTRACT_UNSUPPORTED',
+    })
+  }
 }

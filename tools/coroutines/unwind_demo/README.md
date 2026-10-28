@@ -14,7 +14,7 @@ Try **Fail operation** during audit: release still runs, the failure is retained
 Repeated cancellation during cleanup preserves the outstanding cleanup request.
 Completing the body normally also executes cleanup.
 
-Every transition runs the existing `playground/coroutine-baseline/wasm.mjs` adapter in a new Node process and actual Wasm instance.
+Every transition runs the existing `tools/coroutines/native1/wasm.mjs` adapter in a new Node process and actual Wasm instance.
 The adapter dumps Monty's continuation and resets its original instance before exiting.
 Python holds only JSON observations and snapshot files; guest Python runs inside Monty.
 **Check snapshot loads** restores and disposes an independent instance without delivering input.
@@ -22,8 +22,9 @@ Python holds only JSON observations and snapshot files; guest Python runs inside
 
 The guest-authored `cart.py` uses supplied async bindings from `bindings.py`.
 The host checks the fixed contract names and argument types in `server.py`.
-This retains `async10_driver.py` from the verified sequential syntax slice.
-Separate source panels show the authored cart and supplied bindings; the server assembles the driver and external `exchange` bridge alongside them.
+The workflow enters the Rust scheduler through the experimental `_native1()` bridge; there is no Python coordinator in this demo.
+The VM owns cancellation and protects yielding cleanup.
+Separate source panels show the authored cart and supplied bindings; the server assembles the entry point and external `exchange` bridge alongside them.
 The dependencies are Python 3, Node, and this checkout's existing experimental component artifacts and preview2 shim used by `wasm.mjs`.
 There is no automatic build or installation; missing artifacts fail visibly.
 This is not compatible with an unmodified upstream Monty release.
@@ -45,3 +46,7 @@ This covers success, body failure, cancellation, repeated cancellation, cleanup 
 
 Bindings are assembled into one guest module for this demo, not installed Python imports.
 The host-side allowlist is illustrative input validation, not a production capability system or contract SDK.
+
+Open **Inspect snapshot data** to see the format version, full SHA256 and first 4 KiB in hex/ASCII.
+Download the complete binary checkpoint while the run is suspended.
+The payload is CBOR; this viewer does not decode VM frames or the heap.

@@ -35,6 +35,9 @@ use crate::oracle::monty_node::Kind;
 #[path = "oracle/monty.v1.rs"]
 mod oracle;
 
+#[path = "fixtures/resume_futures_v6.rs"]
+mod resume_futures_v6;
+
 /// Every `MontyObject` shape, deliberately including protobuf-default
 /// payloads (zeros, empty strings, `false`, empty containers, `Some("")`)
 /// where prost's implicit/explicit field-presence rules diverge most.
@@ -1246,4 +1249,44 @@ fn repeated_position_fields_merge_like_the_oracle() {
     let expected = filename[..SourceRange::MAX_FILENAME_LEN].to_owned();
     assert_eq!(hand.position.map(|p| p.filename), Some(expected));
     assert!(started.elapsed().as_secs() < 5, "repeats amplified decode work");
+}
+
+/// Optional tag 3 must distinguish no request from an empty first reason.
+#[test]
+fn native_cancel_presence_roundtrips_against_generated_oracle() {
+    for (reason, wire) in [
+        (None, vec![]),
+        (Some(""), vec![0x1a, 0]),
+        (Some("HOST"), b"\x1a\x04HOST".to_vec()),
+    ] {
+        let production = pb::ResumeFutures {
+            native_cancel: reason.map(str::to_owned),
+            ..Default::default()
+        };
+        let oracle = oracle::ResumeFutures {
+            native_cancel: reason.map(str::to_owned),
+            ..Default::default()
+        };
+        assert_eq!(production.encode_to_vec(), wire);
+        assert_eq!(oracle.encode_to_vec(), wire);
+        let decoded: pb::ResumeFutures = decode_frame(&oracle.encode_to_vec()).unwrap();
+        assert_eq!(decoded.native_cancel.as_deref(), reason);
+        let decoded = oracle::ResumeFutures::decode(production.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(decoded.native_cancel.as_deref(), reason);
+    }
+}
+
+/// An old decoder silently loses a present reason: Configure must refuse that peer.
+#[test]
+fn v6_resume_decoder_drops_cancellation_negative_control() {
+    for reason in ["", "HOST"] {
+        let current = oracle::ResumeFutures {
+            native_cancel: Some(reason.to_owned()),
+            ..Default::default()
+        };
+        let old = resume_futures_v6::ResumeFutures::decode(current.encode_to_vec().as_slice()).unwrap();
+        assert!(old.encode_to_vec().is_empty());
+        let lost = oracle::ResumeFutures::decode(old.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(lost.native_cancel, None);
+    }
 }

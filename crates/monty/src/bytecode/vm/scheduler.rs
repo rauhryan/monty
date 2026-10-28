@@ -59,6 +59,56 @@ pub(crate) struct Task {
     pub awaiter: Option<Awaiter>,
     /// Current execution state.
     state: TaskState,
+    /// First host cause, independent of guest exceptions and physical disposal.
+    #[serde(default)]
+    pub native_cancel: Option<NativeCancellation>,
+    /// Lexical cleanup owns the suspended wait; persisted, never guessed from names.
+    #[serde(default)]
+    pub native_protected: bool,
+}
+
+/// Plain owned metadata: no heap edges or guest-controlled latch.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct NativeCancellation {
+    /// Immutable first host cause; an empty string is still present.
+    pub reason: String,
+    /// The single catchable delivery has consumed the body wait.
+    pub delivered: bool,
+    /// Stale settlements for this detached external operation are ignored.
+    pub revoked: Option<u32>,
+    /// Distinguishes legacy delivered+null from current delivered+null.
+    #[serde(default)]
+    pub policy: u8,
+    /// Frozen once at delivery. Plain metadata never roots a guest object.
+    #[serde(default)]
+    pub interrupted_error: Option<InterruptedError>,
+}
+
+/// Bounded borrowed-metadata projection, independent of the exception args graph.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct InterruptedError {
+    pub exc_type: monty_types::ExcType,
+    pub message: Option<String>,
+    pub message_truncated: bool,
+}
+
+impl InterruptedError {
+    pub(crate) fn capture(exc: &crate::exception_private::SimpleException) -> Self {
+        let message = exc.arg().map(String::as_str);
+        let message_truncated = message.is_some_and(|s| s.len() > 4096);
+        let message = message.map(|s| {
+            let mut end = s.len().min(4096);
+            while !s.is_char_boundary(end) {
+                end -= 1;
+            }
+            s[..end].to_owned()
+        });
+        Self {
+            exc_type: exc.exc_type(),
+            message,
+            message_truncated,
+        }
+    }
 }
 
 impl<C: ContainsHeap> DropWithContext<C> for Task {
@@ -123,6 +173,8 @@ impl Task {
             coroutine_id,
             awaiter,
             state: TaskState::Ready(Ok(())),
+            native_cancel: None,
+            native_protected: false,
         }
     }
 }
@@ -183,6 +235,16 @@ impl Scheduler {
     /// Whether awaiting the current call can proceed without delaying other work.
     pub fn can_await_eagerly(&self) -> bool {
         self.ready_queue.is_empty() && self.pending_externals.is_empty()
+    }
+
+    /// Cancellation currently supports exactly one live main task.
+    pub fn native_single_task(&self) -> bool {
+        self.tasks.len() == 1
+            && self.pending_externals.len() == 1
+            && self.main_task().is_some_and(|task| match task.state {
+                TaskState::Blocked(id) => self.pending_externals.values().any(|&future| future == id),
+                TaskState::Ready(_) => false,
+            })
     }
 
     /// Returns the main task, whose context is saved here whenever another

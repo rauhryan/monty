@@ -72,6 +72,13 @@ impl<'h> VM<'h> {
                 match poll {
                     Poll::Ready(value) => Ok(AwaitResult::ValueReady(value)),
                     Poll::Pending => {
+                        let protected = this
+                            .suspended_frames
+                            .iter()
+                            .chain([&this.current_frame])
+                            .any(|f| f.code.native_cleanup_at(f.ip.saturating_sub(1)));
+                        let task_id = this.scheduler.current_task_id().expect("awaiting task");
+                        this.scheduler.get_task_mut(task_id).native_protected = protected;
                         this.scheduler.block_current_on(heap_id, this.heap);
                         this.switch_or_yield()
                     }
@@ -93,6 +100,7 @@ impl<'h> VM<'h> {
 
         // Extract coroutine data before mutating
         let func_id = coro.get(self.heap).func_id;
+        self.admit_native_code(&self.interns.get_function(func_id).code)?;
         let globals = coro.get(self.heap).globals;
         let namespace_values: Vec<Value> = coro
             .get(self.heap)
@@ -523,6 +531,12 @@ impl<'h> VM<'h> {
     /// Serializes frames, moves stack/exception_stack, stores instruction_ip,
     /// and adjusts the global recursion depth counter.
     fn save_task_context(&mut self, task_id: TaskId) {
+        let protected = self
+            .suspended_frames
+            .iter()
+            .chain([&self.current_frame])
+            .any(|f| f.code.native_cleanup_at(f.ip.saturating_sub(1)));
+        self.scheduler.get_task_mut(task_id).native_protected = protected;
         let mut frames: Vec<SerializedTaskFrame> = self
             .suspended_frames
             .drain(..)
@@ -929,6 +943,17 @@ impl<'h> VM<'h> {
     /// Eager results have no awaiter yet; their following `await` reads the cached result.
     pub fn apply_future_results(&mut self, results: Vec<(u32, ExtFunctionResult)>) -> RunResult<()> {
         for (call_id, ext_result) in results {
+            // Even a same-batch reply to the newly revoked wait must not be
+            // imported: a malformed/oversized stale value cannot abort cleanup.
+            if self
+                .scheduler
+                .main_task()
+                .and_then(|t| t.native_cancel.as_ref())
+                .and_then(|c| c.revoked)
+                == Some(call_id)
+            {
+                continue;
+            }
             match ext_result {
                 ExtFunctionResult::Return(obj) => {
                     // A resource error is a `MemoryError` here as in `resume`,
@@ -951,10 +976,258 @@ impl<'h> VM<'h> {
         Ok(())
     }
 
+    /// Host-facing terminal projection reads the native owner, never guest labels.
+    pub(crate) fn native_cancel_reason(&self) -> Option<&str> {
+        self.scheduler
+            .main_task()?
+            .native_cancel
+            .as_ref()
+            .map(|c| c.reason.as_str())
+    }
+
+    /// First-cause cancellation for the experimental single native main task.
+    /// A protected wait keeps its legitimate reply. Delivery consumes the original
+    /// external registration just like failure, so a late result cannot revive it.
+    pub(crate) fn cancel_native(&mut self, reason: String) -> RunResult<()> {
+        // Repeats retain ownership after the native root returns to its caller.
+        if self.scheduler.main_task().is_some_and(|t| t.native_cancel.is_some()) {
+            return self.deliver_native_cancel();
+        }
+        self.check_native_cancel_code()?;
+        let native = self
+            .suspended_frames
+            .iter()
+            .chain([&self.current_frame])
+            .any(|f| f.generator_activation.as_ref().is_some_and(|a| a.native))
+            || self.scheduler.main_task().is_some_and(|task| {
+                task.frames
+                    .iter()
+                    .any(|f| f.generator_activation.as_ref().is_some_and(|a| a.native))
+            });
+        if !self.scheduler.native_single_task() || !native {
+            return Err(
+                MontyException::runtime_error("native cancellation requires a suspended single native task").into(),
+            );
+        }
+        let task = self.scheduler.get_task_mut(TaskId::default());
+        if task.native_cancel.is_none() {
+            task.native_cancel = Some(super::scheduler::NativeCancellation {
+                reason,
+                delivered: false,
+                revoked: None,
+                policy: 7,
+                interrupted_error: None,
+            });
+        }
+        self.deliver_native_cancel()
+    }
+
+    /// Older genuine dumps remain usable for ordinary execution, but cannot
+    /// resume a cancellation contract whose continuation points they lack.
+    fn check_native_cancel_code(&self) -> RunResult<()> {
+        let legacy = self
+            .suspended_frames
+            .iter()
+            .chain([&self.current_frame])
+            .any(|f| !f.code.supports_native_cancel())
+            || self.scheduler.main_task().is_some_and(|task| {
+                task.frames.iter().any(|f| {
+                    let code = frame_code(self.interns, self.module_code, f.function_id);
+                    !code.supports_native_cancel()
+                })
+            });
+        if legacy {
+            Err(RunError::uncatchable(MontyException::runtime_error(
+                "native cancellation requires catchable cancellation policy 7",
+            )))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// A compiler-owned continuation boundary, after operand/exception cleanup.
+    /// The ordinary error path owns propagation, stack truncation and frame release.
+    /// A pending return is superseded by this signal; escaping errors arbitrate
+    /// separately at the remaining handler-search site. Active caller cleanup masks helper checkpoints.
+    pub(super) fn native_cleanup_continuation(&mut self, returning: bool) -> RunResult<()> {
+        let Some(cancel) = self.scheduler.main_task().and_then(|task| task.native_cancel.as_ref()) else {
+            return Ok(());
+        };
+        if cancel.delivered {
+            return Ok(());
+        }
+        if !returning
+            && self
+                .current_frame
+                .code
+                .native_cancel_points
+                .as_ref()
+                .is_none_or(|points| !points.contains(&u32::try_from(self.instruction_ip).expect("instruction offset")))
+        {
+            return Ok(());
+        }
+        if (!returning && self.current_frame.code.native_cleanup_at(self.instruction_ip))
+            || self
+                .suspended_frames
+                .iter()
+                .any(|frame| frame.code.native_cleanup_at(frame.ip.saturating_sub(1)))
+        {
+            return Ok(());
+        }
+        let diagnostic = self.native_matching_diagnostic();
+        Err(self.native_delivery(diagnostic))
+    }
+
+    /// Active dispatch consults the VM's own paired frames and exception stack.
+    fn native_matching_diagnostic(&self) -> Option<super::scheduler::InterruptedError> {
+        let index = self
+            .current_frame
+            .code
+            .native_matching_at(self.instruction_ip)
+            .map(|depth| self.current_frame.exception_stack_base() + depth)
+            .or_else(|| {
+                self.suspended_frames.iter().rev().find_map(|f| {
+                    f.code
+                        .native_matching_at(f.ip.saturating_sub(1))
+                        .map(|depth| f.exception_stack_base() + depth)
+                })
+            })?;
+        self.native_caught_diagnostic(&self.exception_stack[index])
+    }
+
+    fn native_caught_diagnostic(
+        &self,
+        caught: &super::exceptions::CaughtException,
+    ) -> Option<super::scheduler::InterruptedError> {
+        let Value::Ref(id) = caught.value() else {
+            return None;
+        };
+        let HeapData::Exception(exc) = self.heap.get(*id) else {
+            return None;
+        };
+        Some(super::scheduler::InterruptedError::capture(&exc.simple))
+    }
+
+    /// Freeze before routing reentry, including a final null diagnostic.
+    pub(super) fn native_delivery(&mut self, diagnostic: Option<super::scheduler::InterruptedError>) -> RunError {
+        let cancel = self
+            .scheduler
+            .get_task_mut(TaskId::default())
+            .native_cancel
+            .as_mut()
+            .unwrap();
+        debug_assert!(!cancel.delivered);
+        cancel.interrupted_error = diagnostic;
+        cancel.delivered = true;
+        MontyException::new(ExcType::ValueError, Some(cancel.reason.clone())).into()
+    }
+
+    pub(crate) fn native_interrupted_error(&self) -> Option<super::scheduler::InterruptedError> {
+        self.scheduler
+            .main_task()?
+            .native_cancel
+            .as_ref()?
+            .interrupted_error
+            .clone()
+    }
+
+    /// Pending-only admission must run before frame installation/state transfer.
+    pub(super) fn admit_native_code(&self, code: &crate::bytecode::Code) -> RunResult<()> {
+        if self
+            .scheduler
+            .main_task()
+            .and_then(|t| t.native_cancel.as_ref())
+            .is_some_and(|c| !c.delivered)
+            && !code.supports_native_cancel()
+        {
+            return Err(RunError::uncatchable(MontyException::runtime_error(
+                "native cancellation requires catchable cancellation policy 7",
+            )));
+        }
+        Ok(())
+    }
+
+    /// Interrupt active selection at its continuation; local catchers may recover.
+    pub(super) fn native_matching_error(&mut self, returning: bool) -> Option<RunError> {
+        let cancel = self.scheduler.main_task()?.native_cancel.as_ref()?;
+        if cancel.delivered
+            || (!returning && self.current_frame.code.native_cleanup_at(self.instruction_ip))
+            || self
+                .suspended_frames
+                .iter()
+                .any(|f| f.code.native_cleanup_at(f.ip.saturating_sub(1)))
+        {
+            return None;
+        }
+        let diagnostic = self.native_matching_diagnostic()?;
+        Some(self.native_delivery(Some(diagnostic)))
+    }
+
+    /// Deliver a deferred first request only outside compiler-owned cleanup.
+    fn deliver_native_cancel(&mut self) -> RunResult<()> {
+        let Some(task) = self.scheduler.main_task() else {
+            return Ok(());
+        };
+        let Some(cancel) = &task.native_cancel else {
+            return Ok(());
+        };
+        if cancel.policy != 7 {
+            return Err(RunError::uncatchable(MontyException::runtime_error(
+                "native cancellation requires catchable cancellation policy 7",
+            )));
+        }
+        if cancel.delivered {
+            return Ok(());
+        }
+        self.check_native_cancel_code()?;
+        if task.native_protected {
+            return Ok(());
+        }
+        if !self.scheduler.native_single_task() {
+            return Err(MontyException::runtime_error(
+                "deferred native cancellation requires one external main-task wait",
+            )
+            .into());
+        }
+        // Saved frames belong to Task.exception_stack, never the parked VM stack.
+        let diagnostic = if task.frames.is_empty() {
+            self.native_matching_diagnostic()
+        } else {
+            task.frames.iter().enumerate().rev().find_map(|(i, f)| {
+                let ip = if i + 1 == task.frames.len() {
+                    task.instruction_ip
+                } else {
+                    f.ip.saturating_sub(1)
+                };
+                let code = frame_code(self.interns, self.module_code, f.function_id);
+                code.native_matching_at(ip).and_then(|depth| {
+                    self.native_caught_diagnostic(&task.exception_stack[f.exception_stack_base + depth])
+                })
+            })
+        };
+        let signal = self.native_delivery(diagnostic);
+        let ids = self.scheduler.pending_call_ids();
+        // Admission is single-task/single-external-wait; no child policy is implied.
+        debug_assert_eq!(ids.len(), 1);
+        if let Some(id) = ids.first() {
+            self.scheduler
+                .get_task_mut(TaskId::default())
+                .native_cancel
+                .as_mut()
+                .unwrap()
+                .revoked = Some(id.raw());
+            self.fail_future(id.raw(), signal);
+        } else {
+            signal.drop_with(self);
+        }
+        Ok(())
+    }
+
     /// Ingests a host batch, then resumes tasks in resolution order for both values and errors.
     /// With no runnable task, yields the remaining pending call IDs to the host.
     /// Returns an internal error if neither runnable tasks nor pending calls remain.
     pub fn resume_with_resolved_futures(&mut self, results: Vec<(u32, ExtFunctionResult)>) -> RunResult<FrameExit> {
+        self.deliver_native_cancel()?;
         self.apply_future_results(results)?;
         if let Some(next_task_id) = self.scheduler.next_ready_task() {
             if let Err(error) = self.activate_task(next_task_id) {
@@ -1196,5 +1469,122 @@ impl<'h> HeapReadMut<'h, GatherFuture> {
         results.drop_with(heap);
 
         Some(waiter)
+    }
+}
+
+#[cfg(test)]
+impl VM<'_> {
+    /// Direct ordinary-coroutine admission, without going through host syntax's
+    /// intentionally generator-only yield-from lowering.
+    pub(crate) fn compatibility11_direct_admission(&mut self, mode: &str) {
+        if mode != "ordinary" {
+            self.cancel_native("FIRST".into()).unwrap();
+            if mode == "delivered" {
+                self.cancel_native("REPEAT".into()).unwrap();
+            }
+            let cancel = self.scheduler.main_task().unwrap().native_cancel.as_ref().unwrap();
+            assert_eq!(cancel.delivered, mode == "delivered");
+            assert_eq!(cancel.reason, "FIRST");
+        }
+        let id = self
+            .globals
+            .iter()
+            .find_map(|value| match value {
+                Value::Ref(id) if matches!(self.heap.get(*id), HeapData::Coroutine(_)) => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        let HeapReadOutput::Coroutine(coro) = self.heap.read(id) else {
+            unreachable!()
+        };
+        assert_eq!(coro.get(self.heap).state, CoroutineState::New);
+        let before = (self.stack.len(), self.suspended_frames.len(), self.recursion_depth);
+        let interns = minicbor_serde::to_vec(self.interns).unwrap();
+        let namespace = minicbor_serde::to_vec(&coro.get(self.heap).namespace).unwrap();
+        let result = self.await_coroutine(&coro);
+        if mode == "pending" {
+            let Err(error) = result else {
+                panic!("legacy admission must refuse")
+            };
+            assert!(
+                matches!(&error, RunError::UncatchableExc(exc) if exc.exc.exc_type() == ExcType::RuntimeError && exc.exc.arg().map(String::as_str) == Some("native cancellation requires catchable cancellation policy 7"))
+            );
+            error.drop_with(self);
+            assert_eq!(coro.get(self.heap).state, CoroutineState::New);
+            assert_eq!(
+                minicbor_serde::to_vec(&coro.get(self.heap).namespace).unwrap(),
+                namespace
+            );
+            assert_eq!(
+                (self.stack.len(), self.suspended_frames.len(), self.recursion_depth),
+                before
+            );
+            // Cached historical frozen admission must precede argument transfer,
+            // frame installation and any publication to the intern tables.
+            let Err(error) = self.call_frozen_exact(
+                crate::frozen::FrozenFunction::FunctoolsReduce,
+                [
+                    Value::None,
+                    Value::None,
+                    Value::None,
+                    Value::None,
+                    Value::None,
+                    Value::None,
+                ],
+            ) else {
+                panic!("frozen legacy admission must refuse")
+            };
+            assert!(matches!(&error, RunError::UncatchableExc(_)));
+            error.drop_with(self);
+            assert_eq!(
+                (self.stack.len(), self.suspended_frames.len(), self.recursion_depth),
+                before
+            );
+            assert_eq!(minicbor_serde::to_vec(self.interns).unwrap(), interns);
+        } else {
+            assert!(matches!(result.unwrap(), AwaitResult::FramePushed));
+            assert_eq!(coro.get(self.heap).state, CoroutineState::Running);
+            assert_eq!(self.suspended_frames.len(), before.1 + 1);
+        }
+    }
+
+    /// Use the scheduler's real save path, without introducing another task.
+    pub(crate) fn compatibility11_save_main_task(&mut self) {
+        self.save_task_context(TaskId::default());
+        self.current_frame.park(self.module_code);
+        self.scheduler.set_current_task(None);
+    }
+
+    /// A host-only unit-test seam: put the task's handled outer exception in
+    /// the unrelated parked VM stack during the real cancellation call. Retire
+    /// those temporary owners before normal task activation replaces that stack.
+    pub(crate) fn compatibility11_cancel_with_unrelated_parked_stack(&mut self) -> RunResult<()> {
+        use super::exceptions::CaughtException;
+        assert!(self.current_frame.is_parked);
+        assert!(self.exception_stack.is_empty());
+        let task = self.scheduler.main_task().unwrap();
+        assert!(task.frames.len() > 1);
+        assert!(task.exception_stack.len() >= 2);
+        let count = task.exception_stack.len();
+        for _ in 0..count {
+            self.exception_stack.push(CaughtException::Value(
+                task.exception_stack[0].value().clone_with_heap(self.heap),
+            ));
+        }
+        let parked = self.native_caught_diagnostic(&self.exception_stack[0]).unwrap();
+        assert_eq!(parked.message.as_deref(), Some("PARKED"));
+        eprintln!(
+            "compatibility11 saved frames={:?}, instruction_ip={}, exception_count={count}",
+            task.frames
+                .iter()
+                .map(|f| (f.function_id, f.ip, f.exception_stack_base))
+                .collect::<Vec<_>>(),
+            task.instruction_ip
+        );
+        let result = self.cancel_native("FIRST".into());
+        while let Some(value) = self.exception_stack.pop() {
+            value.drop_with(self);
+        }
+        result
     }
 }

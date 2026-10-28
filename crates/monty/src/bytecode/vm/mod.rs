@@ -710,6 +710,11 @@ pub struct VMSnapshot {
 }
 
 impl VMSnapshot {
+    /// A revoked native wait remains a valid stale reply ID, never an active owner.
+    pub(crate) fn native_revoked_call(&self) -> Option<u32> {
+        self.scheduler.main_task()?.native_cancel.as_ref()?.revoked
+    }
+
     /// Discards the in-flight execution state of a snapshot that will never be
     /// restored, releasing every heap reference it holds (operand and exception
     /// stacks, scheduler tasks, pending resume effects), and returns the
@@ -1189,6 +1194,10 @@ impl<'h> VM<'h> {
                 return Ok(None);
             }
             CallResult::FramePushed => return Ok(None),
+            CallResult::NativeGenerator(generator) => {
+                self.activate_native_generator(generator)?;
+                return Ok(None);
+            }
             CallResult::ResumeGenerator {
                 generator,
                 input,
@@ -1314,6 +1323,20 @@ impl<'h> VM<'h> {
 
             // Track instruction IP for exception table lookup
             self.instruction_ip = self.current_frame.ip;
+
+            if self
+                .current_frame
+                .code
+                .native_matching_at(self.instruction_ip)
+                .is_some()
+                && let Some(error) = self.native_matching_error(false)
+            {
+                if let Some(error) = self.handle_exception(error) {
+                    return Err(error);
+                }
+                yield_if_parked!(self);
+                continue;
+            }
 
             // Fetch the opcode and advance the authoritative frame IP.
             let opcode = {
@@ -1956,12 +1979,30 @@ impl<'h> VM<'h> {
                     let mode = self.current_frame.fetch_u8();
                     if mode != 0 {
                         try_catch!(self, self.delegate_generator());
+                    } else if self
+                        .current_frame
+                        .generator_activation
+                        .as_ref()
+                        .is_some_and(|a| a.native)
+                    {
+                        // Native yields keep the generator activation/locals in the Task.
+                        // Future errors enter the existing exception path at this yield.
+                        match self.exec_get_awaitable() {
+                            Ok(AwaitResult::ValueReady(value)) => self.push(value),
+                            Ok(AwaitResult::FramePushed) => {}
+                            Ok(AwaitResult::Yield(pending)) => return Ok(FrameExit::ResolveFutures(pending)),
+                            Err(error) => catch!(self, error),
+                        }
                     } else {
                         try_catch!(self, self.suspend_generator());
                     }
                 }
                 // Return
                 Opcode::ReturnValue => {
+                    if let Err(error) = self.native_cleanup_continuation(true) {
+                        catch!(self, error);
+                        continue;
+                    }
                     let value = self.pop();
                     if self.current_frame.generator_activation.is_some() {
                         try_catch!(self, self.finish_generator(value));
@@ -2083,7 +2124,7 @@ impl<'h> VM<'h> {
                 }
                 // Special
                 Opcode::Nop => {
-                    // No operation
+                    try_catch!(self, self.native_cleanup_continuation(false));
                 }
                 // Module Operations
                 Opcode::LoadModule => {

@@ -3054,3 +3054,115 @@ fn slice_assignment_rejects_large_replacement_without_killing_worker() {
         child.shutdown();
     }
 }
+
+/// Actual framed subprocess dispatch must act on tag 3 before a valid body reply.
+#[test]
+fn protocol_native_cancel_subprocess_preserves_presence() {
+    for reason in [None, Some(""), Some("HOST")] {
+        let mut child = ChildProc::spawn();
+        child.send(pb::parent_request::Kind::Configure(configure()));
+        assert!(matches!(child.recv(), pb::child_event::Kind::Ok(_)));
+        let (_, event) = child.feed_with(
+            "from __monty_host__ import host_coroutines\ndef body():\n    try:\n        return (yield f())\n    except ValueError as error:\n        return str(error)\nbody()._native1()",
+            NamedValues::from(vec![("f".to_owned(), MontyObject::function("f".to_owned(), None))]),
+        );
+        let pb::child_event::Kind::FunctionCall(call) = event else {
+            panic!("expected call, got {event:?}")
+        };
+        let (_, event) = child.resume_call(call.call_id, pb::ext_function_result::Kind::Future(call.call_id));
+        assert!(matches!(event, pb::child_event::Kind::ResolveFutures(_)));
+        let (result, values) = ext_result_to_proto(ExtFunctionResult::Return(MontyObject::int(42)));
+        child.send(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
+            results: vec![pb::FutureResult {
+                call_id: call.call_id,
+                result: Some(result),
+            }]
+            .into(),
+            values,
+            native_cancel: reason.map(str::to_owned),
+        }));
+        let expected = reason.map_or_else(
+            || MontyObject::int(42),
+            |reason| {
+                MontyObject::dict([
+                    (MontyObject::string("status"), MontyObject::string("cancelled")),
+                    (MontyObject::string("reason"), MontyObject::string(reason)),
+                    (MontyObject::string("value"), MontyObject::string(reason)),
+                    (MontyObject::string("error"), MontyObject::none()),
+                ])
+            },
+        );
+        assert_eq!(expect_complete(child.recv_turn().1), expected);
+        child.shutdown();
+    }
+}
+
+#[test]
+fn protocol_v5_v6_clients_complete_without_cancellation() {
+    for version in [5, 6] {
+        let mut child = ChildProc::spawn();
+        child.send(pb::parent_request::Kind::Configure(configure_with_protocol_version(
+            version,
+            "old-client",
+        )));
+        assert!(matches!(child.recv(), pb::child_event::Kind::Ok(_)));
+        assert_eq!(child.feed_complete("40 + 2"), MontyObject::int(42));
+        child.shutdown();
+    }
+}
+
+#[test]
+fn protocol_v7_ordinary_client_at_policy7_worker() {
+    let mut child = ChildProc::spawn();
+    child.send(pb::parent_request::Kind::Configure(configure_with_protocol_version(
+        7,
+        "old-ordinary-client",
+    )));
+    assert!(matches!(child.recv(), pb::child_event::Kind::Ok(_)));
+    assert_eq!(child.feed_complete("40 + 2"), MontyObject::int(42));
+    child.shutdown();
+}
+
+// Policy7 counterpart; the historical four-field assertion above is preserved.
+#[test]
+fn protocol_policy7_subprocess_envelope() {
+    for reason in [None, Some(""), Some("HOST")] {
+        let mut child = ChildProc::spawn();
+        child.send(pb::parent_request::Kind::Configure(configure()));
+        assert!(matches!(child.recv(), pb::child_event::Kind::Ok(_)));
+        let (_, event) = child.feed_with(
+            "from __monty_host__ import host_coroutines\ndef body():\n    try:\n        return (yield f())\n    except ValueError as error:\n        return str(error)\nbody()._native1()",
+            NamedValues::from(vec![("f".to_owned(), MontyObject::function("f".to_owned(), None))]),
+        );
+        let pb::child_event::Kind::FunctionCall(call) = event else {
+            panic!("expected call, got {event:?}")
+        };
+        let (_, event) = child.resume_call(call.call_id, pb::ext_function_result::Kind::Future(call.call_id));
+        assert!(matches!(event, pb::child_event::Kind::ResolveFutures(_)));
+        let (result, values) = ext_result_to_proto(ExtFunctionResult::Return(MontyObject::int(42)));
+        child.send(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
+            results: vec![pb::FutureResult {
+                call_id: call.call_id,
+                result: Some(result),
+            }]
+            .into(),
+            values,
+            native_cancel: reason.map(str::to_owned),
+        }));
+        let expected = reason.map_or_else(
+            || MontyObject::int(42),
+            |reason| {
+                MontyObject::dict([
+                    (MontyObject::string("status"), MontyObject::string("cancelled")),
+                    (MontyObject::string("reason"), MontyObject::string(reason)),
+                    (MontyObject::string("value"), MontyObject::string(reason)),
+                    (MontyObject::string("error"), MontyObject::none()),
+                    (MontyObject::string("interrupted_error"), MontyObject::none()),
+                    (MontyObject::string("value_export_error"), MontyObject::none()),
+                ])
+            },
+        );
+        assert_eq!(expect_complete(child.recv_turn().1), expected);
+        child.shutdown();
+    }
+}

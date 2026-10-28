@@ -31,6 +31,13 @@ pub struct CodeBuilder {
     /// Exception handler entries.
     exception_table: Vec<ExceptionEntry>,
 
+    /// Lexical cleanup ownership for experimental native cancellation.
+    native_cleanup: Vec<(u32, u32)>,
+    native_matching: Vec<(u32, u32, u16)>,
+
+    /// Explicit continuation boundaries, implemented without spending an opcode.
+    native_cancel_points: Vec<u32>,
+
     /// Current source location (set before emitting instructions).
     current_location: Option<CodeRange>,
 
@@ -441,18 +448,50 @@ impl CodeBuilder {
         self.current_stack_depth.is_none()
     }
 
+    /// Marks emitted cleanup instructions, including callees suspended beneath them.
+    pub(crate) fn mark_native_cleanup(&mut self, start: Offset) {
+        self.native_cleanup.push((
+            u32::try_from(start.0).expect("code offset"),
+            u32::try_from(self.bytecode.len()).expect("code offset"),
+        ));
+    }
+
+    /// Record matching while its original exception remains unresolved.
+    pub(crate) fn mark_native_matching(&mut self, start: Offset, depth: u16) {
+        self.native_matching.push((
+            u32::try_from(start.0).expect("code offset"),
+            u32::try_from(self.bytecode.len()).expect("code offset"),
+            depth,
+        ));
+    }
+
+    /// Emit a distinct instruction so handler regions can exclude already-exited
+    /// constructs without attributing cancellation to the final cleanup call.
+    pub(crate) fn emit_native_cancel_point(&mut self) -> Result<(), CompileError> {
+        if !self.is_dead() {
+            self.native_cancel_points
+                .push(u32::try_from(self.bytecode.len()).expect("code offset"));
+            self.emit(Opcode::Nop)?;
+        }
+        Ok(())
+    }
+
     /// Finishes a compiled body, transferring its buffers and metadata to `Code`.
     #[must_use]
     pub fn build(self) -> Code {
         // Unnamed slots use the sentinel understood by local-name lookup.
         let local_names = self.local_names.into_iter().map(Option::unwrap_or_default).collect();
-        Code::new(
+        let mut code = Code::new(
             self.bytecode,
             self.constants,
             self.location_table,
             self.exception_table,
             local_names,
-        )
+        );
+        code.native_cleanup = Some(self.native_cleanup);
+        code.native_cancel_points = Some(self.native_cancel_points);
+        code.native_matching = Some(self.native_matching);
+        code
     }
 
     /// Records the current location in the location table if set.

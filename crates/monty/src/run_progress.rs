@@ -19,7 +19,7 @@ use crate::{
     exception_private::{ExcTypeExt, ExceptionRaise, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapReader},
     intern::{Interns, StringId},
-    object_bridge::MontyObjectExt,
+    object_bridge::{ExportError, MontyObjectExt},
     os_dispatch::{PendingEffect, PostConversionEffect, release_pending_effect},
     run::Executor,
     value::Value,
@@ -1123,6 +1123,85 @@ pub(crate) fn convert_frame_exit<'s>(
     vm.pending_lookup_effect.take().drop_with(vm.heap);
     // `instruction_ip` still names the opcode that suspended, so the current
     // position is the suspending expression for every exit but `ResolveFutures`.
+    #[cfg(feature = "cancellation-test-hooks")]
+    let result = if vm.native_cancel_reason().is_some() && matches!(result, Ok(FrameExit::Return(_))) {
+        if let Some(fatal) = crate::cancellation_test_hooks::projection_error() {
+            if let Ok(FrameExit::Return(value)) = result {
+                value.drop_with(vm);
+            }
+            Err(fatal)
+        } else {
+            crate::cancellation_test_hooks::prepare_export(vm);
+            result
+        }
+    } else {
+        result
+    };
+    let cancelled = vm.native_cancel_reason().map(str::to_owned);
+    if let Some(reason) = cancelled {
+        let diagnostic = vm.native_interrupted_error().map_or_else(MontyObject::none, |d| {
+            MontyObject::dict([
+                (MontyObject::string("type"), MontyObject::string(d.exc_type.to_string())),
+                (
+                    MontyObject::string("message"),
+                    d.message.map_or_else(MontyObject::none, MontyObject::string),
+                ),
+                (
+                    MontyObject::string("message_truncated"),
+                    MontyObject::bool(d.message_truncated),
+                ),
+                (
+                    MontyObject::string("representation"),
+                    MontyObject::string("metadata-only"),
+                ),
+            ])
+        });
+        match result {
+            Ok(FrameExit::Return(value)) => {
+                return match MontyObject::export(value, vm) {
+                    Ok(value) => ConvertedExit::Complete(native_cancel_outcome(
+                        reason,
+                        value,
+                        MontyObject::none(),
+                        diagnostic,
+                        MontyObject::none(),
+                    )),
+                    Err(error @ (ExportError::UnsupportedExceptionArgs | ExportError::DepthLimit)) => {
+                        let code = match error {
+                            ExportError::DepthLimit => "export-depth-limit",
+                            _ => "unsupported-value",
+                        };
+                        ConvertedExit::Complete(native_cancel_outcome(
+                            reason,
+                            MontyObject::none(),
+                            MontyObject::none(),
+                            diagnostic,
+                            MontyObject::string(code),
+                        ))
+                    }
+                    Err(error) => ConvertedExit::Error(
+                        error
+                            .into_run_error(vm)
+                            .into_python_exception(vm.interns, source_for, vm.heap),
+                    ),
+                };
+            }
+            Err(error @ (RunError::UncatchableExc(_) | RunError::Internal(_))) => {
+                return ConvertedExit::Error(error.into_python_exception(vm.interns, source_for, vm.heap));
+            }
+            Err(error) => {
+                let error = error.into_python_exception(vm.interns, source_for, vm.heap);
+                return ConvertedExit::Complete(native_cancel_outcome(
+                    reason,
+                    MontyObject::none(),
+                    MontyObject::string(error.to_string()),
+                    diagnostic,
+                    MontyObject::none(),
+                ));
+            }
+            _ => {}
+        }
+    }
     match result {
         Ok(FrameExit::Return(value)) => match MontyObject::export(value, vm) {
             Ok(value) => ConvertedExit::Complete(value),
@@ -1247,6 +1326,24 @@ pub(crate) fn convert_frame_exit<'s>(
         }
         Err(err) => ConvertedExit::Error(err.into_python_exception(vm.interns, source_for, vm.heap)),
     }
+}
+
+/// Experimental terminal envelope; ordinary guest failures remain separate from cause.
+fn native_cancel_outcome(
+    reason: String,
+    value: MontyObject,
+    error: MontyObject,
+    diagnostic: MontyObject,
+    export_error: MontyObject,
+) -> MontyObject {
+    MontyObject::dict([
+        (MontyObject::string("status"), MontyObject::string("cancelled")),
+        (MontyObject::string("reason"), MontyObject::string(reason)),
+        (MontyObject::string("value"), value),
+        (MontyObject::string("error"), error),
+        (MontyObject::string("interrupted_error"), diagnostic),
+        (MontyObject::string("value_export_error"), export_error),
+    ])
 }
 
 /// Decides whether to snapshot or clean up the VM based on the converted exit.

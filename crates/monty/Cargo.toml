@@ -72,6 +72,9 @@ memory-model-checks = []
 # exercise production behavior without duplicating implementation details.
 test-hooks = ["monty-types/test-hooks"]
 
+# Host-only fault instrumentation; never enable in distributed workers.
+cancellation-test-hooks = ["monty-types/test-hooks"]
+
 [dev-dependencies]
 monty-types = { workspace = true, features = ["tzdb"] }
 tempfile = "3"

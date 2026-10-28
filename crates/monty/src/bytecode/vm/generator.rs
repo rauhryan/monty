@@ -52,6 +52,9 @@ struct SavedGenerator {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct GeneratorActivation {
     generator: Value,
+    /// Opt-in native entry/delegate: Yield awaits on the existing Task/Scheduler.
+    #[serde(default)]
+    pub(super) native: bool,
     default: Option<Value>,
     #[serde(default)]
     delegated: bool,
@@ -173,7 +176,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Generator> {
         Err(ExcType::not_implemented("generator iteration requires an outer VM activation").into())
     }
     fn py_call_attr(&mut self, vm: &mut VM<'h>, name: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if matches!(name.as_str(vm.interns), "send" | "throw") {
+        if name.as_str(vm.interns) == "_native1" {
+            args.check_zero_args("_native1", vm.heap)?;
+            Ok(CallResult::NativeGenerator(self.clone_value(vm.heap)))
+        } else if matches!(name.as_str(vm.interns), "send" | "throw") {
             let throwing = name.as_str(vm.interns) == "throw";
             let mut value = if throwing {
                 ThrowArgs::from_args(args, vm)?.exception
@@ -216,7 +222,12 @@ impl VM<'_> {
         default: Option<Value>,
         throwing: bool,
     ) -> RunResult<()> {
-        self.activate_generator_route(generator, input, default, throwing, false)
+        self.activate_generator_route(generator, input, default, throwing, false, false)
+    }
+
+    /// Explicit experiment entry; ordinary send/throw/await retain their semantics.
+    pub(super) fn activate_native_generator(&mut self, generator: Value) -> RunResult<()> {
+        self.activate_generator_route(generator, Value::None, None, false, false, true)
     }
 
     fn activate_generator_route(
@@ -226,6 +237,7 @@ impl VM<'_> {
         default: Option<Value>,
         throwing: bool,
         delegated: bool,
+        native: bool,
     ) -> RunResult<()> {
         let mut request = DropGuard::new((generator, (input, default)), self);
         let ((generator, (input, _)), vm) = request.as_parts_mut();
@@ -244,6 +256,11 @@ impl VM<'_> {
             let HeapData::Generator(object) = vm.heap.get(*id) else {
                 unreachable!("generator request")
             };
+            if matches!(&object.state, GeneratorState::Suspended { .. })
+                || matches!(&object.state, GeneratorState::New { .. }) && !throwing
+            {
+                vm.admit_native_code(&vm.interns.get_function(object.function).code)?;
+            }
             match &object.state {
                 GeneratorState::Running if frames == 0 => {
                     return Err(ExcType::value_error("generator already executing"));
@@ -275,7 +292,7 @@ impl VM<'_> {
             }
         }
         let ((generator, (input, default)), vm) = request.into_parts();
-        vm.activate_generator_admitted(generator, input, default, throwing, delegated)
+        vm.activate_generator_admitted(generator, input, default, throwing, delegated, native)
     }
 
     /// Install the already-reserved frames without Rust run-loop reentry.
@@ -286,6 +303,7 @@ impl VM<'_> {
         mut default: Option<Value>,
         throwing: bool,
         mut delegated: bool,
+        native: bool,
     ) -> RunResult<()> {
         loop {
             let Value::Ref(id) = &generator else {
@@ -339,6 +357,10 @@ impl VM<'_> {
                     };
                 }
                 input.drop_with(self);
+                if native && !delegated {
+                    self.push(Value::None);
+                    return Ok(());
+                }
                 if delegated {
                     self.complete_delegation(Value::None);
                     return Ok(());
@@ -404,6 +426,7 @@ impl VM<'_> {
             };
             frame.generator_activation = Some(GeneratorActivation {
                 generator,
+                native,
                 default,
                 delegated,
                 delegating,
@@ -446,7 +469,13 @@ impl VM<'_> {
             .as_mut()
             .expect("generator parent")
             .delegating = true;
-        if let Err(error) = self.activate_generator_route(generator, Value::None, None, false, true) {
+        let native = self
+            .current_frame
+            .generator_activation
+            .as_ref()
+            .expect("generator parent")
+            .native;
+        if let Err(error) = self.activate_generator_route(generator, Value::None, None, false, true, native) {
             self.current_frame
                 .generator_activation
                 .as_mut()
@@ -520,6 +549,7 @@ impl VM<'_> {
         let mut activation = this.current_frame.generator_activation.take().expect("generator frame");
         let default = activation.default.take();
         let delegated = activation.delegated;
+        let native = activation.native;
         let caller_ip = this.current_frame.call_offset.expect("generator caller") as usize;
         activation.drop_with(this);
         this.pop_frame();
@@ -528,6 +558,11 @@ impl VM<'_> {
         if delegated {
             this.complete_delegation(value);
             default.drop_with(this);
+            return Ok(());
+        }
+        if native {
+            default.drop_with(this);
+            this.push(value);
             return Ok(());
         }
         if let Some(default) = default {

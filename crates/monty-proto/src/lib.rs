@@ -33,7 +33,10 @@ pub mod worker;
 /// serving relay and its client act on them, children ignore them, and a
 /// child that drops them loses nothing. Version 6 added the `import` and
 /// `import_stubs` OS calls, which version 5 parents cannot answer.
-pub const PROTOCOL_VERSION: u32 = 6;
+/// Version 7 adds `ResumeFutures.native_cancel`, which older workers silently
+/// ignore. Version 8 requires policy7 catchable delivery and bounded interrupted
+/// diagnostics. Cancellation-aware parents declare version 8 without downgrade.
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
 ///

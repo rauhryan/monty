@@ -1130,6 +1130,18 @@ impl ReplResolveFutures {
         results: Vec<(u32, ExtFunctionResult)>,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
+        self.resume_native(results, None, print)
+    }
+
+    /// Experimental single-task host cancellation. First cause wins (including empty).
+    /// Cleanup keeps its reply; cancellation is processed before this batch's replies.
+    /// Terminal cancellation is returned as a native-owned outcome dictionary.
+    pub fn resume_native(
+        self,
+        results: Vec<(u32, ExtFunctionResult)>,
+        cancel: Option<String>,
+        print: PrintWriter<'_>,
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
         let Self {
             mut repl,
             mut executor,
@@ -1138,6 +1150,8 @@ impl ReplResolveFutures {
             ..
         } = self;
 
+        let revoked = vm_state.native_revoked_call();
+        let results: Vec<_> = results.into_iter().filter(|(id, _)| Some(*id) != revoked).collect();
         let invalid_call_id = results
             .iter()
             .find(|(call_id, _)| !pending_call_ids.contains(call_id))
@@ -1163,7 +1177,12 @@ impl ReplResolveFutures {
                     )));
                 }
 
-                let vm_result = vm.resume_with_resolved_futures(results);
+                let vm_result = match cancel {
+                    Some(reason) => vm
+                        .cancel_native(reason)
+                        .and_then(|()| vm.resume_with_resolved_futures(results)),
+                    None => vm.resume_with_resolved_futures(results),
+                };
 
                 // Convert while VM alive, then snapshot or reclaim globals
                 let converted = convert_frame_exit(vm_result, &mut vm, |fname| {
@@ -1582,5 +1601,204 @@ fn is_callable(value: &Value, heap: &Heap) -> bool {
             HeapData::Closure(_) | HeapData::FunctionDefaults(_) | HeapData::ExtFunction(_)
         ),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod compatibility11_tests {
+    use super::*;
+    use crate::{Dump, Session, SessionRef, dump};
+
+    #[test]
+    fn ownership_compatibility11_direct_coroutine_admission() {
+        for mode in ["ordinary", "pending", "delivered"] {
+            for restored in [false, true] {
+                let Session::Idle(mut repl) =
+                    Dump::load(include_bytes!("../tests/fixtures/compatibility11_frozen_v17.bin"))
+                        .unwrap()
+                        .state
+                else {
+                    panic!("idle")
+                };
+                repl.feed_run("legacy_coro = legacy_coroutine(TOKEN)", vec![], PrintWriter::Disabled)
+                    .unwrap();
+                let source = if mode == "pending" {
+                    "from __monty_host__ import host_coroutines\ndef operation():\n    return (yield exchange('wait'))\nasync def entry():\n    try:\n        pass\n    finally:\n        await operation()\nentry()._native1()"
+                } else {
+                    "from __monty_host__ import host_coroutines\ndef operation():\n    return (yield exchange('wait'))\nasync def entry():\n    await operation()\nentry()._native1()"
+                };
+                let progress = repl
+                    .feed_start(
+                        source,
+                        vec![("exchange".into(), MontyObject::function("exchange", None))],
+                        PrintWriter::Disabled,
+                    )
+                    .unwrap()
+                    .into_function_call()
+                    .unwrap()
+                    .resume_pending(PrintWriter::Disabled)
+                    .unwrap();
+                let progress = if restored {
+                    let bytes = dump("direct.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+                    drop(progress.into_repl());
+                    let Session::Suspended(progress) = Dump::load(&bytes).unwrap().state else {
+                        panic!("suspended")
+                    };
+                    *progress
+                } else {
+                    progress
+                };
+                let ReplResolveFutures {
+                    mut repl,
+                    mut executor,
+                    vm_state,
+                    ..
+                } = progress.into_resolve_futures().unwrap();
+                HeapReader::with(&mut repl.heap, &mut executor, |reader, executor| {
+                    let mut vm = VM::restore(
+                        vm_state,
+                        &mut executor.tables,
+                        &executor.program,
+                        reader,
+                        PrintWriter::Disabled,
+                    );
+                    vm.compatibility11_direct_admission(mode);
+                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+                });
+                repl.commit_executor(executor);
+                repl.feed_run("assert MARKERS == []", vec![], PrintWriter::Disabled)
+                    .unwrap();
+                eprintln!("compatibility11 direct/{mode}/restored={restored}: admission checked before body execution");
+            }
+        }
+    }
+
+    #[test]
+    fn ownership_compatibility11_saved_task_discrimination() {
+        // Literal diagnostic is ORIGINAL, never the different handled PARKED.
+        let source = r"from __monty_host__ import host_coroutines
+def operation():
+    return (yield exchange('selector'))
+async def choose():
+    await operation()
+    return TypeError
+async def body():
+    try:
+        raise TypeError('PARKED')
+    except TypeError:
+        try:
+            raise TypeError('ORIGINAL')
+        except await choose():
+            return 'wrong-handler'
+async def entry():
+    try:
+        return await body()
+    except ValueError as error:
+        assert str(error) == 'FIRST'
+        return 'caught'
+entry()._native1()
+";
+        for restored in [false, true] {
+            let repl = MontyRepl::new(
+                "compatibility11.py",
+                ResourceTracker::default(),
+                CompileOptions::default(),
+            );
+            let progress = repl
+                .feed_start(
+                    source,
+                    vec![("exchange".into(), MontyObject::function("exchange", None))],
+                    PrintWriter::Disabled,
+                )
+                .unwrap()
+                .into_function_call()
+                .unwrap()
+                .resume_pending(PrintWriter::Disabled)
+                .unwrap();
+            let ReplResolveFutures {
+                mut repl,
+                mut executor,
+                vm_state,
+                pending_call_ids,
+                position,
+            } = progress.into_resolve_futures().unwrap();
+            let vm_state = HeapReader::with(&mut repl.heap, &mut executor, |reader, executor| {
+                let mut vm = VM::restore(
+                    vm_state,
+                    &mut executor.tables,
+                    &executor.program,
+                    reader,
+                    PrintWriter::Disabled,
+                );
+                vm.compatibility11_save_main_task();
+                vm.snapshot()
+            });
+            let progress = ReplProgress::ResolveFutures(ReplResolveFutures {
+                repl,
+                executor,
+                vm_state,
+                pending_call_ids,
+                position,
+            });
+            let progress = if restored {
+                let bytes = dump("compatibility11.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+                drop(progress.into_repl());
+                let Session::Suspended(progress) = Dump::load(&bytes).unwrap().state else {
+                    panic!("suspended")
+                };
+                *progress
+            } else {
+                progress
+            };
+            let ReplResolveFutures {
+                mut repl,
+                mut executor,
+                vm_state,
+                ..
+            } = progress.into_resolve_futures().unwrap();
+            let converted = HeapReader::with(&mut repl.heap, &mut executor, |reader, executor| {
+                let mut vm = VM::restore(
+                    vm_state,
+                    &mut executor.tables,
+                    &executor.program,
+                    reader,
+                    PrintWriter::Disabled,
+                );
+                vm.compatibility11_cancel_with_unrelated_parked_stack().unwrap();
+                let result = vm.resume_with_resolved_futures(vec![]);
+                let converted =
+                    convert_frame_exit(result, &mut vm, |fname| repl.sources.get(fname).map(|source| &**source));
+                reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+                converted
+            });
+            let progress = build_repl_progress(converted, None, executor, repl).unwrap();
+            let (mut repl, outcome) = progress.into_complete().unwrap();
+            let pairs = outcome.as_ref().pairs().unwrap();
+            let diagnostic = pairs
+                .iter()
+                .find(|(k, _)| k.as_str() == Some("interrupted_error"))
+                .unwrap()
+                .1
+                .pairs()
+                .unwrap();
+            assert!(
+                diagnostic
+                    .iter()
+                    .any(|(k, v)| k.as_str() == Some("message") && v.as_str() == Some("ORIGINAL"))
+            );
+            assert!(
+                pairs
+                    .iter()
+                    .any(|(k, v)| k.as_str() == Some("value") && v.as_str() == Some("caught"))
+            );
+            // Contextual retirement is checked before teardown, with all guest
+            // exception owners gone; functions here are interned, not heap roots.
+            repl.feed_run("[]", vec![], PrintWriter::Disabled).unwrap();
+            eprintln!(
+                "compatibility11 saved restored={restored}: live={}",
+                repl.heap_entry_count()
+            );
+            assert_eq!(repl.heap_entry_count(), 1); // the registered external function
+        }
     }
 }

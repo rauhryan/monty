@@ -359,3 +359,11 @@ assert_eq!(result, MontyObject::int(42));
 - [`FunctionCall::object_id`](../api/rust/monty.md#functioncall) and [`NameLookup::object_id`](../api/rust/monty.md#namelookup)
     identify the host receiver for routed calls and lookups, including class construction via `__call__`.
     Plain calls and lookups carry `None`.
+
+The experimental `ReplResolveFutures::resume_native` API additionally accepts an optional host cancellation reason for a single native main task.
+It retains the first reason and exports a terminal cancelled outcome even after guest catch-and-return, while compiler-marked cleanup can suspend for legitimate replies.
+Deferred cancellation is delivered when outermost cleanup protection ends, before another body instruction or external request; an escaping guest error retains precedence.
+On that error path, prospective exception handlers outside cleanup are bypassed before type-expression evaluation and no second catchable cancellation signal is injected.
+Already-entered matching retains its original error across selector suspension; required synchronous context exit consumes its suppression result before cancellation delivery.
+Blocking synchronous I/O and nonterminating cleanup remain outside the delivery guarantee.
+This is not child scope or task-group cancellation; see the [asyncio limitations](../limitations/asyncio.md#experimental-native-entry-and-host-cancellation).

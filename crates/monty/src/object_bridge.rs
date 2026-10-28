@@ -178,6 +178,8 @@ pub(crate) struct GraphExporter {
     /// mid-message, and a new object in the reused slot would inherit its node.
     pinned: Vec<Value>,
     error: Option<ExportError>,
+    #[cfg(feature = "cancellation-test-hooks")]
+    instrumented: bool,
 }
 
 impl GraphExporter {
@@ -188,6 +190,8 @@ impl GraphExporter {
             in_progress: AHashSet::new(),
             pinned: Vec::new(),
             error: None,
+            #[cfg(feature = "cancellation-test-hooks")]
+            instrumented: crate::cancellation_test_hooks::take_export(),
         }
     }
 
@@ -233,6 +237,17 @@ impl GraphExporter {
     }
 
     fn push_inner(&mut self, value: &Value, vm: &mut VM<'_>) -> Result<NodeId, ExportError> {
+        #[cfg(feature = "cancellation-test-hooks")]
+        if self.instrumented {
+            crate::cancellation_test_hooks::visit(self.pinned.len());
+            if crate::cancellation_test_hooks::terminal_due(self.pinned.len()) {
+                return Err(ExportError::terminal(
+                    SimpleException::new_msg(ExcType::RuntimeError, "REPAIR10_EXPORT_TERMINAL")
+                        .with_position(vm.current_position()),
+                    vm,
+                ));
+            }
+        }
         // Check depth limit before processing
         let Ok(mut guard) = vm.recursion_guard() else {
             return Err(ExportError::DepthLimit);
@@ -661,7 +676,13 @@ impl GraphExporter {
 
 impl<C: ContainsHeap> DropWithContext<C> for GraphExporter {
     fn drop_with(self, ctx: &mut C) {
+        #[cfg(feature = "cancellation-test-hooks")]
+        let census = (self.instrumented, self.pinned.len());
         self.pinned.drop_with(ctx);
+        #[cfg(feature = "cancellation-test-hooks")]
+        if census.0 {
+            crate::cancellation_test_hooks::retired(census.1);
+        }
     }
 }
 

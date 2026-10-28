@@ -165,3 +165,15 @@ The worker requests module type stubs through `OsFunctionCall::ImportStubs`; the
 ## License
 
 MIT
+
+### Experimental native cancellation
+
+`ReplResolveFutures::resume_native(results, cancel, print)` is an experimental single native main-task entry.
+An optional first host cause persists through snapshots and remains cancelled after guest catch-and-return.
+The terminal value is a dictionary with `status`, `reason`, `value`, and `error`; ordinary `resume` behavior without a host request is unchanged.
+Compiler-owned finally and async-exit ranges protect yielding cleanup.
+Deferred cancellation is delivered at the outermost cleanup continuation before ordinary body work; escaping guest errors retain precedence.
+Pending cancellation bypasses prospective exception handlers outside cleanup before type-expression evaluation, retaining the escaping error instead of injecting a second signal.
+Already-entered matching retains its original error across selector suspension; required synchronous context exit consumes its suppression result before cancellation delivery.
+Blocking synchronous I/O and nonterminating cleanup remain outside the delivery guarantee.
+See `tools/coroutines/native1/README.md` for phase boundaries and unsupported child ownership.

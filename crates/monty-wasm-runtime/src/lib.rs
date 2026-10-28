@@ -49,6 +49,10 @@ thread_local! {
 fn new_child() -> Child {
     let _ = Instant::now();
     let _ = RandomState::new();
+    #[cfg(feature = "cancellation-test-hooks")]
+    if let Ok(mode) = std::env::var("MONTY_REPAIR10_FAULT") {
+        monty::cancellation_test_hooks::configure(&mode);
+    }
     Child::default()
 }
 
@@ -63,6 +67,10 @@ static ALLOC: monty_alloc::LimitedAllocator = monty_alloc::LimitedAllocator;
 struct Component;
 
 impl Guest for Component {
+    fn cancellation_contract() -> u32 {
+        7
+    }
+
     fn dispatch(request: Request) -> DispatchResult {
         let (result, allocator_ready) = CHILD.with_borrow_mut(|child| {
             let mut result = dispatch(child, request);
@@ -341,6 +349,7 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
             })
         }
         Request::ResumeFutures(request) => pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
+            native_cancel: request.native_cancel,
             results: request
                 .results
                 .into_iter()

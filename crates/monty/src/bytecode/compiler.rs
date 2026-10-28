@@ -2643,6 +2643,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
 
         // Loop start
         let loop_start = self.code.current_jump_target();
+        self.code.emit_native_cancel_point()?;
 
         // Push loop block for break/continue
         self.fblocks.push(FBlock::ForLoop(LoopInfo {
@@ -2680,6 +2681,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         for break_jump in loop_info.break_jumps {
             self.code.patch_jump(break_jump)?;
         }
+        self.code.emit_native_cancel_point()?;
 
         Ok(())
     }
@@ -2710,6 +2712,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         or_else: &'a [PreparedNode],
     ) -> Result<(), CompileError> {
         let loop_start = self.code.current_jump_target();
+        self.code.emit_native_cancel_point()?;
 
         self.fblocks.push(FBlock::WhileLoop(LoopInfo {
             start: loop_start,
@@ -2736,6 +2739,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         for break_jump in loop_info.break_jumps {
             self.code.patch_jump(break_jump)?;
         }
+        self.code.emit_native_cancel_point()?;
 
         Ok(())
     }
@@ -2820,7 +2824,10 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 self.code.current_position(),
             ))
         } else {
-            self.compile_block(finally)
+            let start = self.code.current_offset();
+            self.compile_block(finally)?;
+            self.code.mark_native_cleanup(start);
+            Ok(())
         }
     }
 
@@ -2838,12 +2845,17 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// `preserve_tos` protects a pending return value; callers restore the
     /// returned blocks after emitting the path's terminator.
     fn emit_unwind(&mut self, count: usize, preserve_tos: bool) -> Result<Vec<FBlock<'a>>, CompileError> {
+        let start = self.code.current_offset();
         let mut popped = Vec::with_capacity(count);
         for _ in 0..count {
             let mut block = self.fblocks.pop().expect("emit_unwind: fblock stack underflow");
             self.emit_block_unwind(&mut block, preserve_tos)?;
             popped.push(block);
         }
+        // All inline outer cleanup must finish before the non-local transfer.
+        // This range also masks checkpoints emitted by nested normal cleanup.
+        self.code.mark_native_cleanup(start);
+        self.code.emit_native_cancel_point()?;
         Ok(popped)
     }
 
@@ -3724,6 +3736,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // === Fall-through copy ===
         self.code.patch_jump(normal_jump)?;
         self.compile_finally_copy(&try_block.finally)?;
+        self.code.emit_native_cancel_point()?;
 
         region.add_entries(body_end, &mut self.code, cleanup_start, HandlerKind::Cleanup)
     }
@@ -3764,7 +3777,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             self.code.patch_jump(jump)?;
         }
 
-        region.add_entries(body_end, &mut self.code, dispatch_start, HandlerKind::Consuming)
+        region.add_entries(body_end, &mut self.code, dispatch_start, HandlerKind::Except)
     }
 
     /// Compiles normal and exceptional exits for a `with` statement.
@@ -3831,6 +3844,8 @@ impl<'a, 'i> Compiler<'a, 'i> {
 
         // === Merge point for the normal-exit and swallowed-exception paths ===
         self.code.patch_jump(end_jump)?;
+        // Only after suppression has consumed its exception/operand owners.
+        self.code.emit_native_cancel_point()?;
 
         region.add_entries(body_end, &mut self.code, handler_start, HandlerKind::Consuming)
     }
@@ -3844,10 +3859,21 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 Opcode::WithExceptStart => 2,
                 _ => unreachable!("context opcode"),
             };
+            let start = self.code.current_offset();
             self.code.emit_u8(Opcode::HostContext, mode)?;
-            self.code.emit_u8(Opcode::Yield, 1)
+            self.code.emit_u8(Opcode::Yield, 1)?;
+            if mode != 0 {
+                self.code.mark_native_cleanup(start);
+            }
+            Ok(())
         } else {
-            self.code.emit(opcode)
+            let start = self.code.current_offset();
+            self.code.emit(opcode)?;
+            if matches!(opcode, Opcode::WithExit | Opcode::WithExceptStart) {
+                // Finish required synchronous exit before consuming its result.
+                self.code.mark_native_cleanup(start);
+            }
+            Ok(())
         }
     }
 
@@ -3872,6 +3898,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         self.code.new_code_region(stack_depth + 1);
 
         for handler in handlers {
+            let matching_start = self.code.current_offset();
             let no_match_jump = if let Some(exc_type) = &handler.exc_type {
                 // Typed handler: `except ExcType:` or `except ExcType as e:`.
                 // Stack on entry: [exception]. `CheckExcMatch` peeks the
@@ -3884,6 +3911,8 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 // Bare `except:` (must be the last handler per Python rules).
                 None
             };
+
+            self.code.mark_native_matching(matching_start, self.exc_stack_count());
 
             // Match path: consume exception from the stack and store
             // to target if present.
@@ -3900,6 +3929,8 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 name: handler.name.as_ref(),
                 region,
             });
+            // Pending native cancellation arbitrates before dispatch in the VM.
+            // A match alone does not mean authored code suppressed the error.
             self.compile_block(&handler.body)?;
             let (name, region) = self
                 .fblocks

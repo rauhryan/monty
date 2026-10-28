@@ -2786,6 +2786,7 @@ dependencies = [
 name = "monty-wasm-runtime"
 version = "1.3.0"
 dependencies = [
+ "monty",
  "monty-alloc",
  "monty-proto",
  "monty-types",

@@ -49,6 +49,8 @@ pub(crate) enum CallResult {
         throwing: bool,
         default: Option<Value>,
     },
+    /// Experimental native entry: yields in this generator/delegates await futures.
+    NativeGenerator(Value),
     /// External function call requested - VM should pause and return to caller.
     /// The `EitherStr` is the name of the external function (interned or heap-owned).
     External(EitherStr, ArgValues),
@@ -168,7 +170,7 @@ impl CallResult {
 impl<C: ContainsHeap> DropWithContext<C> for CallResult {
     fn drop_with(self, heap: &mut C) {
         match self {
-            Self::Value(value) | Self::AwaitValue(value) => value.drop_with(heap),
+            Self::Value(value) | Self::AwaitValue(value) | Self::NativeGenerator(value) => value.drop_with(heap),
             Self::External(_, args) | Self::MethodCall { args, .. } => {
                 args.drop_with(heap);
             }
@@ -495,7 +497,7 @@ impl<'h> VM<'h> {
                 result.drop_with(self);
                 return error;
             }
-            CallResult::ResumeGenerator { .. } => {
+            CallResult::ResumeGenerator { .. } | CallResult::NativeGenerator(_) => {
                 ExcType::not_implemented("cannot resume generator in a synchronous Rust callback")
             }
             CallResult::AwaitValue(_) => ExcType::not_implemented("cannot await a value in this synchronous context"),
@@ -811,6 +813,7 @@ impl<'h> VM<'h> {
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
         let code = &func.code;
+        self.admit_native_code(code)?;
 
         let callable = self.stack.remove(callable_index);
         debug_assert_exact_callable(&callable, func_id);
@@ -856,9 +859,11 @@ impl<'h> VM<'h> {
         let (_, vm) = args_guard.as_parts_mut();
         let interns = vm.interns;
         let (function_id, overlay) = if let Some(id) = interns.frozen_function(function) {
+            vm.admit_native_code(&interns.get_function(id).code)?;
             (id, None)
         } else {
             let (id, overlay) = function.compile(interns)?;
+            vm.admit_native_code(&overlay.get_function(id).code)?;
             (id, Some(overlay))
         };
         // No fallible operation or Python execution may intervene between publication and frame installation.
@@ -1027,6 +1032,8 @@ impl<'h> VM<'h> {
 
             bind_result?;
         }
+
+        this.admit_native_code(&func.code)?;
 
         // 3. Install owned cells and captured free-var cells at their slots.
         this.install_closure_cells(func, cells, namespace);

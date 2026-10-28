@@ -2,8 +2,11 @@
 # ruff: noqa: F821
 
 
-def new_driver(mode):
+def new_driver(mode, retain_history=True):
     state = {
+        'retain_history': retain_history,
+        'event_watermark': -1,
+        'reclaimed_tasks': 0,
         'run': 'C1',
         'ready': [],
         'queues': {},
@@ -31,6 +34,7 @@ def add_task(state, owner, label, mode, factory):
     state['next_task'] += 1
     task = {
         'id': task_id,
+        'handle': None if owner is None else ChildHandle(task_id, state['scopes'][owner]['identity']),
         'io': None,
         'guest_signal': None,
         'owner': owner,
@@ -75,6 +79,7 @@ def open_scope(state, task, deadline):
     state['next_scope'] += 1
     scope = {
         'id': scope_id,
+        'identity': [],
         'task': task['id'],
         'parent': task['stack'][-1] if task['stack'] else task['owner'],
         'phase': 'body',
@@ -170,6 +175,8 @@ def finish_task(state, task, kind, value):
     task['phase'] = 'exited'
     task['cancel_pending'] = False
     task['status'] = 'done'
+    if task['handle'] is not None:
+        task['handle']._done = True
     task['generator'] = task['wait'] = task['pending_join'] = None
     task['resume'] = ['value', None]
     state['events'].append(['exit', task['id'], task['result']])
@@ -220,25 +227,42 @@ def advance(state, task):
         return
     if message['kind'] == 'spawn':
         child_id = add_task(state, scope['id'], message['label'], message['mode'], message['factory'])
-        task['resume'] = ['error', 'scope-closed:' + scope['id']] if child_id is None else ['value', child_id]
+        task['resume'] = (
+            ['error', 'scope-closed:' + scope['id']]
+            if child_id is None
+            else ['value', state['tasks'][child_id]['handle']]
+        )
     elif message['kind'] == 'join':
         if scope['phase'] != 'body':
             task['resume'] = ['error', 'scope-closed:' + scope['id']]
-        elif message['child'] not in scope['children'] or state['tasks'][message['child']]['consumed']:
+        elif not owns_handle(scope, message['child']) or message['child']._id not in scope['children']:
             task['resume'] = ['error', 'invalid-join:' + scope['id']]
         else:
-            child = state['tasks'][message['child']]
-            if child['status'] == 'done':
+            child = state['tasks'][message['child']._id]
+            if child['handle'] is not message['child'] or child['consumed']:
+                task['resume'] = ['error', 'invalid-join:' + scope['id']]
+            elif child['status'] == 'done':
                 task['resume'] = ['value', child['result']]
                 task['pending_join'] = child['id']
             else:
                 task['status'] = 'join'
                 task['joining'] = child['id']
     elif message['kind'] == 'task-cancel':
-        if message['child'] not in scope['children'] or scope['phase'] != 'body':
+        handle = message['child']
+        if not owns_handle(scope, handle) or scope['phase'] != 'body':
+            task['resume'] = ['error', 'invalid-cancel']
+        elif handle._id in scope['children']:
+            child = state['tasks'][handle._id]
+            if child['handle'] is not handle:
+                task['resume'] = ['error', 'invalid-cancel']
+            else:
+                guest_cancel(state, child, message['reason'])
+        elif not handle._done:
             task['resume'] = ['error', 'invalid-cancel']
         else:
-            guest_cancel(state, state['tasks'][message['child']], message['reason'])
+            # Completion identity travels with the application-held handle.
+            # The scope never keeps a completed-child registry or tombstones.
+            pass
     elif message['kind'] in ('put', 'get'):
         task['io'] = message
         task['status'] = 'queue-' + message['kind']
@@ -269,14 +293,23 @@ def advance(state, task):
         state['events'].append(['pause', task['wait']])
 
 
+def owns_handle(scope, handle):
+    """Scope identity is by alias, never by monotonic ID range or equality."""
+    return isinstance(handle, ChildHandle) and handle._owner is scope['identity']
+
+
 def view(state):
     # These aliases/barriers are checked in the live restored graph, before JSON projection.
     for task in state['tasks'].values():
+        if task['handle'] is not None:
+            assert task['handle']._owner is state['scopes'][task['owner']]['identity']
+            assert task['handle']._id == task['id']
+            assert task['handle']._done == (task['status'] == 'done')
         if task['pending_join'] is not None:
             child = state['tasks'][task['pending_join']]
             assert task['resume'][1] is child['result']
             assert not child['consumed']
-        if task['wait'] is not None:
+        if task['wait'] is not None and state['retain_history']:
             assert any(event[0] == 'pause' and event[1] is task['wait'] for event in state['events'])
         if task['result'] is not None:
             assert task['result']['failures'] is task['failures']

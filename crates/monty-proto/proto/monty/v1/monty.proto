@@ -710,6 +710,11 @@ message ResumeFutures {
   repeated FutureResult results = 1;
   // The arena every `return_value` indexes.
   Arena values = 2;
+  // Experimental opt-in single native task cancellation; absent preserves ordinary semantics.
+  // Requires Configure.protocol_version >= 8 for catchable policy7 diagnostics; no downgrade.
+  // Cancellation-capable parents must not downgrade to a worker serving only version 6 or below.
+  // Presence matters: an empty string is a cancellation reason, not absence.
+  optional string native_cancel = 3;
 }
 
 // Requests an opaque serialized snapshot of the current session state

@@ -40,3 +40,17 @@ with tempfile.TemporaryDirectory(prefix='monty-demo-check-') as directory:
     else:
         raise AssertionError('stale reply accepted')
     print('dispose and stale reply PASS')
+
+    act('start')
+    act('complete')
+    before = demo.snapshot.read_bytes()
+    act('restore')
+    assert demo.snapshot.read_bytes() == before
+    assert act('cancel')['state']['pending'][0] == 'audit-release'
+    assert act('complete')['state']['pending'][0] == 'release'
+    act('restore')
+    final = act('complete')
+    assert final['state']['terminal']['kind'] == 'cancelled'
+    assert final['state']['terminal']['runtime']['reason'] == 'Cancelled by host'
+    assert final['state']['events'][-1] == ['caught', 'Cancelled by host']
+    print('deferred cancellation and cleanup restore PASS')

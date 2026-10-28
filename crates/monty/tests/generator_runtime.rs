@@ -2053,3 +2053,1617 @@ None
     ));
     assert_eq!(output.counts["token"], 1, "only the intentional global owner remains");
 }
+
+/// Coordinator census while the heap and globals remain live, including independent restores.
+#[test]
+fn coordinator1_live_heap_and_abandonment() {
+    let source = [
+        include_str!("../../../tools/coroutines/coordinator1/bindings.py"),
+        include_str!("../../../tools/coroutines/coordinator1/kernel.py"),
+        include_str!("../../../tools/coroutines/coordinator1/coordinator.py"),
+        include_str!("../../../tools/coroutines/coordinator1/stress_workload.py"),
+        include_str!("../../../tools/coroutines/coordinator1/ownership.py"),
+        "def adapt(body):\n    return body\nstate = None",
+    ]
+    .join("\n");
+    for (stage, prepare) in [
+        ("ready", "state = new_driver('success', False)\nturn(state, [], 4)"),
+        ("sample", "state = new_driver('success', False)\npump(state, [])"),
+        (
+            "cleanup",
+            "state = new_driver('cancel', False)\npump(state, [])\nfor _ in range(20):\n    settle_stress()\ncancel_stress()\nassert any(t['wait'] is not None and t['wait']['payload'][0] == 'audit' for t in state['tasks'].values())",
+        ),
+    ] {
+        let mut repl = new_repl();
+        repl.feed_run(
+            &source,
+            vec![("host".to_owned(), MontyObject::function("host", None))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+        let baseline = repl.heap_entry_count();
+        let progress = repl
+            .feed_start(&format!("{prepare}\nhost()"), vec![], PrintWriter::Stdout)
+            .unwrap();
+        let bytes = dump("host.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+        let Session::Suspended(restored) = Dump::load(&bytes).unwrap().state else {
+            panic!("suspended")
+        };
+        for (kind, progress) in [("original", progress), ("restored", *restored)] {
+            let mut repl = progress.into_function_call().unwrap().into_repl();
+            if stage == "sample" {
+                let mut counts = Vec::new();
+                for _ in 0..28 {
+                    repl.feed_run("settle_stress()", vec![], PrintWriter::Stdout).unwrap();
+                    counts.push(repl.heap_entry_count());
+                }
+                let low = *counts.iter().min().unwrap();
+                let high = *counts.iter().max().unwrap();
+                eprintln!("coordinator1/{kind}: live entries at cycles 100..1450: {counts:?}");
+                assert!(
+                    high - low <= 8 && high <= baseline + 160,
+                    "coordinator live ownership grew: {low}..{high}"
+                );
+            }
+            repl.feed_run("state = None\npulse = []\npulse = None", vec![], PrintWriter::Stdout)
+                .unwrap();
+            eprintln!(
+                "coordinator1/{stage}/{kind}: baseline={baseline}, abandoned={}",
+                repl.heap_entry_count()
+            );
+            assert_eq!(repl.heap_entry_count(), baseline, "{stage}/{kind}: before teardown");
+        }
+    }
+}
+
+/// Native1 keeps host-dialect generators on existing Scheduler task frames.
+/// Both original and loaded graphs reclaim aliases/cycles before heap teardown.
+#[test]
+fn native1_scheduler_cleanup_ownership() {
+    let definitions = include_str!("../../../tools/coroutines/native1/semantics.py");
+    let mut repl = new_repl();
+    repl.feed_run(
+        definitions,
+        vec![("exchange".into(), MontyObject::function("exchange", None))],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let baseline = repl.heap_entry_count();
+    let mut progress = repl
+        .feed_start("semantic_body()._native1()", vec![], PrintWriter::Stdout)
+        .unwrap();
+    for phase in ["read", "audit", "close"] {
+        let call = progress.into_function_call().unwrap();
+        let observation: serde_json::Value = serde_json::from_str(call.args.arg(0).unwrap().as_str().unwrap()).unwrap();
+        assert_eq!(observation["phase"], phase);
+        progress = call.resume_pending(PrintWriter::Stdout).unwrap();
+        assert!(matches!(progress, ReplProgress::ResolveFutures(_)));
+        let bytes = dump("native1.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+        let Session::Suspended(restored) = Dump::load(&bytes).unwrap().state else {
+            panic!("native pending future")
+        };
+        // No guest cleanup is run on either independent physical abandonment.
+        for (kind, pending) in [("original", progress), ("restored", *restored)] {
+            let mut repl = pending.into_repl();
+            let expected = match phase {
+                "read" => "[]",
+                "audit" => "[['caught', 'task-cancel:FIRST']]",
+                _ => "[['caught', 'task-cancel:FIRST'], ['audit-error', 'AUDIT']]",
+            };
+            repl.feed_run(
+                &format!("assert TRACE == {expected}\nTRACE = []\npulse = []\npulse = None"),
+                vec![],
+                PrintWriter::Stdout,
+            )
+            .unwrap();
+            eprintln!(
+                "native1/{phase}/{kind}: baseline={baseline}, abandoned={}",
+                repl.heap_entry_count()
+            );
+            assert_eq!(
+                repl.heap_entry_count(),
+                baseline,
+                "native frames/aliases/cycle reclaimed before teardown"
+            );
+        }
+        let Session::Suspended(restored) = Dump::load(&bytes).unwrap().state else {
+            panic!("native pending future")
+        };
+        let pending = restored.into_resolve_futures().unwrap();
+        let id = pending.pending_call_ids()[0];
+        let answer = match phase {
+            "read" => ExtFunctionResult::Error(MontyException::new(
+                ExcType::ValueError,
+                Some("task-cancel:FIRST".into()),
+            )),
+            "audit" => ExtFunctionResult::Error(MontyException::new(ExcType::ValueError, Some("AUDIT".into()))),
+            _ => ExtFunctionResult::Return(MontyObject::string("\"closed\"")),
+        };
+        progress = pending.resume(vec![(id, answer)], PrintWriter::Stdout).unwrap();
+    }
+    let (mut repl, value) = progress.into_complete().unwrap();
+    assert_eq!(value.as_ref().as_str(), Some("caught"));
+    repl.feed_run("assert TRACE == [['caught', 'task-cancel:FIRST'], ['audit-error', 'AUDIT'], ['close', 'closed']]\nTRACE = []\npulse = []\npulse = None", vec![], PrintWriter::Stdout).unwrap();
+    assert_eq!(repl.heap_entry_count(), baseline);
+}
+
+/// Opt-in yields must not change ordinary send, delegation or asyncio await.
+#[test]
+fn native1_entry_is_explicit() {
+    checked_run(
+        r#"
+import asyncio
+def ordinary():
+    yield 7
+    return 9
+g = ordinary()
+assert next(g) == 7
+try:
+    g.send(None)
+except StopIteration as done:
+    assert done.value == 9
+async def invalid():
+    await ordinary()
+try:
+    asyncio.run(invalid())
+except TypeError as error:
+    assert str(error) == "'generator' object can't be awaited"
+else:
+    assert False, 'ordinary generator await accepted'
+def bad():
+    try:
+        yield 7
+    except TypeError:
+        return 'bad-yield'
+assert bad()._native1() == 'bad-yield'
+g = ordinary = invalid = bad = None
+None
+"#,
+    );
+}
+
+/// Distinct upstream tasks own native generator chains; reversed host results
+/// wake the right chain without a Python ready queue or trampoline.
+#[test]
+fn native1_composes_with_existing_gather_tasks() {
+    let mut repl = new_repl();
+    repl.feed_run(
+        "from __monty_host__ import host_coroutines\ndef request(label):\n    return (yield exchange(label))\nasync def body(label):\n    return await request(label)",
+        vec![("exchange".into(), MontyObject::function("exchange", None))],
+        PrintWriter::Stdout,
+    ).unwrap();
+    // This feed has ordinary async semantics; the host-mode bodies above keep
+    // their compiled identity. Both share the same intern table and heap.
+    repl.feed_run(
+        "import asyncio\nasync def wrapper(label):\n    return body(label)._native1()",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let baseline = repl.heap_entry_count();
+    let mut progress = repl
+        .feed_start(
+            "await asyncio.gather(wrapper('A'), wrapper('B'))",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let mut ids = Vec::new();
+    while let ReplProgress::FunctionCall(call) = progress {
+        ids.push(call.call_id);
+        progress = call.resume_pending(PrintWriter::Stdout).unwrap();
+    }
+    assert_eq!(ids.len(), 2);
+    let bytes = dump("native1.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+    let Session::Suspended(restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("tasks")
+    };
+    for pending in [progress, *restored] {
+        let mut repl = pending.into_repl();
+        repl.feed_run("pulse = []\npulse = None", vec![], PrintWriter::Stdout)
+            .unwrap();
+        assert_eq!(repl.heap_entry_count(), baseline);
+    }
+    let Session::Suspended(restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("tasks")
+    };
+    let (mut repl, value) = restored
+        .into_resolve_futures()
+        .unwrap()
+        .resume(
+            vec![
+                (ids[1], ExtFunctionResult::Return(MontyObject::string("b"))),
+                (ids[0], ExtFunctionResult::Return(MontyObject::string("a"))),
+            ],
+            PrintWriter::Stdout,
+        )
+        .unwrap()
+        .into_complete()
+        .unwrap();
+    assert_eq!(
+        value,
+        MontyObject::list([MontyObject::string("a"), MontyObject::string("b")])
+    );
+    repl.feed_run("pulse = []\npulse = None", vec![], PrintWriter::Stdout)
+        .unwrap();
+    assert_eq!(repl.heap_entry_count(), baseline);
+}
+
+/// Native cancellation metadata owns no heap references. The cancelled task still
+/// owns its live frames, aliases and cycles until completion or physical disposal.
+#[test]
+fn native2_cancelled_cleanup_live_ownership() {
+    let mut repl = new_repl();
+    repl.feed_run(
+        include_str!("../../../tools/coroutines/native1/cancellation_ownership.py"),
+        vec![("exchange".into(), MontyObject::function("exchange", None))],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let baseline = repl.heap_entry_count();
+    let mut progress = repl
+        .feed_start("cancellation_body()._native1()", vec![], PrintWriter::Stdout)
+        .unwrap();
+    for (phase, trace) in [
+        ("body", "[]"),
+        ("inner", "[['caught', ''], 'inner']"),
+        ("outer", "[['caught', ''], 'inner', 'outer']"),
+    ] {
+        let call = progress.into_function_call().unwrap();
+        let observation: serde_json::Value = serde_json::from_str(call.args.arg(0).unwrap().as_str().unwrap()).unwrap();
+        assert_eq!(observation["phase"], phase);
+        progress = call.resume_pending(PrintWriter::Stdout).unwrap();
+        let bytes = dump("native2.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+        let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
+            panic!("pending")
+        };
+        for (kind, pending) in [("original", progress), ("restored", *copy)] {
+            let mut repl = pending.into_repl();
+            repl.feed_run(
+                &format!("assert TRACE == {trace}\nTRACE = []\npulse = []\npulse = None"),
+                vec![],
+                PrintWriter::Stdout,
+            )
+            .unwrap();
+            eprintln!(
+                "native2/{phase}/{kind}: baseline={baseline}, abandoned={}",
+                repl.heap_entry_count()
+            );
+            assert_eq!(repl.heap_entry_count(), baseline, "live census before teardown");
+        }
+        let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
+            panic!("pending")
+        };
+        let pending = copy.into_resolve_futures().unwrap();
+        let id = pending.pending_call_ids()[0];
+        let results = if phase == "body" {
+            vec![]
+        } else {
+            vec![(id, ExtFunctionResult::Return(MontyObject::string("\"ok\"")))]
+        };
+        progress = pending
+            .resume_native(
+                results,
+                Some(if phase == "body" { "" } else { "REPEAT" }.into()),
+                PrintWriter::Stdout,
+            )
+            .unwrap();
+    }
+    let (mut repl, value) = progress.into_complete().unwrap();
+    assert_eq!(
+        value,
+        MontyObject::dict([
+            (MontyObject::string("status"), MontyObject::string("cancelled")),
+            (MontyObject::string("reason"), MontyObject::string("")),
+            (MontyObject::string("value"), MontyObject::string("caught")),
+            (MontyObject::string("error"), MontyObject::none()),
+        ])
+    );
+    repl.feed_run(
+        "assert TRACE == [['caught', ''], 'inner', 'outer']\nTRACE = []\npulse = []\npulse = None",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    assert_eq!(
+        repl.heap_entry_count(),
+        baseline,
+        "cancelled completion before teardown"
+    );
+}
+
+/// A host-cancel request cannot opt an ordinary asyncio task into native policy.
+#[test]
+fn native2_rejects_default_await_and_preserves_guest_errors() {
+    let repl = new_repl();
+    let progress = repl
+        .feed_start(
+            "try:\n    await exchange()\nexcept ValueError as e:\n    result = str(e)\nresult",
+            vec![("exchange".into(), MontyObject::function("exchange", None))],
+            PrintWriter::Stdout,
+        )
+        .unwrap()
+        .into_function_call()
+        .unwrap()
+        .resume_pending(PrintWriter::Stdout)
+        .unwrap();
+    let bytes = dump("default.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+    let pending = progress.into_resolve_futures().unwrap();
+    let error = pending
+        .resume_native(vec![], Some("host".into()), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(error.error.exc_type(), ExcType::RuntimeError);
+    let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
+        panic!("pending")
+    };
+    let pending = copy.into_resolve_futures().unwrap();
+    let id = pending.pending_call_ids()[0];
+    let result = pending
+        .resume(
+            vec![(
+                id,
+                ExtFunctionResult::Error(MontyException::new(
+                    ExcType::ValueError,
+                    Some("task-cancel:guest".into()),
+                )),
+            )],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let (_, value) = result.into_complete().unwrap();
+    assert_eq!(value, MontyObject::string("task-cancel:guest"));
+}
+
+/// Cancellation at cleanup exit releases aliased pending results and original
+/// error owners through the existing unwind, before the heap itself is dropped.
+#[test]
+fn native4_cleanup_exit_pending_owner_census() {
+    for mode in ["return", "error", "cleanup_error"] {
+        let mut repl = new_repl();
+        repl.feed_run(
+            include_str!("../../../tools/coroutines/native1/cleanup_exit_ownership.py"),
+            vec![("exchange".into(), MontyObject::function("exchange", None))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+        let baseline = repl.heap_entry_count();
+        let mut progress = repl
+            .feed_start(
+                &format!("cleanup_exit_entry('{mode}')._native1()"),
+                vec![],
+                PrintWriter::Stdout,
+            )
+            .unwrap();
+        for (phase, trace) in [("inner", "['inner']"), ("outer", "['inner', 'outer']")] {
+            let call = progress.into_function_call().unwrap();
+            let observation: serde_json::Value =
+                serde_json::from_str(call.args.arg(0).unwrap().as_str().unwrap()).unwrap();
+            assert_eq!(observation["phase"], phase);
+            progress = call.resume_pending(PrintWriter::Stdout).unwrap();
+            let bytes = dump("native4.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+            let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
+                panic!("pending")
+            };
+            for pending in [progress, *copy] {
+                let mut repl = pending.into_repl();
+                repl.feed_run(
+                    &format!("assert TRACE == {trace}\nTRACE = []\npulse = []\npulse = None"),
+                    vec![],
+                    PrintWriter::Stdout,
+                )
+                .unwrap();
+                assert_eq!(
+                    repl.heap_entry_count(),
+                    baseline,
+                    "{mode}/{phase}: disposal before teardown"
+                );
+            }
+            let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
+                panic!("pending")
+            };
+            let pending = copy.into_resolve_futures().unwrap();
+            let id = pending.pending_call_ids()[0];
+            let reply = if mode == "cleanup_error" && phase == "inner" {
+                ExtFunctionResult::Error(MontyException::new(ExcType::TypeError, Some("CLEANUP".into())))
+            } else {
+                ExtFunctionResult::Return(MontyObject::string("null"))
+            };
+            progress = pending
+                .resume_native(
+                    vec![(id, reply)],
+                    Some(if phase == "inner" { "" } else { "REPEAT" }.into()),
+                    PrintWriter::Stdout,
+                )
+                .unwrap();
+        }
+        let (mut repl, value) = progress.into_complete().unwrap();
+        let expected_error = match mode {
+            "error" => Some("TypeError: ORIGINAL"),
+            "cleanup_error" => Some("TypeError: CLEANUP"),
+            _ => None,
+        };
+        // Public export has no interpreter heap edges; inspect before dropping it.
+        let rendered = format!("{value:?}");
+        assert!(rendered.contains("cancelled"), "{rendered}");
+        if let Some(error) = expected_error {
+            assert!(rendered.contains(error), "{rendered}");
+        }
+        drop(value);
+        let trace = if mode == "return" {
+            "['inner', 'outer', ['caught', '']]"
+        } else {
+            "['inner', 'outer']"
+        };
+        repl.feed_run(
+            &format!("assert TRACE == {trace}\nTRACE = []\npulse = []\npulse = None"),
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+        eprintln!(
+            "native4/{mode}: baseline={baseline}, completed={}",
+            repl.heap_entry_count()
+        );
+        assert_eq!(repl.heap_entry_count(), baseline, "{mode}: terminal before teardown");
+    }
+}
+
+/// Bypassed dispatch releases error aliases, cycles and an active handler binding.
+#[test]
+fn native5_dispatch_error_owner_census() {
+    for mode in ["error", "cleanup_error"] {
+        let mut repl = new_repl();
+        repl.feed_run(
+            r"from __monty_host__ import host_coroutines
+import json
+TRACE = []
+def operation(name):
+    return json.loads((yield exchange(json.dumps({'phase': name}))))
+def choose():
+    TRACE.append('FORBIDDEN-match')
+    return TypeError
+async def cleanup_exit_entry(mode):
+    token = []
+    token.append(token)
+    failure = TypeError('ORIGINAL')
+    aliases = [token, token, failure, failure]
+    try:
+        try:
+            raise ValueError('bound')
+        except ValueError as bound:
+            try:
+                raise failure
+            finally:
+                TRACE.append('inner')
+                await operation('inner')
+    except choose() as error:
+        TRACE.append('FORBIDDEN-handler')
+        raise
+    finally:
+        assert aliases[0] is token and aliases[1] is token
+        assert aliases[2] is failure and aliases[3] is failure
+        TRACE.append('outer')
+        await operation('outer')
+",
+            vec![("exchange".into(), MontyObject::function("exchange", None))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+        let baseline = repl.heap_entry_count();
+        let mut progress = repl
+            .feed_start(
+                &format!("cleanup_exit_entry('{mode}')._native1()"),
+                vec![],
+                PrintWriter::Stdout,
+            )
+            .unwrap();
+        for (phase, trace) in [("inner", "['inner']"), ("outer", "['inner', 'outer']")] {
+            let call = progress.into_function_call().unwrap();
+            let observation: serde_json::Value =
+                serde_json::from_str(call.args.arg(0).unwrap().as_str().unwrap()).unwrap();
+            assert_eq!(observation["phase"], phase);
+            progress = call.resume_pending(PrintWriter::Stdout).unwrap();
+            let bytes = dump("native5.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+            let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
+                panic!("pending")
+            };
+            for pending in [progress, *copy] {
+                let mut repl = pending.into_repl();
+                repl.feed_run(
+                    &format!("assert TRACE == {trace}\nTRACE = []\npulse = []\npulse = None"),
+                    vec![],
+                    PrintWriter::Stdout,
+                )
+                .unwrap();
+                assert_eq!(
+                    repl.heap_entry_count(),
+                    baseline,
+                    "{mode}/{phase}: disposal before teardown"
+                );
+            }
+            let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
+                panic!("pending")
+            };
+            let pending = copy.into_resolve_futures().unwrap();
+            let id = pending.pending_call_ids()[0];
+            let reply = if mode == "cleanup_error" && phase == "inner" {
+                ExtFunctionResult::Error(MontyException::new(ExcType::TypeError, Some("CLEANUP".into())))
+            } else {
+                ExtFunctionResult::Return(MontyObject::string("null"))
+            };
+            progress = pending
+                .resume_native(
+                    vec![(id, reply)],
+                    Some(if phase == "inner" { "" } else { "REPEAT" }.into()),
+                    PrintWriter::Stdout,
+                )
+                .unwrap();
+        }
+        let (mut repl, value) = progress.into_complete().unwrap();
+        drop(value);
+        let trace = if mode == "return" {
+            "['inner', 'outer', ['caught', '']]"
+        } else {
+            "['inner', 'outer']"
+        };
+        repl.feed_run(
+            &format!("assert TRACE == {trace}\nTRACE = []\npulse = []\npulse = None"),
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+        eprintln!(
+            "native5/{mode}: baseline={baseline}, completed={}",
+            repl.heap_entry_count()
+        );
+        assert_eq!(repl.heap_entry_count(), baseline, "{mode}: terminal before teardown");
+    }
+}
+
+/// Active matching keeps original identity across independent restore/disposal cuts.
+#[test]
+fn native6_active_dispatch_owner_census() {
+    for (mode, restoring) in [
+        ("explicit", false),
+        ("explicit", true),
+        ("implicit", false),
+        ("implicit", true),
+        ("cleanup_error", false),
+        ("cleanup_error", true),
+    ] {
+        let mut repl = new_repl();
+        repl.feed_run(
+            r"from __monty_host__ import host_coroutines
+import json
+TRACE = []
+def operation(name):
+    return json.loads((yield exchange(json.dumps({'phase': name}))))
+async def choose(mode):
+    try:
+        if mode != 'implicit':
+            return ValueError
+    finally:
+        TRACE.append('inner')
+        await operation('inner')
+async def cleanup_exit_entry(mode):
+    token = []
+    token.append(token)
+    failure = TypeError('ORIGINAL')
+    aliases = [token, token, failure, failure]
+    try:
+        try:
+            raise ValueError('bound')
+        except ValueError as bound:
+            try:
+                raise failure
+            except (await choose(mode)) or ValueError as selected:
+                TRACE.append('FORBIDDEN-handler')
+    finally:
+        try:
+            raise
+        except TypeError as active:
+            if mode != 'cleanup_error':
+                assert active is failure and active is aliases[2]
+            else:
+                assert str(active) == 'CLEANUP'
+        assert aliases[0] is token and aliases[1] is token
+        assert aliases[2] is failure and aliases[3] is failure
+        TRACE.append('outer')
+        await operation('outer')
+",
+            vec![("exchange".into(), MontyObject::function("exchange", None))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+        let baseline = repl.heap_entry_count();
+        let mut progress = repl
+            .feed_start(
+                &format!("cleanup_exit_entry('{mode}')._native1()"),
+                vec![],
+                PrintWriter::Stdout,
+            )
+            .unwrap();
+        for (phase, trace) in [("inner", "['inner']"), ("outer", "['inner', 'outer']")] {
+            let call = progress.into_function_call().unwrap();
+            let observation: serde_json::Value =
+                serde_json::from_str(call.args.arg(0).unwrap().as_str().unwrap()).unwrap();
+            assert_eq!(observation["phase"], phase);
+            progress = call.resume_pending(PrintWriter::Stdout).unwrap();
+            let bytes = dump("native6.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+            let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
+                panic!("pending")
+            };
+            let (disposed, continuation) = if restoring {
+                let Session::Suspended(continuation) = Dump::load(&bytes).unwrap().state else {
+                    panic!("pending")
+                };
+                (vec![progress, *copy], *continuation)
+            } else {
+                (vec![*copy], progress)
+            };
+            for pending in disposed {
+                let mut repl = pending.into_repl();
+                repl.feed_run(
+                    &format!("assert TRACE == {trace}\nTRACE = []\npulse = []\npulse = None"),
+                    vec![],
+                    PrintWriter::Stdout,
+                )
+                .unwrap();
+                assert_eq!(
+                    repl.heap_entry_count(),
+                    baseline,
+                    "{mode}/{phase}: disposal before teardown"
+                );
+            }
+            let pending = continuation.into_resolve_futures().unwrap();
+            let id = pending.pending_call_ids()[0];
+            let reply = if mode == "cleanup_error" && phase == "inner" {
+                ExtFunctionResult::Error(MontyException::new(ExcType::TypeError, Some("CLEANUP".into())))
+            } else {
+                ExtFunctionResult::Return(MontyObject::string("null"))
+            };
+            progress = pending
+                .resume_native(
+                    vec![(id, reply)],
+                    Some(if phase == "inner" { "" } else { "REPEAT" }.into()),
+                    PrintWriter::Stdout,
+                )
+                .unwrap();
+        }
+        let (mut repl, value) = progress.into_complete().unwrap();
+        drop(value);
+        let trace = "['inner', 'outer']";
+        repl.feed_run(
+            &format!("assert TRACE == {trace}\nTRACE = []\npulse = []\npulse = None"),
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+        eprintln!(
+            "native6/{mode}/restoring={restoring}: baseline={baseline}, completed={}",
+            repl.heap_entry_count()
+        );
+        assert_eq!(repl.heap_entry_count(), baseline, "{mode}: terminal before teardown");
+    }
+}
+
+/// Policy7 metadata must not retain cyclic args, pending returns, or caught errors.
+#[test]
+fn native7_catchable_diagnostic_live_census() {
+    for mode in ["return", "unsupported", "partial"] {
+        for restoring in [false, true] {
+            let mut repl = new_repl();
+            repl.feed_run(
+                r"from __monty_host__ import host_coroutines
+TRACE = []
+def operation(name):
+    return (yield exchange(name))
+async def policy7(mode):
+    token = []
+    token.append(token)
+    original = TypeError(token)
+    alias = original
+    try:
+        try:
+            raise original
+        finally:
+            assert original is alias
+            await operation('cleanup')
+            assert original is alias
+    except ValueError as signal:
+        assert str(signal) == ''
+        await operation('recovery')
+        if mode == 'unsupported':
+            return TypeError(token)
+        if mode == 'partial':
+            return ['prefix', token, TypeError(token)]
+        return 'recovered'
+",
+                vec![("exchange".into(), MontyObject::function("exchange", None))],
+                PrintWriter::Stdout,
+            )
+            .unwrap();
+            let baseline = repl.heap_entry_count();
+            let mut progress = repl
+                .feed_start(&format!("policy7('{mode}')._native1()"), vec![], PrintWriter::Stdout)
+                .unwrap();
+            for phase in ["cleanup", "recovery"] {
+                let call = progress.into_function_call().unwrap();
+                assert_eq!(call.args.arg(0).unwrap().as_str(), Some(phase));
+                progress = call.resume_pending(PrintWriter::Stdout).unwrap();
+                let bytes = dump("native7.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+                let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
+                    panic!("suspended")
+                };
+                let (disposed, continuation) = if restoring {
+                    (progress, *copy)
+                } else {
+                    (*copy, progress)
+                };
+                let mut disposed = disposed.into_repl();
+                disposed
+                    .feed_run("pulse = []\npulse = None", vec![], PrintWriter::Stdout)
+                    .unwrap();
+                assert_eq!(
+                    disposed.heap_entry_count(),
+                    baseline,
+                    "{mode}/{phase}: disposal before teardown"
+                );
+                let pending = continuation.into_resolve_futures().unwrap();
+                let id = pending.pending_call_ids()[0];
+                progress = pending
+                    .resume_native(
+                        vec![(id, ExtFunctionResult::Return(MontyObject::none()))],
+                        Some(if phase == "cleanup" { "" } else { "REPEAT" }.into()),
+                        PrintWriter::Stdout,
+                    )
+                    .unwrap();
+            }
+            let (mut repl, value) = progress.into_complete().unwrap();
+            let fields = value.as_ref().pairs().unwrap();
+            let field = |name| fields.iter().find(|(key, _)| key.as_str() == Some(name)).unwrap().1;
+            assert_eq!(field("status").as_str(), Some("cancelled"));
+            assert_eq!(field("reason").as_str(), Some(""));
+            assert_eq!(
+                field("value_export_error").as_str(),
+                if mode == "return" {
+                    None
+                } else {
+                    Some("unsupported-value")
+                }
+            );
+            let diagnostic = field("interrupted_error").pairs().unwrap();
+            assert!(
+                diagnostic
+                    .iter()
+                    .any(|(key, value)| key.as_str() == Some("type") && value.as_str() == Some("TypeError"))
+            );
+            drop(value);
+            repl.feed_run("pulse = []\npulse = None", vec![], PrintWriter::Stdout)
+                .unwrap();
+            eprintln!(
+                "native7/{mode}/{restoring}: baseline={baseline}, completed={}",
+                repl.heap_entry_count()
+            );
+            assert_eq!(repl.heap_entry_count(), baseline, "{mode}: terminal before teardown");
+        }
+    }
+}
+
+/// Genuine old code is ordinary-loadable; activation, not object creation, is refused while pending.
+#[test]
+fn native7_genuine_legacy_activation_and_delivered_recovery() {
+    for expression in [
+        "make_adder(1)",
+        "add5(1)",
+        "next(new_generator)",
+        "dormant_generator.send(cycle)",
+        "delegated_generator.send(cycle)",
+        "mixed_generator.send(cycle)",
+    ] {
+        for delivered in [false, true] {
+            let Session::Suspended(old) = Dump::load(include_bytes!("fixtures/dump_v22.bin")).unwrap().state else {
+                panic!("historical suspension");
+            };
+            let mut repl = old.into_repl();
+            repl.feed_run(
+                r"from __monty_host__ import host_coroutines
+MARKERS = []
+def operation(name):
+    return (yield exchange(name))
+def mixed():
+    yield from generator(cycle)
+mixed_generator = mixed()
+assert next(mixed_generator) is cycle
+",
+                vec![("exchange".into(), MontyObject::function("exchange", None))],
+                PrintWriter::Stdout,
+            )
+            .unwrap();
+            let body = if delivered {
+                format!(
+                    "async def current():\n    try:\n        await operation('body')\n    except ValueError:\n        await operation('recovery')\n        {expression}\n        MARKERS.append('ran')\n    return 'ok'\ncurrent()._native1()"
+                )
+            } else {
+                format!(
+                    "async def current():\n    try:\n        pass\n    finally:\n        await operation('cleanup')\n        {expression}\n        MARKERS.append('ran')\n    return 'ok'\ncurrent()._native1()"
+                )
+            };
+            let body = format!("from __monty_host__ import host_coroutines\n{body}");
+            let progress = repl
+                .feed_start(&body, vec![], PrintWriter::Stdout)
+                .unwrap()
+                .into_function_call()
+                .unwrap()
+                .resume_pending(PrintWriter::Stdout)
+                .unwrap();
+            let bytes = dump("mixed-policy.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+            drop(progress.into_repl());
+            let Session::Suspended(progress) = Dump::load(&bytes).unwrap().state else {
+                panic!("current suspension");
+            };
+            let pending = progress.into_resolve_futures().unwrap();
+            let id = pending.pending_call_ids()[0];
+            let result = pending.resume_native(
+                vec![(id, ExtFunctionResult::Return(MontyObject::none()))],
+                Some("FIRST".into()),
+                PrintWriter::Stdout,
+            );
+            if delivered {
+                let pending = result
+                    .unwrap()
+                    .into_function_call()
+                    .unwrap()
+                    .resume_pending(PrintWriter::Stdout)
+                    .unwrap()
+                    .into_resolve_futures()
+                    .unwrap();
+                let id = pending.pending_call_ids()[0];
+                let complete = pending
+                    .resume_native(
+                        vec![(id, ExtFunctionResult::Return(MontyObject::none()))],
+                        Some("REPEAT".into()),
+                        PrintWriter::Stdout,
+                    )
+                    .unwrap();
+                let (mut repl, outcome) = complete.into_complete().unwrap();
+                assert!(
+                    outcome
+                        .as_ref()
+                        .pairs()
+                        .unwrap()
+                        .iter()
+                        .any(|(k, v)| k.as_str() == Some("status") && v.as_str() == Some("cancelled"))
+                );
+                repl.feed_run("assert MARKERS == ['ran']", vec![], PrintWriter::Stdout)
+                    .unwrap();
+            } else {
+                let mut failure = result.unwrap_err();
+                assert_eq!(failure.error.exc_type(), ExcType::RuntimeError);
+                assert_eq!(
+                    failure.error.message(),
+                    Some("native cancellation requires catchable cancellation policy 7")
+                );
+                // Refusal precedes every old frame/state move: the same operation remains usable ordinarily.
+                failure
+                    .repl
+                    .feed_run(
+                        &format!("assert MARKERS == []\n{expression}\nNone"),
+                        vec![],
+                        PrintWriter::Stdout,
+                    )
+                    .unwrap();
+            }
+        }
+    }
+}
+
+/// Separately authored policy7 counterpart; historical assertions above stay frozen.
+#[test]
+fn native7_policy2_owner_census() {
+    let mut repl = new_repl();
+    repl.feed_run(
+        include_str!("../../../tools/coroutines/native1/cancellation_ownership.py"),
+        vec![("exchange".into(), MontyObject::function("exchange", None))],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let baseline = repl.heap_entry_count();
+    let mut progress = repl
+        .feed_start("cancellation_body()._native1()", vec![], PrintWriter::Stdout)
+        .unwrap();
+    for (phase, trace) in [
+        ("body", "[]"),
+        ("inner", "[['caught', ''], 'inner']"),
+        ("outer", "[['caught', ''], 'inner', 'outer']"),
+    ] {
+        let call = progress.into_function_call().unwrap();
+        let observation: serde_json::Value = serde_json::from_str(call.args.arg(0).unwrap().as_str().unwrap()).unwrap();
+        assert_eq!(observation["phase"], phase);
+        progress = call.resume_pending(PrintWriter::Stdout).unwrap();
+        let bytes = dump("policy7-native2.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+        let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
+            panic!("pending")
+        };
+        for (kind, pending) in [("original", progress), ("restored", *copy)] {
+            let mut repl = pending.into_repl();
+            repl.feed_run(
+                &format!("assert TRACE == {trace}\nTRACE = []\npulse = []\npulse = None"),
+                vec![],
+                PrintWriter::Stdout,
+            )
+            .unwrap();
+            eprintln!(
+                "policy7-native2/{phase}/{kind}: baseline={baseline}, abandoned={}",
+                repl.heap_entry_count()
+            );
+            assert_eq!(repl.heap_entry_count(), baseline, "live census before teardown");
+        }
+        let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
+            panic!("pending")
+        };
+        let pending = copy.into_resolve_futures().unwrap();
+        let id = pending.pending_call_ids()[0];
+        let results = if phase == "body" {
+            vec![]
+        } else {
+            vec![(id, ExtFunctionResult::Return(MontyObject::string("\"ok\"")))]
+        };
+        progress = pending
+            .resume_native(
+                results,
+                Some(if phase == "body" { "" } else { "REPEAT" }.into()),
+                PrintWriter::Stdout,
+            )
+            .unwrap();
+    }
+    let (mut repl, value) = progress.into_complete().unwrap();
+    assert_eq!(
+        value,
+        MontyObject::dict([
+            (MontyObject::string("status"), MontyObject::string("cancelled")),
+            (MontyObject::string("reason"), MontyObject::string("")),
+            (MontyObject::string("value"), MontyObject::string("caught")),
+            (MontyObject::string("error"), MontyObject::none()),
+            (MontyObject::string("interrupted_error"), MontyObject::none()),
+            (MontyObject::string("value_export_error"), MontyObject::none()),
+        ])
+    );
+    repl.feed_run(
+        "assert TRACE == [['caught', ''], 'inner', 'outer']\nTRACE = []\npulse = []\npulse = None",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    assert_eq!(
+        repl.heap_entry_count(),
+        baseline,
+        "cancelled completion before teardown"
+    );
+}
+
+/// Separately authored policy7 counterpart; historical assertions above stay frozen.
+#[test]
+fn native7_policy4_owner_census() {
+    for mode in ["return", "error", "cleanup_error"] {
+        let mut repl = new_repl();
+        repl.feed_run(
+            include_str!("../../../tools/coroutines/native1/cleanup_exit_ownership.py"),
+            vec![("exchange".into(), MontyObject::function("exchange", None))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+        let baseline = repl.heap_entry_count();
+        let mut progress = repl
+            .feed_start(
+                &format!("cleanup_exit_entry('{mode}')._native1()"),
+                vec![],
+                PrintWriter::Stdout,
+            )
+            .unwrap();
+        for (phase, trace) in [("inner", "['inner']"), ("outer", "['inner', 'outer']")] {
+            let call = progress.into_function_call().unwrap();
+            let observation: serde_json::Value =
+                serde_json::from_str(call.args.arg(0).unwrap().as_str().unwrap()).unwrap();
+            assert_eq!(observation["phase"], phase);
+            progress = call.resume_pending(PrintWriter::Stdout).unwrap();
+            let bytes = dump("policy7-native4.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+            let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
+                panic!("pending")
+            };
+            for pending in [progress, *copy] {
+                let mut repl = pending.into_repl();
+                repl.feed_run(
+                    &format!("assert TRACE == {trace}\nTRACE = []\npulse = []\npulse = None"),
+                    vec![],
+                    PrintWriter::Stdout,
+                )
+                .unwrap();
+                assert_eq!(
+                    repl.heap_entry_count(),
+                    baseline,
+                    "{mode}/{phase}: disposal before teardown"
+                );
+            }
+            let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
+                panic!("pending")
+            };
+            let pending = copy.into_resolve_futures().unwrap();
+            let id = pending.pending_call_ids()[0];
+            let reply = if mode == "cleanup_error" && phase == "inner" {
+                ExtFunctionResult::Error(MontyException::new(ExcType::TypeError, Some("CLEANUP".into())))
+            } else {
+                ExtFunctionResult::Return(MontyObject::string("null"))
+            };
+            progress = pending
+                .resume_native(
+                    vec![(id, reply)],
+                    Some(if phase == "inner" { "" } else { "REPEAT" }.into()),
+                    PrintWriter::Stdout,
+                )
+                .unwrap();
+        }
+        let (mut repl, value) = progress.into_complete().unwrap();
+        let fields = value.as_ref().pairs().unwrap();
+        let field = |name| fields.iter().find(|(key, _)| key.as_str() == Some(name)).unwrap().1;
+        assert_eq!(field("status").as_str(), Some("cancelled"));
+        assert_eq!(field("reason").as_str(), Some(""));
+        assert_eq!(field("error").type_name(), "NoneType");
+        if mode != "return" {
+            let diagnostic = field("interrupted_error").pairs().unwrap();
+            let message = diagnostic
+                .iter()
+                .find(|(key, _)| key.as_str() == Some("message"))
+                .unwrap()
+                .1;
+            assert_eq!(
+                message.as_str(),
+                Some(if mode == "error" { "ORIGINAL" } else { "CLEANUP" })
+            );
+        }
+        drop(value);
+        let trace = "['inner', 'outer', ['caught', '']]";
+        repl.feed_run(
+            &format!("assert TRACE == {trace}\nTRACE = []\npulse = []\npulse = None"),
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+        eprintln!(
+            "policy7-native4/{mode}: baseline={baseline}, completed={}",
+            repl.heap_entry_count()
+        );
+        assert_eq!(repl.heap_entry_count(), baseline, "{mode}: terminal before teardown");
+    }
+}
+
+/// Separately authored policy7 counterpart; historical assertions above stay frozen.
+#[test]
+fn native7_policy5_owner_census() {
+    for mode in ["error", "cleanup_error"] {
+        let mut repl = new_repl();
+        repl.feed_run(
+            r"from __monty_host__ import host_coroutines
+import json
+TRACE = []
+def operation(name):
+    return json.loads((yield exchange(json.dumps({'phase': name}))))
+def choose():
+    TRACE.append('FORBIDDEN-match')
+    return TypeError
+async def cleanup_exit_entry(mode):
+    token = []
+    token.append(token)
+    failure = TypeError('ORIGINAL')
+    aliases = [token, token, failure, failure]
+    try:
+        try:
+            raise ValueError('bound')
+        except ValueError as bound:
+            try:
+                raise failure
+            finally:
+                TRACE.append('inner')
+                await operation('inner')
+    except choose() as error:
+        TRACE.append('FORBIDDEN-handler')
+        raise
+    finally:
+        assert aliases[0] is token and aliases[1] is token
+        assert aliases[2] is failure and aliases[3] is failure
+        TRACE.append('outer')
+        await operation('outer')
+",
+            vec![("exchange".into(), MontyObject::function("exchange", None))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+        let baseline = repl.heap_entry_count();
+        let mut progress = repl
+            .feed_start(
+                &format!("cleanup_exit_entry('{mode}')._native1()"),
+                vec![],
+                PrintWriter::Stdout,
+            )
+            .unwrap();
+        for (phase, trace) in [
+            ("inner", "['inner']"),
+            ("outer", "['inner', 'FORBIDDEN-match', 'outer']"),
+        ] {
+            let call = progress.into_function_call().unwrap();
+            let observation: serde_json::Value =
+                serde_json::from_str(call.args.arg(0).unwrap().as_str().unwrap()).unwrap();
+            assert_eq!(observation["phase"], phase);
+            progress = call.resume_pending(PrintWriter::Stdout).unwrap();
+            let bytes = dump("policy7-native5.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+            let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
+                panic!("pending")
+            };
+            for pending in [progress, *copy] {
+                let mut repl = pending.into_repl();
+                repl.feed_run(
+                    &format!("assert TRACE == {trace}\nTRACE = []\npulse = []\npulse = None"),
+                    vec![],
+                    PrintWriter::Stdout,
+                )
+                .unwrap();
+                assert_eq!(
+                    repl.heap_entry_count(),
+                    baseline,
+                    "{mode}/{phase}: disposal before teardown"
+                );
+            }
+            let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
+                panic!("pending")
+            };
+            let pending = copy.into_resolve_futures().unwrap();
+            let id = pending.pending_call_ids()[0];
+            let reply = if mode == "cleanup_error" && phase == "inner" {
+                ExtFunctionResult::Error(MontyException::new(ExcType::TypeError, Some("CLEANUP".into())))
+            } else {
+                ExtFunctionResult::Return(MontyObject::string("null"))
+            };
+            progress = pending
+                .resume_native(
+                    vec![(id, reply)],
+                    Some(if phase == "inner" { "" } else { "REPEAT" }.into()),
+                    PrintWriter::Stdout,
+                )
+                .unwrap();
+        }
+        let (mut repl, value) = progress.into_complete().unwrap();
+        drop(value);
+        let trace = "['inner', 'FORBIDDEN-match', 'outer']";
+        repl.feed_run(
+            &format!("assert TRACE == {trace}\nTRACE = []\npulse = []\npulse = None"),
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+        eprintln!(
+            "policy7-native5/{mode}: baseline={baseline}, completed={}",
+            repl.heap_entry_count()
+        );
+        assert_eq!(repl.heap_entry_count(), baseline, "{mode}: terminal before teardown");
+    }
+}
+
+/// Separately authored policy7 counterpart; historical assertions above stay frozen.
+#[test]
+fn native7_policy6_owner_census() {
+    for (mode, restoring) in [
+        ("explicit", false),
+        ("explicit", true),
+        ("implicit", false),
+        ("implicit", true),
+        ("cleanup_error", false),
+        ("cleanup_error", true),
+    ] {
+        let mut repl = new_repl();
+        repl.feed_run(
+            r"from __monty_host__ import host_coroutines
+import json
+TRACE = []
+def operation(name):
+    return json.loads((yield exchange(json.dumps({'phase': name}))))
+async def choose(mode):
+    try:
+        if mode != 'implicit':
+            return ValueError
+    finally:
+        TRACE.append('inner')
+        await operation('inner')
+async def cleanup_exit_entry(mode):
+    token = []
+    token.append(token)
+    failure = TypeError('ORIGINAL')
+    aliases = [token, token, failure, failure]
+    try:
+        try:
+            raise ValueError('bound')
+        except ValueError as bound:
+            try:
+                raise failure
+            except (await choose(mode)) or ValueError as selected:
+                TRACE.append('FORBIDDEN-handler')
+    finally:
+        try:
+            raise
+        except ValueError as active:
+            assert str(active) == ''
+        assert aliases[0] is token and aliases[1] is token
+        assert aliases[2] is failure and aliases[3] is failure
+        TRACE.append('outer')
+        await operation('outer')
+",
+            vec![("exchange".into(), MontyObject::function("exchange", None))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+        let baseline = repl.heap_entry_count();
+        let mut progress = repl
+            .feed_start(
+                &format!("cleanup_exit_entry('{mode}')._native1()"),
+                vec![],
+                PrintWriter::Stdout,
+            )
+            .unwrap();
+        for (phase, trace) in [("inner", "['inner']"), ("outer", "['inner', 'outer']")] {
+            let call = progress.into_function_call().unwrap();
+            let observation: serde_json::Value =
+                serde_json::from_str(call.args.arg(0).unwrap().as_str().unwrap()).unwrap();
+            assert_eq!(observation["phase"], phase);
+            progress = call.resume_pending(PrintWriter::Stdout).unwrap();
+            let bytes = dump("policy7-native6.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+            let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
+                panic!("pending")
+            };
+            let (disposed, continuation) = if restoring {
+                let Session::Suspended(continuation) = Dump::load(&bytes).unwrap().state else {
+                    panic!("pending")
+                };
+                (vec![progress, *copy], *continuation)
+            } else {
+                (vec![*copy], progress)
+            };
+            for pending in disposed {
+                let mut repl = pending.into_repl();
+                repl.feed_run(
+                    &format!("assert TRACE == {trace}\nTRACE = []\npulse = []\npulse = None"),
+                    vec![],
+                    PrintWriter::Stdout,
+                )
+                .unwrap();
+                assert_eq!(
+                    repl.heap_entry_count(),
+                    baseline,
+                    "{mode}/{phase}: disposal before teardown"
+                );
+            }
+            let pending = continuation.into_resolve_futures().unwrap();
+            let id = pending.pending_call_ids()[0];
+            let reply = if mode == "cleanup_error" && phase == "inner" {
+                ExtFunctionResult::Error(MontyException::new(ExcType::TypeError, Some("CLEANUP".into())))
+            } else {
+                ExtFunctionResult::Return(MontyObject::string("null"))
+            };
+            progress = pending
+                .resume_native(
+                    vec![(id, reply)],
+                    Some(if phase == "inner" { "" } else { "REPEAT" }.into()),
+                    PrintWriter::Stdout,
+                )
+                .unwrap();
+        }
+        let (mut repl, value) = progress.into_complete().unwrap();
+        drop(value);
+        let trace = "['inner', 'outer']";
+        repl.feed_run(
+            &format!("assert TRACE == {trace}\nTRACE = []\npulse = []\npulse = None"),
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+        eprintln!(
+            "policy7-native6/{mode}/restoring={restoring}: baseline={baseline}, completed={}",
+            repl.heap_entry_count()
+        );
+        assert_eq!(repl.heap_entry_count(), baseline, "{mode}: terminal before teardown");
+    }
+}
+
+/// New policy7 lifecycle coverage, using literal expectations frozen before execution.
+#[test]
+fn native7_repair10_uncaught_and_later_census() {
+    for mode in ["uncaught", "later"] {
+        repair10_census(mode);
+    }
+}
+
+#[cfg(feature = "cancellation-test-hooks")]
+#[test]
+fn native7_repair10_fatal_and_depth_census() {
+    for mode in [
+        "depth",
+        "terminal",
+        "delivery-internal",
+        "delivery-uncatchable",
+        "projection-internal",
+        "projection-uncatchable",
+    ] {
+        repair10_census(mode);
+    }
+}
+
+fn repair10_census(mode: &str) {
+    for restoring in [false, true] {
+        let mut repl = new_repl();
+        repl.feed_run(
+            include_str!("../../../tools/coroutines/catchable_cancellation10/ownership.py"),
+            vec![("exchange".into(), MontyObject::function("exchange", None))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+        let baseline = repl.heap_entry_count();
+        let mut progress = Some(
+            repl.feed_start(&format!("repair10('{mode}')._native1()"), vec![], PrintWriter::Stdout)
+                .unwrap(),
+        );
+        let phases: &[&str] = if mode == "uncaught" || mode.starts_with("delivery-") {
+            &["cleanup"]
+        } else {
+            &["cleanup", "recovery"]
+        };
+        let mut failure = None;
+        for phase in phases {
+            let call = progress.take().unwrap().into_function_call().unwrap();
+            assert_eq!(call.args.arg(0).unwrap().as_str(), Some(*phase));
+            let suspended = call.resume_pending(PrintWriter::Stdout).unwrap();
+            let bytes = dump("repair10.py", None, &[], SessionRef::Suspended(&suspended)).unwrap();
+            let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
+                panic!("suspended")
+            };
+            let (disposed, continuation) = if restoring {
+                (suspended, *copy)
+            } else {
+                (*copy, suspended)
+            };
+            let mut disposed = disposed.into_repl();
+            let trace = if *phase == "cleanup" { "[]" } else { "['caught']" };
+            disposed
+                .feed_run(
+                    &format!("assert TRACE == {trace}\nTRACE = []\npulse = []\npulse = None"),
+                    vec![],
+                    PrintWriter::Stdout,
+                )
+                .unwrap();
+            assert_eq!(
+                disposed.heap_entry_count(),
+                baseline,
+                "{mode}/{phase}: disposal before teardown"
+            );
+            let pending = continuation.into_resolve_futures().unwrap();
+            let id = pending.pending_call_ids()[0];
+            #[cfg(feature = "cancellation-test-hooks")]
+            if mode.starts_with("delivery-") || *phase == "recovery" {
+                monty::cancellation_test_hooks::configure(if mode == "later" { "" } else { mode });
+            }
+            match pending.resume_native(
+                vec![(id, ExtFunctionResult::Return(MontyObject::none()))],
+                Some(if *phase == "cleanup" { "FIRST" } else { "REPEAT" }.into()),
+                PrintWriter::Stdout,
+            ) {
+                Ok(next) => progress = Some(next),
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            }
+        }
+        let mut repl = if let Some(failure) = failure {
+            assert!(
+                mode.contains("internal") || mode.contains("uncatchable") || mode == "terminal",
+                "{mode}: {}",
+                failure.error
+            );
+            let message = failure.error.to_string();
+            let marker = if mode.contains("internal") {
+                "REPAIR10_INTERNAL"
+            } else if mode.contains("uncatchable") {
+                "REPAIR10_UNCATCHABLE"
+            } else {
+                "REPAIR10_EXPORT_TERMINAL"
+            };
+            assert!(message.contains(marker), "{message}");
+            assert!(!message.contains("ValueError: FIRST"));
+            failure.repl
+        } else {
+            assert!(
+                matches!(mode, "uncaught" | "later" | "depth"),
+                "fatal must not Complete: {mode}"
+            );
+            let (repl, value) = progress.unwrap().into_complete().unwrap();
+            let fields = value.as_ref().pairs().unwrap();
+            let field = |name| fields.iter().find(|(key, _)| key.as_str() == Some(name)).unwrap().1;
+            assert_eq!(field("status").as_str(), Some("cancelled"));
+            assert_eq!(field("reason").as_str(), Some("FIRST"));
+            assert_eq!(
+                field("value_export_error").as_str(),
+                if mode == "depth" {
+                    Some("export-depth-limit")
+                } else {
+                    None
+                }
+            );
+            if mode != "depth" {
+                assert_eq!(
+                    field("error").as_str().unwrap().lines().last(),
+                    Some(if mode == "uncaught" {
+                        "ValueError: FIRST"
+                    } else {
+                        "TypeError: LATER"
+                    })
+                );
+            }
+            drop(value);
+            repl
+        };
+        #[cfg(feature = "cancellation-test-hooks")]
+        if matches!(mode, "depth" | "terminal") {
+            let stats = monty::cancellation_test_hooks::export_stats();
+            assert!(stats.visits > 1 && stats.peak_pins > 0 && stats.dropped, "{stats:?}");
+            assert_eq!(stats.peak_pins, stats.retired_pins);
+        }
+        #[cfg(feature = "cancellation-test-hooks")]
+        monty::cancellation_test_hooks::configure("");
+        let trace = if mode.starts_with("delivery-") {
+            "[]"
+        } else {
+            "['caught']"
+        };
+        repl.feed_run(
+            &format!("assert TRACE == {trace}\nTRACE = []\npulse = []\npulse = None"),
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+        eprintln!(
+            "repair10/{mode}/{restoring}: baseline={baseline}, completed={}",
+            repl.heap_entry_count()
+        );
+        assert_eq!(repl.heap_entry_count(), baseline, "{mode}: terminal before teardown");
+    }
+}
+
+/// Rebuilt genuine Dump17 frozen cache and coroutine/generator code, never patched metadata.
+#[test]
+fn native7_compatibility11_historical_activation() {
+    let source = include_str!("../../../tools/coroutines/catchable_cancellation11/activation.py");
+    for route in ["frozen", "new", "dormant", "mixed"] {
+        for mode in ["ordinary", "pending", "delivered"] {
+            for restored in [false, true] {
+                let Session::Idle(mut repl) = Dump::load(include_bytes!("fixtures/compatibility11_frozen_v17.bin"))
+                    .unwrap()
+                    .state
+                else {
+                    panic!("historical idle fixture");
+                };
+                repl.feed_run(
+                    source,
+                    vec![("exchange".into(), MontyObject::function("exchange", None))],
+                    PrintWriter::Stdout,
+                )
+                .unwrap();
+                let baseline = repl.heap_entry_count();
+                let progress = repl
+                    .feed_start(
+                        &format!("from __monty_host__ import host_coroutines\ncurrent('{mode}', '{route}')._native1()"),
+                        vec![],
+                        PrintWriter::Stdout,
+                    )
+                    .unwrap()
+                    .into_function_call()
+                    .unwrap()
+                    .resume_pending(PrintWriter::Stdout)
+                    .unwrap();
+                let progress = if restored {
+                    let bytes = dump("compatibility11.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+                    drop(progress.into_repl());
+                    let Session::Suspended(progress) = Dump::load(&bytes).unwrap().state else {
+                        panic!("suspended")
+                    };
+                    *progress
+                } else {
+                    progress
+                };
+                let pending = progress.into_resolve_futures().unwrap();
+                let id = pending.pending_call_ids()[0];
+                let result = pending.resume_native(
+                    vec![(id, ExtFunctionResult::Return(MontyObject::none()))],
+                    (mode != "ordinary").then(|| "FIRST".into()),
+                    PrintWriter::Stdout,
+                );
+                if mode == "pending" {
+                    let mut failure = result.unwrap_err();
+                    assert_eq!(failure.error.exc_type(), ExcType::RuntimeError);
+                    assert_eq!(
+                        failure.error.message(),
+                        Some("native cancellation requires catchable cancellation policy 7")
+                    );
+                    assert_eq!(
+                        failure.repl.heap_entry_count(),
+                        baseline,
+                        "refusal must retire transient owners before teardown"
+                    );
+                    failure
+                        .repl
+                        .feed_run("assert MARKERS == []", vec![], PrintWriter::Stdout)
+                        .unwrap();
+                    // Reuse the SAME objects after refusal. In particular a refused
+                    // new/saved delegate must not become Running/Exhausted or advance.
+                    let check = match route {
+                        "frozen" => {
+                            "assert functools.reduce(fold, [TOKEN, TOKEN]) is TOKEN\nassert MARKERS == ['fold']"
+                        }
+                        "coroutine" => {
+                            "from __monty_host__ import host_coroutines\nassert legacy_coroutine(TOKEN)._native1() == 'legacy-ok'\nassert MARKERS == ['legacy-coroutine']"
+                        }
+                        "new" => "assert next(legacy_new) is TOKEN\nassert MARKERS == ['legacy-generator']",
+                        "dormant" => "assert legacy_dormant.send(TOKEN) is TOKEN\nassert MARKERS == ['legacy-resumed']",
+                        "mixed" => "assert mixed_generator.send(TOKEN) is TOKEN\nassert MARKERS == ['legacy-resumed']",
+                        _ => unreachable!(),
+                    };
+                    failure.repl.feed_run(check, vec![], PrintWriter::Stdout).unwrap();
+                } else {
+                    let mut progress = result.unwrap();
+                    if mode == "delivered" {
+                        let pending = progress
+                            .into_function_call()
+                            .unwrap()
+                            .resume_pending(PrintWriter::Stdout)
+                            .unwrap()
+                            .into_resolve_futures()
+                            .unwrap();
+                        let id = pending.pending_call_ids()[0];
+                        progress = pending
+                            .resume_native(
+                                vec![(id, ExtFunctionResult::Return(MontyObject::none()))],
+                                Some("REPEAT".into()),
+                                PrintWriter::Stdout,
+                            )
+                            .unwrap();
+                    }
+                    let (mut repl, value) = progress.into_complete().unwrap();
+                    if mode == "ordinary" {
+                        assert_eq!(value.as_ref().as_str(), Some("ok"));
+                    } else {
+                        let pairs = value.as_ref().pairs().unwrap();
+                        assert!(
+                            pairs
+                                .iter()
+                                .any(|(k, v)| k.as_str() == Some("reason") && v.as_str() == Some("FIRST"))
+                        );
+                        assert!(
+                            pairs
+                                .iter()
+                                .any(|(k, v)| k.as_str() == Some("status") && v.as_str() == Some("cancelled"))
+                        );
+                    }
+                    let marker = match route {
+                        "frozen" => "fold",
+                        "coroutine" => "legacy-coroutine",
+                        "new" => "legacy-generator",
+                        _ => "legacy-resumed",
+                    };
+                    repl.feed_run(
+                        &format!("assert MARKERS == ['{marker}', 'ran']"),
+                        vec![],
+                        PrintWriter::Stdout,
+                    )
+                    .unwrap();
+                }
+                eprintln!("compatibility11/{route}/{mode}/restored={restored}: passed");
+            }
+        }
+    }
+}

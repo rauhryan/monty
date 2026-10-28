@@ -1,0 +1,1388 @@
+{
+  "policy": "catchable-cancellation7",
+  "cases": [
+    {
+      "id": "body-catch-return",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nasync def body():\n    await op('body')\n    TRACE.append('FORBIDDEN')\n\nasync def entry():\n    try:\n        return await body()\n    except ValueError as error:\n        TRACE.append(['caught', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value': value, 'trace': TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "FIRST",
+          "native_results": []
+        }
+      ],
+      "expected": {
+        "effects": [
+          {
+            "phase": "body",
+            "trace": []
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "FIRST",
+          "value": {
+            "value": "caught",
+            "trace": [
+              [
+                "caught",
+                "FIRST"
+              ]
+            ]
+          },
+          "error": null,
+          "interrupted_error": null,
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "deferred-normal",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nasync def body():\n    try:\n        return 'pending'\n    finally:\n        await op('cleanup')\n    TRACE.append('FORBIDDEN')\n\nasync def entry():\n    try:\n        return await body()\n    except ValueError as error:\n        TRACE.append(['caught', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value': value, 'trace': TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "FIRST",
+          "native_results": [
+            {
+              "reply": "ok"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "effects": [
+          {
+            "phase": "cleanup",
+            "trace": []
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "FIRST",
+          "value": {
+            "value": "caught",
+            "trace": [
+              [
+                "cleanup",
+                "ok"
+              ],
+              [
+                "caught",
+                "FIRST"
+              ]
+            ]
+          },
+          "error": null,
+          "interrupted_error": null,
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "active-selector-False-False",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nasync def choose():\n    try:\n        return ValueError\n    finally:\n        await op('cleanup')\nasync def body():\n    try:\n        raise TypeError('ORIGINAL')\n    except await choose():\n        TRACE.append('FORBIDDEN-handler')\n\nasync def entry():\n    try:\n        return await body()\n    except ValueError as error:\n        TRACE.append(['caught', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value': value, 'trace': TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "FIRST",
+          "native_results": [
+            {
+              "reply": "ok"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "effects": [
+          {
+            "phase": "cleanup",
+            "trace": []
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "FIRST",
+          "value": {
+            "value": "caught",
+            "trace": [
+              [
+                "cleanup",
+                "ok"
+              ],
+              [
+                "caught",
+                "FIRST"
+              ]
+            ]
+          },
+          "error": null,
+          "interrupted_error": {
+            "type": "TypeError",
+            "message": "ORIGINAL",
+            "message_truncated": false,
+            "representation": "metadata-only"
+          },
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "active-selector-False-True",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nasync def choose():\n    try:\n        return TypeError\n    finally:\n        await op('cleanup')\nasync def body():\n    try:\n        raise TypeError('ORIGINAL')\n    except await choose():\n        TRACE.append('FORBIDDEN-handler')\n\nasync def entry():\n    try:\n        return await body()\n    except ValueError as error:\n        TRACE.append(['caught', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value': value, 'trace': TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "FIRST",
+          "native_results": [
+            {
+              "reply": "ok"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "effects": [
+          {
+            "phase": "cleanup",
+            "trace": []
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "FIRST",
+          "value": {
+            "value": "caught",
+            "trace": [
+              [
+                "cleanup",
+                "ok"
+              ],
+              [
+                "caught",
+                "FIRST"
+              ]
+            ]
+          },
+          "error": null,
+          "interrupted_error": {
+            "type": "TypeError",
+            "message": "ORIGINAL",
+            "message_truncated": false,
+            "representation": "metadata-only"
+          },
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "active-selector-True-False",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nasync def choose():\n    try:\n        pass\n    finally:\n        await op('cleanup')\nasync def body():\n    try:\n        raise TypeError('ORIGINAL')\n    except (await choose()) or ValueError:\n        TRACE.append('FORBIDDEN-handler')\n\nasync def entry():\n    try:\n        return await body()\n    except ValueError as error:\n        TRACE.append(['caught', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value': value, 'trace': TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "FIRST",
+          "native_results": [
+            {
+              "reply": "ok"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "effects": [
+          {
+            "phase": "cleanup",
+            "trace": []
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "FIRST",
+          "value": {
+            "value": "caught",
+            "trace": [
+              [
+                "cleanup",
+                "ok"
+              ],
+              [
+                "caught",
+                "FIRST"
+              ]
+            ]
+          },
+          "error": null,
+          "interrupted_error": {
+            "type": "TypeError",
+            "message": "ORIGINAL",
+            "message_truncated": false,
+            "representation": "metadata-only"
+          },
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "active-selector-True-True",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nasync def choose():\n    try:\n        pass\n    finally:\n        await op('cleanup')\nasync def body():\n    try:\n        raise TypeError('ORIGINAL')\n    except (await choose()) or TypeError:\n        TRACE.append('FORBIDDEN-handler')\n\nasync def entry():\n    try:\n        return await body()\n    except ValueError as error:\n        TRACE.append(['caught', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value': value, 'trace': TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "FIRST",
+          "native_results": [
+            {
+              "reply": "ok"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "effects": [
+          {
+            "phase": "cleanup",
+            "trace": []
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "FIRST",
+          "value": {
+            "value": "caught",
+            "trace": [
+              [
+                "cleanup",
+                "ok"
+              ],
+              [
+                "caught",
+                "FIRST"
+              ]
+            ]
+          },
+          "error": null,
+          "interrupted_error": {
+            "type": "TypeError",
+            "message": "ORIGINAL",
+            "message_truncated": false,
+            "representation": "metadata-only"
+          },
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "immediate-selector",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nasync def choose():\n    await op('selector')\n    TRACE.append('FORBIDDEN-selector-tail')\n    return TypeError\nasync def body():\n    try:\n        raise TypeError('ORIGINAL')\n    except await choose():\n        TRACE.append('FORBIDDEN-handler')\n\nasync def entry():\n    try:\n        return await body()\n    except ValueError as error:\n        TRACE.append(['caught', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value': value, 'trace': TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "FIRST",
+          "native_results": [
+            {
+              "reply": "late"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "effects": [
+          {
+            "phase": "selector",
+            "trace": []
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "FIRST",
+          "value": {
+            "value": "caught",
+            "trace": [
+              [
+                "caught",
+                "FIRST"
+              ]
+            ]
+          },
+          "error": null,
+          "interrupted_error": {
+            "type": "TypeError",
+            "message": "ORIGINAL",
+            "message_truncated": false,
+            "representation": "metadata-only"
+          },
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "prospective-selector-after-delivery",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nasync def choose():\n    TRACE.append('selector-for-signal')\n    await op('selector')\n    return ValueError\nasync def body():\n    try:\n        try:\n            raise TypeError('ORIGINAL')\n        finally:\n            await op('cleanup')\n    except await choose():\n        TRACE.append('selected')\n        return 'recovered'\n\nasync def entry():\n    try:\n        return await body()\n    except ValueError as error:\n        TRACE.append(['caught', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value': value, 'trace': TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "FIRST",
+          "native_results": [
+            {
+              "reply": "ok"
+            }
+          ]
+        },
+        {
+          "native_cancel": "REPEAT",
+          "native_results": [
+            {
+              "reply": "selected-ok"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "effects": [
+          {
+            "phase": "cleanup",
+            "trace": []
+          },
+          {
+            "phase": "selector",
+            "trace": [
+              [
+                "cleanup",
+                "ok"
+              ],
+              "selector-for-signal"
+            ]
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "FIRST",
+          "value": {
+            "value": "recovered",
+            "trace": [
+              [
+                "cleanup",
+                "ok"
+              ],
+              "selector-for-signal",
+              [
+                "selector",
+                "selected-ok"
+              ],
+              "selected"
+            ]
+          },
+          "error": null,
+          "interrupted_error": {
+            "type": "TypeError",
+            "message": "ORIGINAL",
+            "message_truncated": false,
+            "representation": "metadata-only"
+          },
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "nested-empty-repeated",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nasync def body():\n    try:\n        try:\n            raise TypeError('ORIGINAL')\n        finally:\n            await op('inner')\n    finally:\n        await op('outer')\n\nasync def entry():\n    try:\n        return await body()\n    except ValueError as error:\n        TRACE.append(['caught', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value': value, 'trace': TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "",
+          "native_results": []
+        },
+        {
+          "native_cancel": "REPEAT",
+          "native_results": [
+            {
+              "reply": "i"
+            }
+          ]
+        },
+        {
+          "native_cancel": "THIRD",
+          "native_results": [
+            {
+              "reply": "o"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "effects": [
+          {
+            "phase": "inner",
+            "trace": []
+          },
+          {
+            "phase": "inner",
+            "trace": []
+          },
+          {
+            "phase": "outer",
+            "trace": [
+              [
+                "inner",
+                "i"
+              ]
+            ]
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "",
+          "value": {
+            "value": "caught",
+            "trace": [
+              [
+                "inner",
+                "i"
+              ],
+              [
+                "outer",
+                "o"
+              ],
+              [
+                "caught",
+                ""
+              ]
+            ]
+          },
+          "error": null,
+          "interrupted_error": {
+            "type": "TypeError",
+            "message": "ORIGINAL",
+            "message_truncated": false,
+            "representation": "metadata-only"
+          },
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "exit-False-False",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nclass Scope:\n    def __enter__(self):\n        return self\n    def __exit__(self, typ, error, tb):\n        TRACE.append(['exit-error', str(error)])\n        op('exit')._native1()\n        return False\nasync def body():\n    with Scope():\n        raise TypeError('ORIGINAL')\n    TRACE.append('FORBIDDEN')\n\nasync def entry():\n    try:\n        return await body()\n    except ValueError as error:\n        TRACE.append(['caught', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value': value, 'trace': TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "FIRST",
+          "native_results": [
+            {
+              "reply": "ok"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "effects": [
+          {
+            "phase": "exit",
+            "trace": [
+              [
+                "exit-error",
+                "ORIGINAL"
+              ]
+            ]
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "FIRST",
+          "value": {
+            "value": "caught",
+            "trace": [
+              [
+                "exit-error",
+                "ORIGINAL"
+              ],
+              [
+                "exit",
+                "ok"
+              ],
+              [
+                "caught",
+                "FIRST"
+              ]
+            ]
+          },
+          "error": null,
+          "interrupted_error": {
+            "type": "TypeError",
+            "message": "ORIGINAL",
+            "message_truncated": false,
+            "representation": "metadata-only"
+          },
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "exit-False-True",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nclass Scope:\n    def __enter__(self):\n        return self\n    def __exit__(self, typ, error, tb):\n        TRACE.append(['exit-error', str(error)])\n        op('exit')._native1()\n        return True\nasync def body():\n    with Scope():\n        raise TypeError('ORIGINAL')\n    TRACE.append('FORBIDDEN')\n\nasync def entry():\n    try:\n        return await body()\n    except ValueError as error:\n        TRACE.append(['caught', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value': value, 'trace': TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "FIRST",
+          "native_results": [
+            {
+              "reply": "ok"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "effects": [
+          {
+            "phase": "exit",
+            "trace": [
+              [
+                "exit-error",
+                "ORIGINAL"
+              ]
+            ]
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "FIRST",
+          "value": {
+            "value": "caught",
+            "trace": [
+              [
+                "exit-error",
+                "ORIGINAL"
+              ],
+              [
+                "exit",
+                "ok"
+              ],
+              [
+                "caught",
+                "FIRST"
+              ]
+            ]
+          },
+          "error": null,
+          "interrupted_error": null,
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "exit-False-raise",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nclass Scope:\n    def __enter__(self):\n        return self\n    def __exit__(self, typ, error, tb):\n        TRACE.append(['exit-error', str(error)])\n        op('exit')._native1()\n        raise TypeError('EXIT')\nasync def body():\n    with Scope():\n        raise TypeError('ORIGINAL')\n    TRACE.append('FORBIDDEN')\n\nasync def entry():\n    try:\n        return await body()\n    except ValueError as error:\n        TRACE.append(['caught', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value': value, 'trace': TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "FIRST",
+          "native_results": [
+            {
+              "reply": "ok"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "effects": [
+          {
+            "phase": "exit",
+            "trace": [
+              [
+                "exit-error",
+                "ORIGINAL"
+              ]
+            ]
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "FIRST",
+          "value": {
+            "value": "caught",
+            "trace": [
+              [
+                "exit-error",
+                "ORIGINAL"
+              ],
+              [
+                "exit",
+                "ok"
+              ],
+              [
+                "caught",
+                "FIRST"
+              ]
+            ]
+          },
+          "error": null,
+          "interrupted_error": {
+            "type": "TypeError",
+            "message": "EXIT",
+            "message_truncated": false,
+            "representation": "metadata-only"
+          },
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "exit-True-False",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nclass Scope:\n    async def __aenter__(self):\n        return self\n    async def __aexit__(self, typ, error, tb):\n        TRACE.append(['exit-error', str(error)])\n        await op('exit')\n        return False\nasync def body():\n    async with Scope():\n        raise TypeError('ORIGINAL')\n    TRACE.append('FORBIDDEN')\n\nasync def entry():\n    try:\n        return await body()\n    except ValueError as error:\n        TRACE.append(['caught', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value': value, 'trace': TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "FIRST",
+          "native_results": [
+            {
+              "reply": "ok"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "effects": [
+          {
+            "phase": "exit",
+            "trace": [
+              [
+                "exit-error",
+                "ORIGINAL"
+              ]
+            ]
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "FIRST",
+          "value": {
+            "value": "caught",
+            "trace": [
+              [
+                "exit-error",
+                "ORIGINAL"
+              ],
+              [
+                "exit",
+                "ok"
+              ],
+              [
+                "caught",
+                "FIRST"
+              ]
+            ]
+          },
+          "error": null,
+          "interrupted_error": {
+            "type": "TypeError",
+            "message": "ORIGINAL",
+            "message_truncated": false,
+            "representation": "metadata-only"
+          },
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "exit-True-True",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nclass Scope:\n    async def __aenter__(self):\n        return self\n    async def __aexit__(self, typ, error, tb):\n        TRACE.append(['exit-error', str(error)])\n        await op('exit')\n        return True\nasync def body():\n    async with Scope():\n        raise TypeError('ORIGINAL')\n    TRACE.append('FORBIDDEN')\n\nasync def entry():\n    try:\n        return await body()\n    except ValueError as error:\n        TRACE.append(['caught', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value': value, 'trace': TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "FIRST",
+          "native_results": [
+            {
+              "reply": "ok"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "effects": [
+          {
+            "phase": "exit",
+            "trace": [
+              [
+                "exit-error",
+                "ORIGINAL"
+              ]
+            ]
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "FIRST",
+          "value": {
+            "value": "caught",
+            "trace": [
+              [
+                "exit-error",
+                "ORIGINAL"
+              ],
+              [
+                "exit",
+                "ok"
+              ],
+              [
+                "caught",
+                "FIRST"
+              ]
+            ]
+          },
+          "error": null,
+          "interrupted_error": null,
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "exit-True-raise",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nclass Scope:\n    async def __aenter__(self):\n        return self\n    async def __aexit__(self, typ, error, tb):\n        TRACE.append(['exit-error', str(error)])\n        await op('exit')\n        raise TypeError('EXIT')\nasync def body():\n    async with Scope():\n        raise TypeError('ORIGINAL')\n    TRACE.append('FORBIDDEN')\n\nasync def entry():\n    try:\n        return await body()\n    except ValueError as error:\n        TRACE.append(['caught', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value': value, 'trace': TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "FIRST",
+          "native_results": [
+            {
+              "reply": "ok"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "effects": [
+          {
+            "phase": "exit",
+            "trace": [
+              [
+                "exit-error",
+                "ORIGINAL"
+              ]
+            ]
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "FIRST",
+          "value": {
+            "value": "caught",
+            "trace": [
+              [
+                "exit-error",
+                "ORIGINAL"
+              ],
+              [
+                "exit",
+                "ok"
+              ],
+              [
+                "caught",
+                "FIRST"
+              ]
+            ]
+          },
+          "error": null,
+          "interrupted_error": {
+            "type": "TypeError",
+            "message": "EXIT",
+            "message_truncated": false,
+            "representation": "metadata-only"
+          },
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "cleanup-error-after-delivery",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nasync def choose():\n    await op('selector')\n    return TypeError\nasync def body():\n    try:\n        try:\n            raise TypeError('ORIGINAL')\n        except await choose():\n            pass\n    finally:\n        await op('outer')\n        raise TypeError('CLEANUP')\n\nasync def entry():\n    try:\n        return await body()\n    except ValueError as error:\n        TRACE.append(['caught', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value': value, 'trace': TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "FIRST",
+          "native_results": []
+        },
+        "ok"
+      ],
+      "expected": {
+        "effects": [
+          {
+            "phase": "selector",
+            "trace": []
+          },
+          {
+            "phase": "outer",
+            "trace": []
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "FIRST",
+          "value": null,
+          "error": "TypeError: CLEANUP",
+          "interrupted_error": {
+            "type": "TypeError",
+            "message": "ORIGINAL",
+            "message_truncated": false,
+            "representation": "metadata-only"
+          },
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "suppression-before-delivery",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nasync def body():\n    try:\n        raise TypeError('ORIGINAL')\n    finally:\n        await op('cleanup')\n        return 'suppressed'\n\nasync def entry():\n    try:\n        return await body()\n    except ValueError as error:\n        TRACE.append(['caught', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value': value, 'trace': TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "FIRST",
+          "native_results": [
+            {
+              "reply": "ok"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "effects": [
+          {
+            "phase": "cleanup",
+            "trace": []
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "FIRST",
+          "value": {
+            "value": "caught",
+            "trace": [
+              [
+                "cleanup",
+                "ok"
+              ],
+              [
+                "caught",
+                "FIRST"
+              ]
+            ]
+          },
+          "error": null,
+          "interrupted_error": null,
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "recovery-repeat-keeps-reply",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nasync def body():\n    try:\n        await op('body')\n    except ValueError as error:\n        TRACE.append(['caught-in-body', str(error)])\n        await op('recovery')\n        try:\n            raise TypeError('LATER')\n        except TypeError:\n            TRACE.append('recovered-later')\n        return 'recovered'\n\nasync def entry():\n    try:\n        return await body()\n    except ValueError as error:\n        TRACE.append(['caught', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value': value, 'trace': TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "",
+          "native_results": []
+        },
+        {
+          "native_cancel": "REPEAT",
+          "native_results": [
+            {
+              "reply": "ok"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "effects": [
+          {
+            "phase": "body",
+            "trace": []
+          },
+          {
+            "phase": "recovery",
+            "trace": [
+              [
+                "caught-in-body",
+                ""
+              ]
+            ]
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "",
+          "value": {
+            "value": "recovered",
+            "trace": [
+              [
+                "caught-in-body",
+                ""
+              ],
+              [
+                "recovery",
+                "ok"
+              ],
+              "recovered-later"
+            ]
+          },
+          "error": null,
+          "interrupted_error": null,
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "uncaught-signal",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nasync def body():\n    await op('body')\n\nbody()._native1()\n",
+      "batches": [
+        {
+          "native_cancel": "FIRST",
+          "native_results": []
+        }
+      ],
+      "expected": {
+        "effects": [
+          {
+            "phase": "body",
+            "trace": []
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "FIRST",
+          "value": null,
+          "error": "ValueError: FIRST",
+          "interrupted_error": null,
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "cleanup-exit4-review-handler-expression-side-effect",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nclass Scope:\n    async def __aenter__(self):\n        return self\n    async def __aexit__(self, typ, error, tb):\n        await op('context-close')\n        return False\ndef choose():\n    TRACE.append('MATCH-SIDE-EFFECT')\n    return TypeError\nasync def body():\n    try:\n        try:\n            raise TypeError('ORIGINAL')\n        finally:\n            await op('cleanup')\n    except choose():\n        TRACE.append('HANDLER')\n\nasync def entry():\n    try:\n        value = await body()\n        TRACE.append('FORBIDDEN-entry-return')\n        return value\n    except ValueError as error:\n        TRACE.append(['delivered', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value':value,'trace':TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "FIRST",
+          "native_results": [
+            {
+              "reply": "ok"
+            }
+          ]
+        }
+      ],
+      "historical_source": "playground/coroutine-implementation/cleanup-exit4-review/probes/native-uninterrupted-handler-expression-side-effect/guest.py",
+      "historical_source_sha256": "4536be0a6961183f520083570d1165ea9aa8ba8c8cb7ef07f4b6ddfa578020ac",
+      "expected": {
+        "effects": [
+          {
+            "phase": "cleanup",
+            "trace": []
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "FIRST",
+          "value": {
+            "value": "caught",
+            "trace": [
+              [
+                "cleanup",
+                "ok"
+              ],
+              "MATCH-SIDE-EFFECT",
+              [
+                "delivered",
+                "FIRST"
+              ]
+            ]
+          },
+          "error": null,
+          "interrupted_error": {
+            "type": "TypeError",
+            "message": "ORIGINAL",
+            "message_truncated": false,
+            "representation": "metadata-only"
+          },
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "cleanup-exit4-review-handler-expression-new-effect",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nclass Scope:\n    async def __aenter__(self):\n        return self\n    async def __aexit__(self, typ, error, tb):\n        await op('context-close')\n        return False\nasync def choose():\n    await op('purchase')\n    return TypeError\nasync def body():\n    try:\n        try:\n            raise TypeError('ORIGINAL')\n        finally:\n            await op('cleanup')\n    except await choose():\n        TRACE.append('HANDLER')\n\nasync def entry():\n    try:\n        value = await body()\n        TRACE.append('FORBIDDEN-entry-return')\n        return value\n    except ValueError as error:\n        TRACE.append(['delivered', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value':value,'trace':TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "FIRST",
+          "native_results": [
+            {
+              "reply": "ok"
+            }
+          ]
+        },
+        "paid"
+      ],
+      "historical_source": "playground/coroutine-implementation/cleanup-exit4-review/probes/native-uninterrupted-handler-expression-new-effect/guest.py",
+      "historical_source_sha256": "589335105717e3336bfef879948364fc5aca27fadb48519610133637d37a9cc5",
+      "expected": {
+        "effects": [
+          {
+            "phase": "cleanup",
+            "trace": []
+          },
+          {
+            "phase": "purchase",
+            "trace": [
+              [
+                "cleanup",
+                "ok"
+              ]
+            ]
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "FIRST",
+          "value": {
+            "value": "caught",
+            "trace": [
+              [
+                "cleanup",
+                "ok"
+              ],
+              [
+                "purchase",
+                "paid"
+              ],
+              [
+                "delivered",
+                "FIRST"
+              ]
+            ]
+          },
+          "error": null,
+          "interrupted_error": {
+            "type": "TypeError",
+            "message": "ORIGINAL",
+            "message_truncated": false,
+            "representation": "metadata-only"
+          },
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "cleanup-exit4-review-handler-expression-outer-cleanup",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nclass Scope:\n    async def __aenter__(self):\n        return self\n    async def __aexit__(self, typ, error, tb):\n        await op('context-close')\n        return False\nasync def choose():\n    await op('purchase')\n    return TypeError\nasync def body():\n    try:\n        try:\n            try:\n                raise TypeError('ORIGINAL')\n            finally:\n                await op('cleanup')\n        except await choose():\n            TRACE.append('HANDLER')\n    finally:\n        await op('outer')\n\nasync def entry():\n    try:\n        value = await body()\n        TRACE.append('FORBIDDEN-entry-return')\n        return value\n    except ValueError as error:\n        TRACE.append(['delivered', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value':value,'trace':TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "",
+          "native_results": [
+            {
+              "reply": "ok"
+            }
+          ]
+        },
+        "paid",
+        "outer-ok"
+      ],
+      "historical_source": "playground/coroutine-implementation/cleanup-exit4-review/probes/native-uninterrupted-handler-expression-outer-cleanup/guest.py",
+      "historical_source_sha256": "c99a808eb6951f816b7f2e9a9aeb14a4bb5005f7a46e7ca06a65ce4cac19f374",
+      "expected": {
+        "effects": [
+          {
+            "phase": "cleanup",
+            "trace": []
+          },
+          {
+            "phase": "purchase",
+            "trace": [
+              [
+                "cleanup",
+                "ok"
+              ]
+            ]
+          },
+          {
+            "phase": "outer",
+            "trace": [
+              [
+                "cleanup",
+                "ok"
+              ],
+              [
+                "purchase",
+                "paid"
+              ]
+            ]
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "",
+          "value": {
+            "value": "caught",
+            "trace": [
+              [
+                "cleanup",
+                "ok"
+              ],
+              [
+                "purchase",
+                "paid"
+              ],
+              [
+                "outer",
+                "outer-ok"
+              ],
+              [
+                "delivered",
+                ""
+              ]
+            ]
+          },
+          "error": null,
+          "interrupted_error": {
+            "type": "TypeError",
+            "message": "ORIGINAL",
+            "message_truncated": false,
+            "representation": "metadata-only"
+          },
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "cleanup-exit5-review-matching-started-before-cancel",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nclass Scope:\n    async def __aenter__(self):\n        return self\n    async def __aexit__(self, typ, error, tb):\n        await op('context-close')\n        return False\nasync def choose():\n    try:\n        return ValueError\n    finally:\n        await op('cleanup')\nasync def body():\n    try:\n        raise TypeError('ORIGINAL')\n    except await choose():\n        TRACE.append('FORBIDDEN-handler')\n\nasync def entry():\n    try:\n        value = await body()\n        TRACE.append('FORBIDDEN-entry-return')\n        return value\n    except ValueError as error:\n        TRACE.append(['delivered', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value':value,'trace':TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "FIRST",
+          "native_results": [
+            {
+              "reply": "ok"
+            }
+          ]
+        }
+      ],
+      "historical_source": "playground/coroutine-implementation/cleanup-exit5-review/probes/native-uninterrupted-matching-started-before-cancel/guest.py",
+      "historical_source_sha256": "e8cee99eef57b9a26638ba4f791feeefd77a6d5565b9aa22999e073aa1c054f2",
+      "expected": {
+        "effects": [
+          {
+            "phase": "cleanup",
+            "trace": []
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "FIRST",
+          "value": {
+            "value": "caught",
+            "trace": [
+              [
+                "cleanup",
+                "ok"
+              ],
+              [
+                "delivered",
+                "FIRST"
+              ]
+            ]
+          },
+          "error": null,
+          "interrupted_error": {
+            "type": "TypeError",
+            "message": "ORIGINAL",
+            "message_truncated": false,
+            "representation": "metadata-only"
+          },
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "cleanup-exit5-review-matching-started-before-cancel-outer",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nclass Scope:\n    async def __aenter__(self):\n        return self\n    async def __aexit__(self, typ, error, tb):\n        await op('context-close')\n        return False\nasync def choose():\n    try:\n        return ValueError\n    finally:\n        await op('cleanup')\nasync def body():\n    try:\n        try:\n            raise TypeError('ORIGINAL')\n        except await choose():\n            TRACE.append('FORBIDDEN-handler')\n    finally:\n        await op('outer')\n\nasync def entry():\n    try:\n        value = await body()\n        TRACE.append('FORBIDDEN-entry-return')\n        return value\n    except ValueError as error:\n        TRACE.append(['delivered', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value':value,'trace':TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "",
+          "native_results": [
+            {
+              "reply": "ok"
+            }
+          ]
+        },
+        {
+          "native_cancel": "REPEAT",
+          "native_results": [
+            {
+              "reply": "done"
+            }
+          ]
+        }
+      ],
+      "historical_source": "playground/coroutine-implementation/cleanup-exit5-review/probes/native-uninterrupted-matching-started-before-cancel-outer/guest.py",
+      "historical_source_sha256": "15930c21aff1cde13b3ffc1646fd4c31d2ea28ee21ac180df4e44d071bcdc120",
+      "expected": {
+        "effects": [
+          {
+            "phase": "cleanup",
+            "trace": []
+          },
+          {
+            "phase": "outer",
+            "trace": [
+              [
+                "cleanup",
+                "ok"
+              ]
+            ]
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "",
+          "value": {
+            "value": "caught",
+            "trace": [
+              [
+                "cleanup",
+                "ok"
+              ],
+              [
+                "outer",
+                "done"
+              ],
+              [
+                "delivered",
+                ""
+              ]
+            ]
+          },
+          "error": null,
+          "interrupted_error": {
+            "type": "TypeError",
+            "message": "ORIGINAL",
+            "message_truncated": false,
+            "representation": "metadata-only"
+          },
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "cleanup-exit6-review-20261028-unprotected-selector",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nclass Scope:\n    async def __aenter__(self):\n        return self\n    async def __aexit__(self, typ, error, tb):\n        await op('context-close')\n        return False\nasync def choose():\n    await op('selector')\n    return TypeError\nasync def body():\n    try:\n        raise TypeError('ORIGINAL')\n    except await choose():\n        TRACE.append('FORBIDDEN-handler')\n\nasync def entry():\n    try:\n        value = await body()\n        TRACE.append('FORBIDDEN-entry-return')\n        return value\n    except ValueError as error:\n        TRACE.append(['delivered', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value':value,'trace':TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "FIRST",
+          "native_results": []
+        }
+      ],
+      "historical_source": "playground/coroutine-implementation/cleanup-exit6-review-20261028/edges-corrected/native-uninterrupted-unprotected-selector/guest.py",
+      "historical_source_sha256": "5b35653a7b1239605a82813f58eb16dab4e4b8222dcc0dfec7d0c7cb02d63f25",
+      "expected": {
+        "effects": [
+          {
+            "phase": "selector",
+            "trace": []
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "FIRST",
+          "value": {
+            "value": "caught",
+            "trace": [
+              [
+                "delivered",
+                "FIRST"
+              ]
+            ]
+          },
+          "error": null,
+          "interrupted_error": {
+            "type": "TypeError",
+            "message": "ORIGINAL",
+            "message_truncated": false,
+            "representation": "metadata-only"
+          },
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "cleanup-exit6-review-20261028-actual-owning-return",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nclass Scope:\n    async def __aenter__(self):\n        return self\n    async def __aexit__(self, typ, error, tb):\n        await op('context-close')\n        return False\nasync def choose():\n    try:\n        return ValueError\n    finally:\n        await op('cleanup')\nasync def body():\n    try:\n        try:\n            raise TypeError('ORIGINAL')\n        except await choose():\n            TRACE.append('FORBIDDEN-handler')\n    finally:\n        await op('outer')\n        return 'suppressed'\n\nasync def entry():\n    try:\n        value = await body()\n        TRACE.append('FORBIDDEN-entry-return')\n        return value\n    except ValueError as error:\n        TRACE.append(['delivered', str(error)])\n        return 'caught'\nvalue = entry()._native1()\njson.dumps({'value':value,'trace':TRACE})\n",
+      "batches": [
+        {
+          "native_cancel": "",
+          "native_results": [
+            {
+              "reply": "ok"
+            }
+          ]
+        },
+        {
+          "native_cancel": "SECOND",
+          "native_results": [
+            {
+              "reply": "done"
+            }
+          ]
+        }
+      ],
+      "historical_source": "playground/coroutine-implementation/cleanup-exit6-review-20261028/edges-corrected/native-uninterrupted-actual-owning-return/guest.py",
+      "historical_source_sha256": "64b09730827be4f1bf745d9a1db67d7e61757fa7890e1ed69c398a8cfd86895b",
+      "expected": {
+        "effects": [
+          {
+            "phase": "cleanup",
+            "trace": []
+          },
+          {
+            "phase": "outer",
+            "trace": [
+              [
+                "cleanup",
+                "ok"
+              ]
+            ]
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "",
+          "value": {
+            "value": "suppressed",
+            "trace": [
+              [
+                "cleanup",
+                "ok"
+              ],
+              [
+                "outer",
+                "done"
+              ],
+              "FORBIDDEN-entry-return"
+            ]
+          },
+          "error": null,
+          "interrupted_error": {
+            "type": "TypeError",
+            "message": "ORIGINAL",
+            "message_truncated": false,
+            "representation": "metadata-only"
+          },
+          "value_export_error": null
+        }
+      }
+    },
+    {
+      "id": "caught-return-unsupported-exception-args",
+      "source": "from __monty_host__ import host_coroutines\nimport json\nTRACE = []\ndef op(name):\n    result = json.loads((yield exchange(json.dumps({'phase': name, 'trace': TRACE}))))\n    TRACE.append([name, result])\n    return result\nasync def body():\n    try:\n        await op('body')\n    except ValueError:\n        return TypeError([1])\nbody()._native1()\n",
+      "batches": [
+        {
+          "native_cancel": "FIRST",
+          "native_results": []
+        }
+      ],
+      "expected": {
+        "effects": [
+          {
+            "phase": "body",
+            "trace": []
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "FIRST",
+          "value": null,
+          "error": null,
+          "interrupted_error": null,
+          "value_export_error": "unsupported-value"
+        }
+      }
+    }
+  ]
+}

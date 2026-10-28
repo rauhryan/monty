@@ -363,6 +363,13 @@ impl VM<'_> {
 
     /// Handles one task's exception, returning to the caller's loop if another task must raise.
     fn handle_exception_step(&mut self, mut error: RunError, raised: Option<Value>) -> ExceptionHandlingResult {
+        #[cfg(feature = "cancellation-test-hooks")]
+        if self.native_cancel_reason().is_some()
+            && let Some(fatal) = crate::cancellation_test_hooks::delivery_error()
+        {
+            error.drop_with(self);
+            error = fatal;
+        }
         // Ensure exception has initial frame info
         error = self.attach_frame_to_error(error);
 
@@ -408,8 +415,37 @@ impl VM<'_> {
             let code = frame.code;
             let ip = u32::try_from(this.instruction_ip).unwrap_or(u32::MAX);
 
-            // Search exception table for a handler covering this IP
-            if let Some(entry) = code.find_exception_handler(ip) {
+            let entry = code.find_exception_handler(ip, false);
+            let pending = this
+                .scheduler
+                .main_task()
+                .and_then(|task| task.native_cancel.as_ref())
+                .is_some_and(|cancel| !cancel.delivered);
+            let protected_caller = this
+                .suspended_frames
+                .iter()
+                .any(|frame| frame.code.native_cleanup_at(frame.ip.saturating_sub(1)));
+            // Replace at the remaining search site, after all nearer required cleanup.
+            // Do not replay a previously completed finally from the original raise site.
+            if pending
+                && !protected_caller
+                && entry.is_none_or(|entry| entry.is_except() && !code.native_cleanup_at(entry.handler() as usize))
+            {
+                let RunError::Exc(exc) = &error else {
+                    unreachable!("catchable error");
+                };
+                let diagnostic = super::scheduler::InterruptedError::capture(&exc.exc);
+                let signal = this.native_delivery(Some(diagnostic));
+                error.drop_with(this);
+                error = this.attach_frame_to_error(signal);
+                let RunError::Exc(exc) = &error else {
+                    unreachable!("catchable signal");
+                };
+                let replacement = this.create_exception_value(exc);
+                mem::replace(exc_value, replacement).drop_with(this);
+                continue;
+            }
+            if let Some(entry) = entry {
                 // Unwind operands to the compiler-recorded region depth,
                 // including any in-flight comprehension values.
                 let handler_offset = entry.handler() as usize;

@@ -56,7 +56,11 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 ///
 /// Before bumping, check there's already been a bump since the last release - multiple bumps
 /// between releases is unnecessary and can lead to confusion.
-pub const DUMP_VERSION: u16 = 17;
+// Version 20 persists cleanup-exit cancellation continuation points.
+// Older readers must not silently ignore prompt delivery at these boundaries.
+// Version 21 distinguishes prospective except dispatch for native cancellation.
+// Version 22 adds active matching ownership; 23 persists policy7 code/latch markers and diagnostics.
+pub const DUMP_VERSION: u16 = 23;
 
 /// The oldest dump version this build loads. `Dump::load` runs `dump_upgrade`
 /// over an older dump, rebuilding what the newer versions changed.

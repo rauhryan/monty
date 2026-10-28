@@ -3,7 +3,19 @@
 
 
 def _effect(contract, arguments):
-    return (yield [contract, arguments])
+    return json.loads(
+        (
+            yield exchange(
+                json.dumps(
+                    {
+                        'pending': [contract, arguments],
+                        'events': _events,
+                        'failures': _failures,
+                    }
+                )
+            )
+        )
+    )
 
 
 async def reserve(sku: str, quantity: int):
@@ -50,9 +62,12 @@ def timebox(duration_ms):
     return Scope(duration_ms)
 
 
-async def cart(events, failures, mode):
-    # Adapter to the retained sequential driver. One task per demo run.
-    global _events, _failures
-    _events = events
-    _failures = failures
-    return await add_to_cart('coffee', 2)
+async def _run_cart():
+    try:
+        value = await add_to_cart('coffee', 2)
+        kind = 'value'
+    except ValueError as error:
+        _events.append(['caught', str(error)])
+        value = str(error)
+        kind = 'error'
+    return json.dumps({'kind': kind, 'value': value, 'events': _events, 'failures': _failures})

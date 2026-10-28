@@ -206,3 +206,21 @@ As with [ordinary context managers](with.md), exit is looked up again at exit, s
 Cancellation and resource/child ownership are host/library policy; the syntax itself injects no cancellation and implements no deadlines or task groups.
 The experimental examples in `tools/coroutines/` include a combined `Timebox` resource/child scope with explicit host-driven spawn, join and exit drain requests.
 They do not provide an importable scheduler package or a production authority journal.
+
+### Experimental native entry and host cancellation
+
+The explicit generator method `_native1()` runs the dialect continuation on the existing native task.
+Direct yields on that route await native awaitables; ordinary `next`, `send`, `throw`, and dialect delegation retain their separate behavior.
+The experimental single-task host cancellation input delivers a catchable `ValueError`, rather than an asyncio `CancelledError`.
+Catching it does not clear the native terminal cancelled outcome, and the first host reason wins even when empty.
+Compiler-marked plain `finally` bodies and async context exit delegation protect their external waits from host cancellation; ordinary operation errors remain catchable and are not masked.
+A first cancellation during cleanup preserves its reply and is delivered when outermost protection ends, before ordinary body work or another request.
+Pending returns yield to the catchable signal after required outer cleanup.
+An escaping original or cleanup error retains precedence without a second catchable cancellation signal.
+While cancellation is pending and undelivered, prospective `except` dispatch outside active cleanup is bypassed before evaluating type expressions, including handlers that would log and rethrow.
+If matching began before cancellation, its unresolved error is retained across selector calls and suspension; remaining unprotected matching work is abandoned when cleanup protection ends.
+A selector return is not suppression of its caller’s error.
+Handlers inside active cleanup retain normal behavior; handlers after cancellation delivery may perform authored recovery.
+Required synchronous and async context exit calls finish their suppression bookkeeping before delivery: a false result retains the error, a true result suppresses it, and a raised exit error replaces it.
+This bookkeeping guarantee does not provide preemption of blocking synchronous I/O or nonterminating exit code.
+This does not implement Python task cancellation, task groups, child cancellation/drain, or aggregate cleanup failures.

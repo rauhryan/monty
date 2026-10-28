@@ -215,6 +215,15 @@ impl<'i> CompileInterns<'i> {
         index
     }
 
+    /// Borrows compiled code for admission before publishing an overlay.
+    pub(crate) fn get_function(&self, id: super::FunctionId) -> &Function {
+        if id.index() < self.base.functions.len() {
+            self.base.get_function(id)
+        } else {
+            &self.pending.as_ref().expect("unpublished function").functions[id.index() - self.base.functions.len()]
+        }
+    }
+
     /// Returns the next function ID, including unpublished functions.
     pub(crate) fn functions_len(&self) -> usize {
         self.base.functions.len() + self.pending.as_ref().map_or(0, |pending| pending.functions.len())

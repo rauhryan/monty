@@ -30,18 +30,14 @@ class Demo:
         self.guest = (ROOT / 'cart.py').read_text()
         self.bindings = (ROOT / 'bindings.py').read_text()
         self.source.write_text(
-            'from __monty_host__ import host_coroutines\n'
+            'from __monty_host__ import host_coroutines\nimport json\n'
+            + '_events = []\n_failures = []\n'
             + self.bindings
             + '\n'
             + self.guest
-            + '\ndef adapt(body):\n    return body\n'
-            + (COROUTINES / 'async10_driver.py').read_text()
-            + "\nimport json\nstate = new_state('normal')\n"
-            + "while state['terminal'] is None:\n"
-            + '    message = json.loads(exchange(json.dumps(observe(state))))\n'
-            + '    apply(state, message)\n'
-            + 'json.dumps(observe(state))\n'
+            + '\n_run_cart()._native1()\n'
         )
+        self.cancel_reason = None
         self.state = None
         self.trace = []
         self.revision = 0
@@ -50,7 +46,7 @@ class Demo:
 
     def invoke(self, *args):
         result = subprocess.run(
-            ['node', str(REPO / 'playground/coroutine-baseline/wasm.mjs'), *map(str, args)],
+            ['node', str(COROUTINES / 'native1/wasm.mjs'), *map(str, args)],
             capture_output=True,
             text=True,
             timeout=30,
@@ -61,27 +57,65 @@ class Demo:
 
     def step(self, message=None):
         output = self.directory / 'next.bin'
-        if message is None:
+        if self.state is None:
             event = self.invoke('start', self.source, output)
         else:
             event = self.invoke('resume', self.snapshot, json.dumps(message), output)
         if 'effect' in event:
             output.replace(self.snapshot)
-            self.state = event['effect']
-            pending = self.state['pending']
-            if pending is not None:
-                name, arguments = pending
-                schema = CONTRACTS.get(name)
-                if schema is None or not isinstance(arguments, dict) or arguments.keys() != schema.keys():
-                    raise ValueError('Unknown contract or invalid arguments')
-                if any(type(arguments[key]) is not typ for key, typ in schema.items()):
-                    raise ValueError('Contract argument type mismatch')
+            effect = event['effect']
+            name, arguments = effect['pending']
+            schema = CONTRACTS.get(name)
+            if schema is None or not isinstance(arguments, dict) or arguments.keys() != schema.keys():
+                raise ValueError('Unknown contract or invalid arguments')
+            if any(type(arguments[key]) is not typ for key, typ in schema.items()):
+                raise ValueError('Contract argument type mismatch')
+            self.state = {
+                **effect,
+                'terminal': None,
+                'status': 'waiting',
+                'phase': 'cleanup' if name in ('release', 'audit-release') else 'body',
+                'cancellation': self.cancel_reason,
+            }
+        elif event.get('waiting') is True:
+            output.replace(self.snapshot)
+            self.state = {**self.state, 'cancellation': self.cancel_reason}
         elif 'complete' in event:
             self.snapshot.unlink(missing_ok=True)
-            self.state = event['complete']
+            terminal = event['complete']
+            cancelled = terminal.get('status') == 'cancelled'
+            payload = (
+                (json.loads(terminal['value']) if terminal.get('value') is not None else {}) if cancelled else terminal
+            )
+            self.state = {
+                'pending': None,
+                'status': 'finished',
+                'phase': 'finished',
+                'events': payload.get('events', self.state.get('events', [])),
+                'failures': payload.get('failures', self.state.get('failures', [])),
+                'cancellation': self.cancel_reason,
+                'terminal': {
+                    'kind': 'cancelled' if cancelled else payload.get('kind', 'error'),
+                    'value': payload.get('value'),
+                    'runtime': terminal,
+                },
+            }
         else:
             raise ValueError(f'Unexpected runtime result: {event}')
-        self.trace.append({'command': message or {'kind': 'start'}, 'state': self.state})
+        self.trace.append(
+            {
+                'command': {
+                    'kind': 'start'
+                    if message is None
+                    else 'cancel'
+                    if isinstance(message, dict) and 'native_cancel' in message
+                    else 'fail'
+                    if isinstance(message, dict) and 'raise' in message
+                    else 'complete'
+                },
+                'state': self.state,
+            }
+        )
         self.trace = self.trace[-100:]
 
     def command(self, action, revision):
@@ -95,8 +129,9 @@ class Demo:
             self.trace = []
             self.disposed = False
             self.activations = 0
+            self.cancel_reason = None
+            self.state = None
             self.step()
-            self.step({'kind': 'advance'})
             # Scope registration and reservation are local demo host replies.
             self.settle(None)
             self.settle('cart-hold-1')
@@ -111,17 +146,15 @@ class Demo:
                     self.snapshot.unlink()
                     self.disposed = True
             elif action == 'cancel':
-                self.step({'kind': 'cancel', 'value': 'Cancelled by host'})
-                if self.state['status'] == 'runnable':
-                    self.step({'kind': 'advance'})
+                self.cancel_reason = 'Cancelled by host'
+                self.step({'native_cancel': self.cancel_reason, 'native_results': []})
             else:
                 self.settle('cleanup failed' if action == 'fail' else 'ok', action == 'fail')
         self.revision += 1
         return self.view()
 
     def settle(self, value, failed=False):
-        self.step({'kind': 'settle', 'outcome': 'error' if failed else 'value', 'value': value})
-        self.step({'kind': 'advance'})
+        self.step({'raise': value} if failed else value)
 
     def view(self):
         data = self.snapshot.read_bytes() if self.snapshot.exists() else b''
@@ -133,7 +166,18 @@ class Demo:
             'source': self.guest,
             'bindings': self.bindings,
             'activations': self.activations,
-            'snapshot': {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest() if data else None},
+            'snapshot': {
+                'bytes': len(data),
+                'sha256': hashlib.sha256(data).hexdigest() if data else None,
+                'format': 'MONTY header + CBOR',
+                'version': int.from_bytes(data[6:8], 'little') if data[:6] == b'MONTY\0' else None,
+                'preview_bytes': min(len(data), 4096),
+                'hex': '\n'.join(
+                    f'{offset:08x}  {data[offset : offset + 16].hex(" "):<47}  '
+                    + ''.join(chr(byte) if 32 <= byte < 127 else '.' for byte in data[offset : offset + 16])
+                    for offset in range(0, min(len(data), 4096), 16)
+                ),
+            },
         }
 
 
@@ -153,6 +197,11 @@ def serve(port):
             def do_GET(self):
                 if self.path == '/api':
                     self.send(200, json.dumps(demo.view()).encode())
+                elif self.path == '/snapshot.bin':
+                    if demo.snapshot.exists():
+                        self.send(200, demo.snapshot.read_bytes(), 'application/octet-stream')
+                    else:
+                        self.send(404, b'{"error":"No suspended snapshot"}')
                 elif self.path == '/':
                     self.send(200, (ROOT / 'index.html').read_bytes(), 'text/html; charset=utf-8')
                 else:
