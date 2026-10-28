@@ -45,7 +45,10 @@ use monty_pool::{
     Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, MountSpec, OnPrint, Persistence, Pool, PoolConfig,
     PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
 };
-use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value};
+use monty_proto::{
+    DEFAULT_MAX_DECODE_BYTES,
+    python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value},
+};
 use monty_types::{
     AssertMessageAnnotations, CallArgs, ExtFunctionResult, MontyException, MontyObject, NameLookupResult, NamedValues,
     OsPolicy, PrintStream, TypeCheckingConfig, TypeCheckingFormat,
@@ -690,6 +693,7 @@ impl PyAsyncMontyWebsocket {
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
         auto_resume = true,
+        max_decode_bytes = None,
     ))]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
@@ -702,20 +706,30 @@ impl PyAsyncMontyWebsocket {
         feed_duration_limit_grace: Option<f64>,
         turn_duration_limit_grace: Option<f64>,
         auto_resume: bool,
+        max_decode_bytes: Option<usize>,
     ) -> PyResult<Self> {
         check_callable(py, connect_headers.as_ref())?;
+        let mut config = parse_websocket_config(
+            url,
+            max_processes,
+            checkout_timeout,
+            request_timeout,
+            GraceArgs {
+                feed: feed_duration_limit_grace,
+                turn: turn_duration_limit_grace,
+            },
+            auto_resume,
+        )?;
+        if let Some(bytes) = max_decode_bytes {
+            if bytes > DEFAULT_MAX_DECODE_BYTES {
+                return Err(PyValueError::new_err(format!(
+                    "max_decode_bytes must be at most {DEFAULT_MAX_DECODE_BYTES} bytes (1 GiB)"
+                )));
+            }
+            config.max_decode_bytes = bytes;
+        }
         Ok(Self {
-            config: parse_websocket_config(
-                url,
-                max_processes,
-                checkout_timeout,
-                request_timeout,
-                GraceArgs {
-                    feed: feed_duration_limit_grace,
-                    turn: turn_duration_limit_grace,
-                },
-                auto_resume,
-            )?,
+            config,
             pool: Arc::new(Mutex::new(None)),
             connect_headers,
         })

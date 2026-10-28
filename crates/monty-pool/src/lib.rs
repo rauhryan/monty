@@ -11,6 +11,7 @@ mod worker;
 
 use std::{borrow::Cow, error, fmt, io, num::NonZero, path::PathBuf, process::ExitStatus, thread, time::Duration};
 
+use monty_proto::DEFAULT_MAX_DECODE_BYTES;
 pub use monty_proto::DEFAULT_PRINT_FLUSH_INTERVAL;
 use monty_types::MontyException;
 
@@ -56,8 +57,9 @@ pub const DEFAULT_DURATION_LIMIT_GRACE: Duration = Duration::from_secs(1);
 /// Configuration for a [`Pool`].
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
-    /// Workers spawned eagerly at pool creation and kept warm. Forced to 0 for
-    /// the [`MontyTransport::Websocket`] transport (connections are made
+    /// Floor on live workers: spawned at pool creation, and replaced in the
+    /// background whenever one is recycled, crashes or is discarded. Forced to
+    /// 0 for the [`MontyTransport::Websocket`] transport (connections are made
     /// per-checkout, not pre-warmed).
     pub min_processes: usize,
     /// Hard cap on live workers; checkouts beyond this wait.
@@ -73,6 +75,10 @@ pub struct PoolConfig {
     /// that hangs in ways the sandbox limits cannot see. Synchronous host
     /// telemetry callbacks prevent the timer from being polled while they run.
     pub request_timeout: Option<Duration>,
+    /// Per-frame decode allocation budget, capped at [`DEFAULT_MAX_DECODE_BYTES`].
+    /// Excludes wire buffers and host-language conversion, and does not change
+    /// the sandbox's memory limit.
+    pub max_decode_bytes: usize,
     /// Grace period for the automatic `ResourceLimits::max_feed_duration`
     /// backstop.
     ///
@@ -92,7 +98,10 @@ pub struct PoolConfig {
     /// that whole limit plus this, the turn clock starting at zero.
     pub turn_duration_limit_grace: Option<Duration>,
     /// Recycle (kill and respawn) a worker after this many checkouts, to
-    /// bound the impact of any slow leak in a long-lived child.
+    /// bound the impact of any slow leak in a long-lived child. With the
+    /// subprocess transport, `Some(1)` gives every session a fresh process — the
+    /// setting for mutually untrusted callers — usually spawned before it asked
+    /// when `min_processes > 0`.
     pub max_checkouts_per_worker: Option<u32>,
     /// Resume a session transparently when a relay that stores sessions answers
     /// a request with `Shutdown`: the checkout redials, reloads the state the
@@ -136,6 +145,7 @@ impl PoolConfig {
             turn_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
             max_checkouts_per_worker: None,
             auto_resume: true,
+            max_decode_bytes: DEFAULT_MAX_DECODE_BYTES,
             #[cfg(feature = "telemetry")]
             metrics: None,
         }

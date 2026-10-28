@@ -611,7 +611,9 @@ class Monty:
                 resolved from the `MONTY_BIN` environment variable, the
                 environment's scripts directory (where the `pydantic-monty-runtime`
                 dependency installs it), or `PATH`.
-            min_processes: Workers spawned eagerly and kept warm.
+            min_processes: Workers spawned eagerly, and a floor on live workers:
+                while the pool is open, background refills restore it after a
+                worker is recycled, crashes or is discarded.
             max_processes: Cap on live workers (defaults to the CPU count);
                 checkouts beyond it wait for a worker to be returned.
             checkout_timeout: Seconds `checkout()` waits for a free worker
@@ -621,6 +623,7 @@ class Monty:
                 with `timed_out=True`. Trusted synchronous span and log callbacks
                 delay enforcement while they run. Backstops sandbox `limits`.
             max_checkouts_per_worker: Recycle a worker after this many sessions.
+                `1` runs every session in a fresh process.
             feed_duration_limit_grace: Seconds the parent waits past a feed's
                 `max_feed_duration_secs` before killing the worker, giving the
                 sandbox time to raise `TimeoutError` itself rather than the
@@ -1033,6 +1036,7 @@ class AsyncMontyWebsocket:
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
         auto_resume: bool = True,
+        max_decode_bytes: int | None = None,
     ) -> Self:
         """
         Configure a remote worker pool; connections are made by `async with` and
@@ -1057,6 +1061,10 @@ class AsyncMontyWebsocket:
                 10.0 is often too low for it — a real `uv pip install` can exceed
                 it. Raise `request_timeout` (or pass `None`) when installing
                 dependencies over the WebSocket transport.
+            max_decode_bytes: Per-frame host allocation budget in bytes. `None`
+                keeps the protocol's 1 GiB ceiling. Values above 1 GiB are rejected
+                at construction. Excludes wire buffers and Python conversion.
+                Exhaustion ends the session with a protocol error without replay.
             connect_headers: Called once per session, as it is entered and before
                 any wait for pool capacity, to produce extra `str` to `str`
                 headers for that connection's WebSocket upgrade request — e.g. a

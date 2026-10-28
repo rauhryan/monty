@@ -1794,11 +1794,14 @@ entry()._native1()
             // Contextual retirement is checked before teardown, with all guest
             // exception owners gone; functions here are interned, not heap roots.
             repl.feed_run("[]", vec![], PrintWriter::Disabled).unwrap();
-            eprintln!(
-                "compatibility11 saved restored={restored}: live={}",
-                repl.heap_entry_count()
-            );
-            assert_eq!(repl.heap_entry_count(), 1); // the registered external function
+            #[cfg(feature = "ref-count-return")]
+            {
+                eprintln!(
+                    "compatibility11 saved restored={restored}: live={}",
+                    repl.heap_entry_count()
+                );
+                assert_eq!(repl.heap_entry_count(), 1); // the registered external function
+            }
         }
     }
 }

@@ -277,6 +277,8 @@ A directory matched before the pattern's last part keeps a trailing `/` there.
 Mounts reply that way unless the matches outnumber the entries they read.
 [`AbstractOS.path_scan()`][pydantic_monty.AbstractOS.path_scan] does this by default from `path_iterdir()` and the
 predicates, returning [`ScanEntry`][pydantic_monty.ScanEntry] tuples.
+When the root is neither an existing path nor a symlink, it calls `path_stat()` to distinguish a missing path
+from an invalid parent directory.
 A handler that declines `Path.scan` makes `glob()` return nothing and `walk()` report a `PermissionError`, since both
 treat a directory they cannot read as CPython does.
 With `os_policy` configured to call the host, the handler also receives clock and sleep calls
@@ -352,6 +354,11 @@ For JavaScript `open` callbacks, return `new MontyFileHandle(path, mode, { posit
 The marker canonicalizes `mode` and exposes `path`, `mode`, `position`, `binary`, `readable` and `writable`.
 Paths are virtual POSIX paths; `position` defaults to zero.
 Returning a handle answers only `open`; reads and writes are separate callbacks, never operations on a live host descriptor.
+
+Text appends through `OSAccess` preserve the file's storage type: `str` stays `str`, and `bytes` stays `bytes`.
+For bytes-backed files, only the appended text is UTF-8 encoded; existing bytes are not decoded.
+For `CallbackFile`, a text append calls the read callback first.
+The write callback then receives the full content (existing plus appended) in the stored type.
 
 [`OSAccess`][pydantic_monty.OSAccess] backed by [`MemoryFile`][pydantic_monty.MemoryFile] objects is fully sandboxed: content lives in host memory, path traversal cannot escape
 to real files, and `os.getenv` sees only the `environ` mapping you passed.

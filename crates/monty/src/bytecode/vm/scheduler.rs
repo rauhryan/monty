@@ -13,7 +13,7 @@ use smallvec::{SmallVec, smallvec};
 use super::{FrameNamespace, exceptions::CaughtException};
 use crate::{
     asyncio::{Awaiter, CallId, TaskId},
-    exception_private::RunResult,
+    exception_private::{RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, Heap, HeapId, HeapReadOutput, HeapReader},
     intern::{FunctionId, StringId},
     value::Value,
@@ -93,7 +93,7 @@ pub(crate) struct InterruptedError {
 }
 
 impl InterruptedError {
-    pub(crate) fn capture(exc: &crate::exception_private::SimpleException) -> Self {
+    pub(crate) fn capture(exc: &SimpleException) -> Self {
         let message = exc.arg().map(String::as_str);
         let message_truncated = message.is_some_and(|s| s.len() > 4096);
         let message = message.map(|s| {

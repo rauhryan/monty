@@ -2973,3 +2973,35 @@ async fn a_typing_error_reply_to_a_skipped_feed_is_a_protocol_violation() {
     assert!(checkout.worker_id().is_none(), "the worker must be discarded");
     join_server(server).await;
 }
+
+/// Budget exhaustion discards the connection without replaying the feed.
+#[tokio::test]
+async fn a_host_decode_limit_rejects_a_result_and_discards_the_connection() {
+    let (listener, mut config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        socket
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout");
+        expect_configure(&mut socket);
+        expect_feed(&mut socket, "42");
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
+        );
+        expect_close(&mut socket);
+    });
+    config.max_decode_bytes = 0;
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let error = checkout
+        .feed("42", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("decode budget");
+    assert!(matches!(error, PoolError::Protocol(_)));
+    assert!(checkout.worker_id().is_none());
+    drop(checkout);
+    drop(pool);
+    join_server(server).await;
+}

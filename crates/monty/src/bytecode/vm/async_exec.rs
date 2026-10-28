@@ -11,6 +11,8 @@ use std::{mem, task::Poll};
 use monty_types::{InvalidInputError, MontyException, ResourceError, ResourceTracker};
 use smallvec::{SmallVec, smallvec};
 
+#[cfg(test)]
+use super::exceptions::CaughtException;
 use super::{
     AwaitResult, CallFrame, FrameExit, Opcode, VM, frame_code, function_namespace, recursion::frame_recursion_depth,
     stack_index,
@@ -20,7 +22,7 @@ use crate::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
         GatherState, PendingChildren, TaskId,
     },
-    bytecode::vm::scheduler::SerializedTaskFrame,
+    bytecode::{Code, vm::scheduler::SerializedTaskFrame},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{
@@ -1132,7 +1134,7 @@ impl<'h> VM<'h> {
     }
 
     /// Pending-only admission must run before frame installation/state transfer.
-    pub(super) fn admit_native_code(&self, code: &crate::bytecode::Code) -> RunResult<()> {
+    pub(super) fn admit_native_code(&self, code: &Code) -> RunResult<()> {
         if self
             .scheduler
             .main_task()
@@ -1559,7 +1561,6 @@ impl VM<'_> {
     /// the unrelated parked VM stack during the real cancellation call. Retire
     /// those temporary owners before normal task activation replaces that stack.
     pub(crate) fn compatibility11_cancel_with_unrelated_parked_stack(&mut self) -> RunResult<()> {
-        use super::exceptions::CaughtException;
         assert!(self.current_frame.is_parked);
         assert!(self.exception_stack.is_empty());
         let task = self.scheduler.main_task().unwrap();

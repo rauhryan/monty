@@ -136,7 +136,8 @@ see [snapshot security](../security.md#deserializing-snapshots).
     The first suspension over the limit ends the feed with an uncatchable `RuntimeError`.
 - **Untrusted children** — every frame from a possibly compromised worker is validated; wire decoding never panics, and
     a protocol violation discards the worker.
-- **Worker recycling** — `max_checkouts_per_worker` bounds the impact of a slow leak.
+- **Worker recycling** — `max_checkouts_per_worker` bounds the impact of a slow leak; with `PoolConfig::subprocess`, `Some(1)` runs every session in a fresh process.
+    While a subprocess pool is open, recycled, crashed and discarded workers are replaced in the background until `min_processes` are live again, so checkouts usually find a warm worker.
 
 Runtime errors inside the sandbox ([`PoolError::Runtime`](../api/rust/monty-pool.md#poolerror)) are not crashes: the worker and its session stay alive and
 usable.
@@ -168,6 +169,13 @@ These are the poolable workers: prewarmed, reused across checkouts, replaced on 
 Those workers are single-use, never prewarmed or returned to the pool, and isolation becomes the remote host's
 responsibility.
 See [the security model](../security.md#remote-workers) before using it.
+
+### Host decode budget
+
+`PoolConfig::max_decode_bytes` can lower the default 1 GiB allocation budget for
+each protocol frame from a subprocess or WebSocket worker. Values above 1 GiB do not
+raise the ceiling. The budget excludes wire buffers and host-language conversion.
+Exhaustion discards the worker without replaying the request.
 
 ## The in-process interpreter
 

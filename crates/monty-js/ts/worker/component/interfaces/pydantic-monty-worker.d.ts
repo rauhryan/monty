@@ -121,6 +121,7 @@ export type ValueNode =
   | ValueNodeRepr
   | ValueNodeCycle
   | ValueNodeModule
+  | ValueNodeDecimal
 export interface ValueNodeEllipsis {
   tag: 'ellipsis'
 }
@@ -245,6 +246,10 @@ export interface ValueNodeCycle {
 export interface ValueNodeModule {
   tag: 'module'
   val: ModuleNode
+}
+export interface ValueNodeDecimal {
+  tag: 'decimal'
+  val: string
 }
 export interface Arena {
   nodes: Array<ValueNode>
