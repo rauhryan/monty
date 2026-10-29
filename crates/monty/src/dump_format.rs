@@ -65,7 +65,10 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 // Older readers must not silently ignore prompt delivery at these boundaries.
 // Version 21 distinguishes prospective except dispatch for native cancellation.
 // Version 22 adds active matching ownership; 23 persists policy7 code/latch markers and diagnostics.
-pub const DUMP_VERSION: u16 = 23;
+// Version 24 adds Rust-owned child outcomes and delivery/drain roots.
+// Version 25 reserves the monotonic ID space for host calls, allowing bounded late-reply recognition.
+// Version 26 separates owned gather lifetimes from result delivery.
+pub const DUMP_VERSION: u16 = 26;
 
 /// The oldest dump version this build loads. `Dump::load` runs `dump_upgrade`
 /// over an older dump, rebuilding what the newer versions changed.

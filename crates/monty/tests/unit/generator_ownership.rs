@@ -123,6 +123,7 @@ fn ownership_export_poison_depth_and_cached_error_cycles() {
             call_id: CallId::new(4),
             state: ExternalFutureState::Failed(error.clone_with_heap(vm.heap)),
             sleep_result: None,
+            child: None,
         };
         let mut ids = vec![];
         typed_future.py_dec_ref_ids(&mut ids);
@@ -183,6 +184,7 @@ fn ownership_export_poison_depth_and_cached_error_cycles() {
         let legacy_external = Value::Ref(vm.heap.allocate(HeapData::ExternalFuture(Box::new(ExternalFuture {
             call_id: CallId::new(12),
             sleep_result: None,
+            child: None,
             state: ExternalFutureState::Failed(ExcType::value_error("legacy")),
         }))));
         let legacy_gather = Value::Ref(vm.heap.allocate(HeapData::GatherFuture(Box::new(GatherFuture {

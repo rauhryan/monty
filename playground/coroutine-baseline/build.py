@@ -111,6 +111,8 @@ def main():
             'generator-runtime-tests',
             'generator-runtime-clippy',
             'ownership-unit-tests',
+            'concurrent-ownership-tests',
+            'concurrent-runtime-tests',
             'dump-compat-tests',
         ],
     )
@@ -365,6 +367,8 @@ def main():
             'clippy::unnecessary_box_returns',
         ],
     }
+    commands['concurrent-runtime-tests'] = commands['generator-runtime-tests'] + ['concurrent_io']
+    commands['concurrent-ownership-tests'] = commands['ownership-unit-tests'][:-1] + ['ownership_concurrent2', '--', '--nocapture']
     commands['repair10-fatal-tests'] = [
         'cargo',
         'test',

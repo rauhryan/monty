@@ -177,3 +177,19 @@ Pending cancellation bypasses prospective exception handlers outside cleanup bef
 Already-entered matching retains its original error across selector suspension; required synchronous context exit consumes its suppression result before cancellation delivery.
 Blocking synchronous I/O and nonterminating cleanup remain outside the delivery guarantee.
 See `tools/coroutines/native1/README.md` for phase boundaries and unsupported child ownership.
+
+
+The experimental `ReplResolveFutures::validate_results` checks a full settlement
+batch by reference before a transport transfers its suspension to `resume_native`.
+An unknown ID or a pending-future outcome is rejected without consuming the
+borrowed checkpoint. New executions ignore duplicate and late replies using a
+monotonic host-call range; first settlement wins, including within a batch.
+Owned-child host cancellation runs before same-batch replies and preserves
+protected cleanup operations. Gather descendants retain separate lifetime links,
+including after first-error delivery; the enclosing scope drains them before
+parent cleanup. These APIs remain experimental.
+
+The concurrent-I/O settlement contract uses the call IDs issued by the runtime
+and acknowledges those same IDs. Caller-assigned `ExtFunctionResult::Future`
+IDs from the lower-level legacy API are outside this proof. IDs are scoped to
+one execution, not a cross-execution deduplication journal.

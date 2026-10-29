@@ -788,7 +788,7 @@ impl ResolveFutures {
     /// * `print` — Writer for print output.
     ///
     /// # Errors
-    /// Returns [`MontyException`] if any `call_id` in `results` is not in the pending set.
+    /// Returns [`MontyException`] for unknown IDs. Known settled/revoked IDs are ignored.
     pub fn resume(
         self,
         results: Vec<(u32, ExtFunctionResult)>,
@@ -802,10 +802,10 @@ impl ResolveFutures {
             ..
         } = self;
 
-        // Validate that all provided call_ids are in the pending set before restoring VM.
+        // Validate the complete batch against live registrations and issued host IDs before mutation.
         let invalid_call_id = results
             .iter()
-            .find(|(call_id, _)| !pending_call_ids.contains(call_id))
+            .find(|(call_id, _)| !vm_state.knows_host_call(*call_id))
             .map(|(call_id, _)| *call_id);
 
         heap.tracker.on_turn_start();

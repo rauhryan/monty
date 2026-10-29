@@ -1,0 +1,10 @@
+{
+  "1": {"calls": ["A", "B"], "settled": ["B", "A"], "joined": [["A", "alpha"], ["B", "beta"]]},
+  "2": {"joined_error": "child-error", "consumed_after_delivery": true, "unconsumed_at_exit": ["other-error"], "sibling_completed": true},
+  "3": {"children_cancelled": ["A", "B"], "caught": ["A", "B"], "reason": "", "status": "cancelled"},
+  "4": {"trace": ["cancel-A", "cancel-B", "drain-A", "drain-B", "parent-cleanup"]},
+  "5": {"cancelled_join": ["cancelled", "guest"], "sibling_result": "beta", "completed_cancel": "no-op"},
+  "6": {"cleanup": ["second", "first"], "replies": ["second-ok", "first-ok"], "errors": ["second-failure"], "reason": "FIRST", "status": "cancelled", "admission": "closed"},
+  "7": {"first_result": "alpha", "duplicate": "ignored", "late": "ignored", "unknown": "explicit-error", "invalid": "explicit-error", "other_task": "beta", "resurrected": false},
+  "8": {"native": true, "wasm": true, "uninterrupted": true, "fresh_restore_every_boundary": true, "independent_disposal": true, "checkpoint_unchanged": true}
+}

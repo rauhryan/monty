@@ -36,12 +36,16 @@ pub(crate) enum AsyncioFunctions {
     Gather,
     Run,
     Sleep,
+    NativeSpawn,
+    NativeScope,
+    NativeCancel,
+    NativeDrain,
 }
 
 /// Creates the `asyncio` module and allocates it on the heap.
 ///
-/// The module contains only the `run`, `gather` and `sleep` functions. Other asyncio
-/// functions are not implemented as they would require additional VM/scheduler features.
+/// Public asyncio support is `run`, `gather` and `sleep`; private native child-scope
+/// primitives are experimental authoring bindings, not additional asyncio parity.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Asyncio, vm.interns);
 
@@ -61,6 +65,14 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         vm,
     );
 
+    for (name, function) in [
+        (StaticStrings::NativeScope, AsyncioFunctions::NativeScope),
+        (StaticStrings::NativeSpawn, AsyncioFunctions::NativeSpawn),
+        (StaticStrings::NativeCancel, AsyncioFunctions::NativeCancel),
+        (StaticStrings::NativeDrain, AsyncioFunctions::NativeDrain),
+    ] {
+        module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Asyncio(function)), vm);
+    }
     vm.heap.allocate(HeapData::Module(Box::new(module)))
 }
 pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues) -> RunResult<CallResult> {
@@ -68,6 +80,25 @@ pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues
         AsyncioFunctions::Gather => gather(vm, args).map(CallResult::Value),
         AsyncioFunctions::Run => run(vm.heap, args),
         AsyncioFunctions::Sleep => sleep(vm, args),
+        AsyncioFunctions::NativeScope => {
+            args.check_zero_args("_scope", vm.heap)?;
+            vm.open_child_scope().map(|()| CallResult::Value(Value::None))
+        }
+        AsyncioFunctions::NativeSpawn => {
+            let value = args.get_one_arg("_spawn", vm.heap)?;
+            defer_drop!(value, vm);
+            vm.spawn_owned_child(value).map(CallResult::Value)
+        }
+        AsyncioFunctions::NativeCancel => {
+            let value = args.get_one_arg("_cancel", vm.heap)?;
+            defer_drop!(value, vm);
+            vm.cancel_owned_child(value, "guest")
+                .map(|()| CallResult::Value(Value::None))
+        }
+        AsyncioFunctions::NativeDrain => {
+            args.check_zero_args("_drain", vm.heap)?;
+            vm.drain_owned_children().map(CallResult::Value)
+        }
     }
 }
 

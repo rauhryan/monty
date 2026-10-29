@@ -418,7 +418,8 @@ impl VM<'_> {
             let entry = code.find_exception_handler(ip, false);
             let pending = this
                 .scheduler
-                .main_task()
+                .current_task()
+                .filter(|task| !task.gather_protected)
                 .and_then(|task| task.native_cancel.as_ref())
                 .is_some_and(|cancel| !cancel.delivered);
             let protected_caller = this

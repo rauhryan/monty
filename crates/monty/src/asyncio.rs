@@ -138,6 +138,9 @@ impl Coroutine {
 /// wake/raise plumbing as multi-waiter gathers.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ExternalFuture {
+    /// Internal child identity, never registered as a host-settleable call.
+    #[serde(default)]
+    pub child: Option<ChildIdentity>,
     /// Host-side identifier. Used by the scheduler's `CallId -> HeapId`
     /// index so host resolutions can find the heap entry.
     pub call_id: CallId,
@@ -146,7 +149,20 @@ pub(crate) struct ExternalFuture {
     /// `asyncio.sleep(delay, result)`: the value to resolve with in place of
     /// the host's, which is only the wake-up signal. Owned; taken on
     /// resolution and released on failure or when the entry is freed.
+    /// Internal child futures instead own their scope token here; they are
+    /// never registered for host settlement, so it lives as long as the handle.
     pub sleep_result: Option<Value>,
+}
+
+/// Plain identity metadata; outcomes remain owned by the future state.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ChildIdentity {
+    pub owner: TaskId,
+    /// Borrowed identity; the future owns this token through `sleep_result`.
+    pub scope: HeapId,
+    pub task: Option<TaskId>,
+    pub consumed: bool,
+    pub cancelled: bool,
 }
 
 /// State machine for [`ExternalFuture`].
@@ -167,6 +183,7 @@ impl ExternalFuture {
     pub fn new_pending(call_id: CallId, sleep_result: Option<Value>) -> Self {
         Self {
             call_id,
+            child: None,
             state: ExternalFutureState::Pending { awaiter: None },
             sleep_result,
         }

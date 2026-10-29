@@ -3667,3 +3667,208 @@ fn native7_compatibility11_historical_activation() {
         }
     }
 }
+
+/// The concurrent-I/O slice uses one host-mode parent and two Rust-owned child
+/// generator chains. Verify live ownership before heap teardown, including the
+/// partially joined cut and repeated lifecycles on the same REPL.
+#[test]
+fn concurrent_io_live_ownership() {
+    let mut repl = new_repl();
+    repl.feed_run(
+        include_str!("../../../tools/coroutines/concurrent_io/wrappers.py"),
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    repl.feed_run(
+        "from __monty_host__ import host_coroutines\nimport json\nCLEAN = []\ndef request(label):\n    return (yield exchange(label))\nasync def operation(label):\n    cycle = []\n    cycle.append(cycle)\n    try:\n        return [label, await request(label)]\n    finally:\n        CLEAN.append(label)\nasync def parent():\n    return await asyncio.gather(child(operation('A')), child(operation('B')))",
+        vec![("exchange".into(), MontyObject::function("exchange", None))],
+        PrintWriter::Stdout,
+    ).unwrap();
+    let baseline = repl.heap_entry_count();
+    for iteration in 0..12 {
+        let mut progress = repl
+            .feed_start("parent()._native1()", vec![], PrintWriter::Stdout)
+            .unwrap();
+        let mut ids = Vec::new();
+        while let ReplProgress::FunctionCall(call) = progress {
+            ids.push(call.call_id);
+            progress = call.resume_pending(PrintWriter::Stdout).unwrap();
+        }
+        assert_eq!(ids.len(), 2);
+        for cut in 0..2 {
+            let bytes = dump("concurrent_io.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+            // Independent restoration and abandonment must release cycles and
+            // gather/result records while leaving the original branch usable.
+            let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
+                panic!("suspended")
+            };
+            let (abandon, active) = if iteration % 2 == 0 {
+                (*copy, progress)
+            } else {
+                (progress, *copy)
+            };
+            progress = active;
+            let mut abandoned = abandon.into_repl();
+            abandoned
+                .feed_run(
+                    if cut == 0 {
+                        "assert CLEAN == []"
+                    } else {
+                        "assert CLEAN == ['B']"
+                    },
+                    vec![],
+                    PrintWriter::Stdout,
+                )
+                .unwrap();
+            abandoned
+                .feed_run("pulse = []\npulse = None", vec![], PrintWriter::Stdout)
+                .unwrap();
+            assert_eq!(abandoned.heap_entry_count(), baseline);
+            let pending = progress.into_resolve_futures().unwrap();
+            assert_eq!(pending.pending_call_ids().len(), 2 - cut);
+            progress = pending
+                .resume(
+                    vec![(
+                        ids[1 - cut],
+                        ExtFunctionResult::Return(MontyObject::string(if cut == 0 { "beta" } else { "alpha" })),
+                    )],
+                    PrintWriter::Stdout,
+                )
+                .unwrap();
+        }
+        let (mut completed, value) = progress.into_complete().unwrap();
+        assert_eq!(
+            value,
+            MontyObject::list([
+                MontyObject::list([MontyObject::string("A"), MontyObject::string("alpha")]),
+                MontyObject::list([MontyObject::string("B"), MontyObject::string("beta")]),
+            ])
+        );
+        completed
+            .feed_run(
+                "assert CLEAN == ['B', 'A']\nCLEAN.clear()\npulse = []\npulse = None",
+                vec![],
+                PrintWriter::Stdout,
+            )
+            .unwrap();
+        assert_eq!(completed.heap_entry_count(), baseline);
+        repl = completed;
+    }
+}
+
+/// Cancellation/drain roots must disappear while the REPL heap is still live.
+#[test]
+fn concurrent_io_child_scope_ownership() {
+    for fixture in [
+        include_str!("../../../tools/coroutines/concurrent_io/children_drain.py"),
+        include_str!("../../../tools/coroutines/concurrent_io/children_errors.py"),
+        include_str!("../../../tools/coroutines/concurrent_io/children_cancel.py"),
+        include_str!("../../../tools/coroutines/concurrent_io/host_cancel.py"),
+        include_str!("../../../tools/coroutines/concurrent_io/deferred_cleanup.py"),
+        include_str!("../../../tools/coroutines/concurrent_io/gather_host.py"),
+        include_str!("../../../tools/coroutines/concurrent_io/gather_first_error.py"),
+    ] {
+        let mut repl = new_repl();
+        repl.feed_run(
+            include_str!("../../../tools/coroutines/concurrent_io/wrappers.py"),
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+        repl.feed_run(
+            include_str!("../../../tools/coroutines/concurrent_io/scope.py"),
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+        let definitions = fixture.replace("parent()._native1()", "").replace(
+            "async def operation(label):",
+            "async def operation(label):\n    cycle = []\n    cycle.append(cycle)",
+        );
+        repl.feed_run(
+            &definitions,
+            vec![("exchange".into(), MontyObject::function("exchange", None))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+        let baseline = repl.heap_entry_count();
+        for _ in 0..12 {
+            let mut progress = repl
+                .feed_start("parent()._native1()", vec![], PrintWriter::Stdout)
+                .unwrap();
+            let mut calls = Vec::new();
+            let mut first_turn = true;
+            loop {
+                while let ReplProgress::FunctionCall(call) = progress {
+                    calls.push((call.call_id, call.args.arg(0).unwrap().as_str().unwrap().to_owned()));
+                    progress = call.resume_pending(PrintWriter::Stdout).unwrap();
+                }
+                if matches!(progress, ReplProgress::Complete { .. }) {
+                    break;
+                }
+                let bytes = dump("children.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+                let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
+                    panic!("suspended")
+                };
+                let mut abandoned = copy.into_repl();
+                abandoned
+                    .feed_run("TRACE = []\npulse = []\npulse = None", vec![], PrintWriter::Stdout)
+                    .unwrap();
+                // A cancellation fixture without TRACE defines it here; account for that empty list.
+                assert_eq!(
+                    abandoned.heap_entry_count(),
+                    baseline + usize::from(!fixture.contains("TRACE = []"))
+                );
+                let pending = progress.into_resolve_futures().unwrap();
+                let ids = pending.pending_call_ids();
+                let selected = calls
+                    .iter()
+                    .find(|(id, label)| {
+                        ids.contains(id) && (label == "exit" || label == "cancel" || label == "continue")
+                    })
+                    .or_else(|| {
+                        calls
+                            .iter()
+                            .find(|(id, label)| ids.contains(id) && label.starts_with("cleanup-"))
+                    })
+                    .or_else(|| calls.iter().find(|(id, _)| ids.contains(id)))
+                    .unwrap()
+                    .0;
+                progress = pending
+                    .resume_native(
+                        if first_turn
+                            && (fixture.contains("scope.defer")
+                                || fixture.contains("['caught', label")
+                                || fixture.contains("async def branch():"))
+                        {
+                            Vec::new()
+                        } else {
+                            vec![(selected, ExtFunctionResult::Return(MontyObject::string("beta")))]
+                        },
+                        (fixture.contains("scope.defer")
+                            || fixture.contains("['caught', label")
+                            || fixture.contains("async def branch():"))
+                        .then(|| "FIRST".to_owned()),
+                        PrintWriter::Stdout,
+                    )
+                    .unwrap();
+                first_turn = false;
+            }
+            let (mut completed, _) = progress.into_complete().unwrap();
+            completed
+                .feed_run(
+                    if fixture.contains("TRACE = []") {
+                        "TRACE.clear()\npulse = []\npulse = None"
+                    } else {
+                        "pulse = []\npulse = None"
+                    },
+                    vec![],
+                    PrintWriter::Stdout,
+                )
+                .unwrap();
+            assert_eq!(completed.heap_entry_count(), baseline);
+            repl = completed;
+        }
+    }
+}

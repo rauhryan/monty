@@ -865,7 +865,12 @@ impl Child {
                 Ok(result) => FuturesReply::Eager(result),
                 Err(message) => return protocol_violation(message),
             },
-            ReplProgress::ResolveFutures(_) => FuturesReply::Batch(results),
+            ReplProgress::ResolveFutures(state) => {
+                if let Err(error) = state.validate_results(&results) {
+                    return protocol_violation(&error.to_string());
+                }
+                FuturesReply::Batch(results)
+            }
             _ => return protocol_violation("ResumeFutures without suspended futures"),
         };
         let SessionState::Suspended(progress) = mem::replace(&mut self.state, SessionState::Configured(None)) else {

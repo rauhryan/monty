@@ -3,7 +3,7 @@
 //! # Task Model
 //!
 //! The current task's context lives in the VM; all other contexts live in their tasks.
-//! Task 0 is the main task. Spawned tasks (1+) deliver results to their gather.
+//! Task 0 is the main task. Spawned tasks deliver to a gather or an owned child handle.
 
 use std::{collections::VecDeque, mem};
 
@@ -57,14 +57,57 @@ pub(crate) struct Task {
     /// Result recipient, owning an inc_ref for a gather. An already-settled gather
     /// discards the result. The main task has no awaiter.
     pub awaiter: Option<Awaiter>,
+    /// Owned child outcome and scope roots. Removed on delivery or drain.
+    #[serde(default)]
+    pub child_result: Option<HeapId>,
+    /// Owned identity of the one injected child cancellation exception.
+    #[serde(default)]
+    pub child_cancel_signal: Option<Value>,
+    /// Owned roots for unfinished children and undelivered ordinary failures.
+    #[serde(default)]
+    pub children: Vec<HeapId>,
+    /// Lifetime edges are independent of gather's first-result routing. The
+    /// scheduler owns these tasks; IDs here do not own heap references.
+    #[serde(default)]
+    pub gather_children: Vec<TaskId>,
+    #[serde(default)]
+    pub lifetime_parent: Option<TaskId>,
+    /// A gather invoked by protected cleanup protects its spawned continuations.
+    #[serde(default)]
+    pub gather_protected: bool,
+    /// Ordinary gather failures which no waiter received, owned until scope drain.
+    #[serde(default)]
+    pub gather_errors: Vec<Value>,
+    /// The queued error came through gather and is not consumed until activation.
+    #[serde(default)]
+    pub pending_gather_error: GatherErrorDelivery,
+    /// Owned opaque identity; handles keep their own clone after scope exit.
+    #[serde(default)]
+    pub scope_token: Option<Value>,
+    #[serde(default)]
+    pub scope_open: bool,
+    /// Owned join root until this task actually resumes.
+    #[serde(default)]
+    pub pending_join: Option<HeapId>,
+    /// Owned drain future while scope exit waits for children.
+    #[serde(default)]
+    pub drain: Option<HeapId>,
     /// Current execution state.
     state: TaskState,
-    /// First host cause, independent of guest exceptions and physical disposal.
+    /// First cancellation cause, independent of guest exceptions and physical disposal.
     #[serde(default)]
     pub native_cancel: Option<NativeCancellation>,
     /// Lexical cleanup owns the suspended wait; persisted, never guessed from names.
     #[serde(default)]
     pub native_protected: bool,
+}
+
+/// A queued gather error remains unconsumed until task activation.
+#[derive(Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum GatherErrorDelivery {
+    #[default]
+    None,
+    Pending,
 }
 
 /// Plain owned metadata: no heap edges or guest-controlled latch.
@@ -119,7 +162,19 @@ impl<C: ContainsHeap> DropWithContext<C> for Task {
             frame.namespace.drop_with(heap);
             frame.generator_activation.drop_with(heap);
         }
+        self.scope_token.take().drop_with(heap);
+        self.child_cancel_signal.take().drop_with(heap);
+        self.gather_errors.drain(..).drop_with(heap);
         self.state.drop_with(heap);
+        for id in self
+            .children
+            .drain(..)
+            .chain(self.child_result.take())
+            .chain(self.pending_join.take())
+            .chain(self.drain.take())
+        {
+            heap.heap_mut().dec_ref(id);
+        }
         if let Some(coro_id) = self.coroutine_id.take() {
             heap.heap_mut().dec_ref(coro_id);
         }
@@ -173,6 +228,18 @@ impl Task {
             coroutine_id,
             awaiter,
             state: TaskState::Ready(Ok(())),
+            child_result: None,
+            child_cancel_signal: None,
+            children: Vec::new(),
+            gather_children: Vec::new(),
+            lifetime_parent: None,
+            gather_protected: false,
+            gather_errors: Vec::new(),
+            pending_gather_error: GatherErrorDelivery::None,
+            scope_token: None,
+            scope_open: false,
+            pending_join: None,
+            drain: None,
             native_cancel: None,
             native_protected: false,
         }
@@ -194,12 +261,20 @@ pub(crate) struct Scheduler {
     next_task_id: u32,
     /// Counter for external call IDs (always incremented, even for sync resolution).
     next_call_id: u32,
+    /// New runs issue only host IDs from this counter. Legacy runs retain strict
+    /// pending-ID validation because their counter also allocated internal handles.
+    #[serde(default)]
+    host_id_floor: Option<u32>,
     /// Host-side index mapping each unresolved external call to its
     /// `HeapData::ExternalFuture` entry. The scheduler holds an inc_ref on
     /// each value until the host resolves or fails the call — that ref keeps
     /// the future entry alive between yield and resume even if no awaiter is
     /// holding a `Value::Ref` to it.
     pending_externals: AHashMap<CallId, HeapId>,
+    /// Direct external gather items borrow the live registration's root. Entries
+    /// disappear on settlement and move to the enclosing owner on task exit.
+    #[serde(default)]
+    pub gather_externals: AHashMap<CallId, TaskId>,
     /// Index mapping a spawned coroutine's `HeapId` to the `TaskId` driving
     /// it. Populated in [`Scheduler::spawn`] and removed in
     /// [`Scheduler::cancel_task`]. Lets `GatherFuture` and other call sites
@@ -221,7 +296,9 @@ impl Scheduler {
             current_task: Some(main_task_id),
             next_task_id: 1,
             next_call_id: 0,
+            host_id_floor: Some(0),
             pending_externals: AHashMap::new(),
+            gather_externals: AHashMap::new(),
             coroutine_to_task: AHashMap::new(),
         }
     }
@@ -237,14 +314,68 @@ impl Scheduler {
         self.ready_queue.is_empty() && self.pending_externals.is_empty()
     }
 
-    /// Cancellation currently supports exactly one live main task.
-    pub fn native_single_task(&self) -> bool {
-        self.tasks.len() == 1
-            && self.pending_externals.len() == 1
-            && self.main_task().is_some_and(|task| match task.state {
-                TaskState::Blocked(id) => self.pending_externals.values().any(|&future| future == id),
-                TaskState::Ready(_) => false,
-            })
+    /// Borrow a task without transferring any of its owned roots.
+    pub fn task(&self, id: TaskId) -> Option<&Task> {
+        self.tasks.get(&id)
+    }
+
+    /// Deterministic breadth-first ownership walk, including a main task parked on a join.
+    pub fn owned_task_tree(&self, heap: &HeapReader<'_>) -> Vec<TaskId> {
+        self.owned_subtree(TaskId::default(), heap)
+    }
+
+    pub fn owned_subtree(&self, root: TaskId, heap: &HeapReader<'_>) -> Vec<TaskId> {
+        let mut ids = vec![root];
+        let mut index = 0;
+        while index < ids.len() {
+            if let Some(task) = self.tasks.get(&ids[index]) {
+                ids.extend(task.gather_children.iter().copied());
+                for child in &task.children {
+                    if let HeapReadOutput::ExternalFuture(future) = heap.read(*child)
+                        && let Some(id) = future.get(heap).child.as_ref().and_then(|child| child.task)
+                    {
+                        ids.push(id);
+                    }
+                }
+            }
+            index += 1;
+        }
+        ids
+    }
+
+    /// Transfer unfinished gather obligations before removing a completed task.
+    /// This does not delay its explicit result or cancel any sibling.
+    pub fn transfer_gather_lifetime(&mut self, id: TaskId) -> Option<TaskId> {
+        let task = self.tasks.get_mut(&id).expect("live task");
+        let parent = task.lifetime_parent?;
+        let children = mem::take(&mut task.gather_children);
+        let errors = mem::take(&mut task.gather_errors);
+        for child in &children {
+            self.get_task_mut(*child).lifetime_parent = Some(parent);
+        }
+        for owner in self.gather_externals.values_mut() {
+            if *owner == id {
+                *owner = parent;
+            }
+        }
+        let owner = self.get_task_mut(parent);
+        owner.gather_children.retain(|child| *child != id);
+        owner.gather_children.extend(children);
+        owner.gather_errors.extend(errors);
+        Some(parent)
+    }
+
+    /// Currently loaded task, for task-local cancellation policy.
+    pub fn current_task(&self) -> Option<&Task> {
+        self.current_task.and_then(|id| self.tasks.get(&id))
+    }
+
+    /// Borrow the awaitable root of a suspended child.
+    pub fn blocked_on(&self, id: TaskId) -> Option<HeapId> {
+        match self.tasks.get(&id)?.state {
+            TaskState::Blocked(id) => Some(id),
+            TaskState::Ready(_) => None,
+        }
     }
 
     /// Returns the main task, whose context is saved here whenever another
@@ -271,6 +402,23 @@ impl Scheduler {
         let id = CallId::new(self.next_call_id);
         self.next_call_id += 1;
         id
+    }
+
+    /// Constant-space history: every issued host ID below the high-water mark is known.
+    pub fn knows_host_call(&self, id: u32) -> bool {
+        self.pending_externals.contains_key(&CallId::new(id))
+            || self
+                .host_id_floor
+                .is_some_and(|floor| id >= floor && id < self.next_call_id)
+            || self
+                .tasks
+                .values()
+                .any(|task| task.native_cancel.as_ref().and_then(|c| c.revoked) == Some(id))
+    }
+
+    /// An absent known registration is settled or revoked; never import its reply again.
+    pub fn has_pending_call(&self, id: u32) -> bool {
+        self.pending_externals.contains_key(&CallId::new(id))
     }
 
     /// Registers a freshly created `ExternalFuture` for `call_id`.
@@ -418,12 +566,24 @@ impl Scheduler {
 
         self.ready_queue.retain(|&id| id != task_id);
 
+        pending.extend(task.gather_children.iter().copied());
+        self.gather_externals.retain(|_, owner| *owner != task_id);
+
         // Blocked on a gather: queue the tasks spawned under it. An
         // external future needs no extra teardown.
         if let TaskState::Blocked(blocked_id) = task.state {
             self.queue_gather_tasks(blocked_id, heap, pending);
         }
 
+        // Low-level abandonment is physical disposal, never guest cleanup.
+        // Owned children cannot outlive a discarded owner and deliver to it later.
+        for child in &task.children {
+            if let HeapReadOutput::ExternalFuture(future) = heap.read(*child)
+                && let Some(id) = future.get(heap).child.as_ref().and_then(|child| child.task)
+            {
+                pending.push(id);
+            }
+        }
         task.drop_with(heap);
     }
 
@@ -478,6 +638,28 @@ impl Scheduler {
     #[cfg(feature = "test-hooks")]
     pub fn task_count(&self) -> usize {
         self.tasks.len()
+    }
+
+    #[cfg(test)]
+    pub fn ownership_gather_counts(&self) -> (usize, usize, usize, usize) {
+        (
+            self.tasks.values().map(|task| task.gather_children.len()).sum(),
+            self.gather_externals.len(),
+            self.tasks.values().map(|task| task.gather_errors.len()).sum(),
+            self.tasks
+                .values()
+                .filter(|task| task.pending_gather_error == GatherErrorDelivery::Pending)
+                .count(),
+        )
+    }
+
+    #[cfg(test)]
+    pub fn ownership_child_counts(&self) -> (usize, usize, usize) {
+        (
+            self.tasks.len(),
+            self.tasks.values().map(|task| task.children.len()).sum(),
+            self.tasks.values().filter(|task| task.child_result.is_some()).count(),
+        )
     }
 
     /// Cleans up all scheduler resources: the pending-future inc_refs and

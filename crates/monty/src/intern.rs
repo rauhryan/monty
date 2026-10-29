@@ -1252,6 +1252,14 @@ pub enum StaticStrings {
     Gammavariate,
     /// `asyncio.gather()` function.
     Gather,
+    #[strum(serialize = "_spawn")]
+    NativeSpawn,
+    #[strum(serialize = "_scope")]
+    NativeScope,
+    #[strum(serialize = "_cancel")]
+    NativeCancel,
+    #[strum(serialize = "_drain")]
+    NativeDrain,
     /// `random.gauss()` function.
     Gauss,
     /// Module name for `import gc`.

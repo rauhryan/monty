@@ -1133,7 +1133,23 @@ impl ReplResolveFutures {
         self.resume_native(results, None, print)
     }
 
-    /// Experimental single-task host cancellation. First cause wins (including empty).
+    /// Check a complete settlement batch while retaining this suspension on failure.
+    /// Transports should call this before transferring ownership to `resume_native`.
+    pub fn validate_results(&self, results: &[(u32, ExtFunctionResult)]) -> Result<(), MontyException> {
+        for (id, result) in results {
+            if !self.vm_state.knows_host_call(*id) {
+                return Err(MontyException::runtime_error(format!("unknown call_id {id}")));
+            }
+            if matches!(result, ExtFunctionResult::Future(_)) {
+                return Err(MontyException::runtime_error(
+                    "a settlement must contain a value or error",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Experimental owned-task host cancellation. First cause wins (including empty).
     /// Cleanup keeps its reply; cancellation is processed before this batch's replies.
     /// Terminal cancellation is returned as a native-owned outcome dictionary.
     pub fn resume_native(
@@ -1142,20 +1158,13 @@ impl ReplResolveFutures {
         cancel: Option<String>,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
+        let validation = self.validate_results(&results);
         let Self {
             mut repl,
             mut executor,
             vm_state,
-            pending_call_ids,
             ..
         } = self;
-
-        let revoked = vm_state.native_revoked_call();
-        let results: Vec<_> = results.into_iter().filter(|(id, _)| Some(*id) != revoked).collect();
-        let invalid_call_id = results
-            .iter()
-            .find(|(call_id, _)| !pending_call_ids.contains(call_id))
-            .map(|(call_id, _)| *call_id);
 
         repl.heap.tracker.on_turn_start();
         match HeapReader::with(
@@ -1170,16 +1179,14 @@ impl ReplResolveFutures {
                     print.reborrow(),
                 );
 
-                if let Some(call_id) = invalid_call_id {
+                if let Err(error) = validation {
                     reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
-                    return Err(MontyException::runtime_error(format!(
-                        "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
-                    )));
+                    return Err(error);
                 }
 
                 let vm_result = match cancel {
                     Some(reason) => vm
-                        .cancel_native(reason)
+                        .cancel_native(&reason)
                         .and_then(|()| vm.resume_with_resolved_futures(results)),
                     None => vm.resume_with_resolved_futures(results),
                 };
@@ -1608,6 +1615,269 @@ fn is_callable(value: &Value, heap: &Heap) -> bool {
 mod compatibility11_tests {
     use super::*;
     use crate::{Dump, Session, SessionRef, dump};
+
+    #[test]
+    fn ownership_concurrent2_bounded_records() {
+        let mut repl = MontyRepl::new("records.py", ResourceTracker::default(), CompileOptions::default());
+        repl.feed_run(
+            include_str!("../../../tools/coroutines/concurrent_io/wrappers.py"),
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+        repl.feed_run(
+            include_str!("../../../tools/coroutines/concurrent_io/scope.py"),
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+        let source = "from __monty_host__ import host_coroutines\ndef request(label):\n    return (yield exchange(label))\nasync def operation():\n    cycle = []\n    cycle.append(cycle)\n    return await request('child')\nasync def parent():\n    for index in range(24):\n        async with Scope():\n            handle = asyncio._spawn(child(operation()))\n            await handle\n            await request('pulse')\nparent()._native1()";
+        let mut progress = repl
+            .feed_start(
+                source,
+                vec![("exchange".into(), MontyObject::function("exchange", None))],
+                PrintWriter::Disabled,
+            )
+            .unwrap();
+        for turn in 0..48 {
+            let ReplProgress::FunctionCall(call) = progress else {
+                panic!("call")
+            };
+            let id = call.call_id;
+            progress = call.resume_pending(PrintWriter::Disabled).unwrap();
+            let pending = progress.into_resolve_futures().unwrap();
+            assert_eq!(
+                pending.vm_state.ownership_child_counts(),
+                if turn % 2 == 0 { (2, 1, 1) } else { (1, 0, 0) }
+            );
+            progress = pending
+                .resume(
+                    vec![(id, ExtFunctionResult::Return(MontyObject::none()))],
+                    PrintWriter::Disabled,
+                )
+                .unwrap();
+        }
+        assert!(matches!(progress, ReplProgress::Complete { .. }));
+    }
+
+    /// Host cancellation removes child/result records before the surviving owner finishes.
+    #[test]
+    fn ownership_concurrent2_host_cancel_records() {
+        for _ in 0..24 {
+            let mut repl = MontyRepl::new("records.py", ResourceTracker::default(), CompileOptions::default());
+            for source in [
+                include_str!("../../../tools/coroutines/concurrent_io/wrappers.py"),
+                include_str!("../../../tools/coroutines/concurrent_io/scope.py"),
+            ] {
+                repl.feed_run(source, vec![], PrintWriter::Disabled).unwrap();
+            }
+            let source = include_str!("../../../tools/coroutines/concurrent_io/host_cancel.py").replace(
+                "    return json.dumps(",
+                "    await request('pulse')\n    return json.dumps(",
+            );
+            let mut progress = repl
+                .feed_start(
+                    &source,
+                    vec![("exchange".into(), MontyObject::function("exchange", None))],
+                    PrintWriter::Disabled,
+                )
+                .unwrap();
+            let mut first = true;
+            let mut observed_pulse = false;
+            loop {
+                let mut pulse = false;
+                while let ReplProgress::FunctionCall(call) = progress {
+                    pulse |= call.args.arg(0).unwrap().as_str() == Some("pulse");
+                    progress = call.resume_pending(PrintWriter::Disabled).unwrap();
+                }
+                if matches!(progress, ReplProgress::Complete { .. }) {
+                    break;
+                }
+                let pending = progress.into_resolve_futures().unwrap();
+                if pulse {
+                    assert_eq!(pending.vm_state.ownership_child_counts(), (1, 0, 0));
+                    observed_pulse = true;
+                }
+                let results = if first {
+                    Vec::new()
+                } else {
+                    pending
+                        .pending_call_ids()
+                        .iter()
+                        .map(|id| (*id, ExtFunctionResult::Return(MontyObject::string("ok"))))
+                        .collect()
+                };
+                progress = pending
+                    .resume_native(results, Some("FIRST".into()), PrintWriter::Disabled)
+                    .unwrap();
+                first = false;
+            }
+            assert!(observed_pulse);
+        }
+    }
+
+    /// Gather first-error and cancellation release lifetime links before parent cleanup.
+    #[test]
+    fn ownership_concurrent2_gather_records() {
+        for (fixture, cancel) in [
+            (
+                include_str!("../../../tools/coroutines/concurrent_io/gather_host.py"),
+                true,
+            ),
+            (
+                include_str!("../../../tools/coroutines/concurrent_io/gather_first_error.py"),
+                false,
+            ),
+        ] {
+            for _ in 0..24 {
+                let mut repl = MontyRepl::new(
+                    "gather-records.py",
+                    ResourceTracker::default(),
+                    CompileOptions::default(),
+                );
+                for source in [
+                    include_str!("../../../tools/coroutines/concurrent_io/wrappers.py"),
+                    include_str!("../../../tools/coroutines/concurrent_io/scope.py"),
+                ] {
+                    repl.feed_run(source, vec![], PrintWriter::Disabled).unwrap();
+                }
+                let mut progress = repl
+                    .feed_start(
+                        fixture,
+                        vec![("exchange".into(), MontyObject::function("exchange", None))],
+                        PrintWriter::Disabled,
+                    )
+                    .unwrap();
+                let mut calls = Vec::new();
+                let mut first = true;
+                let mut observed = false;
+                loop {
+                    let mut parent_cleanup = false;
+                    while let ReplProgress::FunctionCall(call) = progress {
+                        let label = call.args.arg(0).unwrap().as_str().unwrap().to_owned();
+                        parent_cleanup |= label == "parent-cleanup";
+                        calls.push((call.call_id, label));
+                        progress = call.resume_pending(PrintWriter::Disabled).unwrap();
+                    }
+                    if matches!(progress, ReplProgress::Complete { .. }) {
+                        break;
+                    }
+                    let pending = progress.into_resolve_futures().unwrap();
+                    if parent_cleanup {
+                        assert_eq!(pending.vm_state.ownership_child_counts(), (1, 0, 0));
+                        assert_eq!(pending.vm_state.ownership_gather_counts(), (0, 0, 0, 0));
+                        observed = true;
+                    }
+                    let ids = pending.pending_call_ids();
+                    let selected = ["continue", "cleanup-B", "cleanup-A", "A", "parent-cleanup"]
+                        .iter()
+                        .find_map(|label| calls.iter().find(|(id, name)| ids.contains(id) && name == label))
+                        .map(|(id, _)| *id)
+                        .unwrap();
+                    let results = if first && cancel {
+                        Vec::new()
+                    } else {
+                        vec![(selected, ExtFunctionResult::Return(MontyObject::string("ok")))]
+                    };
+                    progress = pending
+                        .resume_native(results, cancel.then(|| "FIRST".into()), PrintWriter::Disabled)
+                        .unwrap();
+                    first = false;
+                }
+                assert!(observed);
+            }
+        }
+    }
+
+    #[test]
+    fn ownership_concurrent2_gather_delivery() {
+        for cancel in [false, true] {
+            let mut repl = MontyRepl::new("join.py", ResourceTracker::default(), CompileOptions::default());
+            repl.feed_run(
+                include_str!("../../../tools/coroutines/concurrent_io/wrappers.py"),
+                vec![],
+                PrintWriter::Disabled,
+            )
+            .unwrap();
+            repl.feed_run(
+                include_str!("../../../tools/coroutines/concurrent_io/scope.py"),
+                vec![],
+                PrintWriter::Disabled,
+            )
+            .unwrap();
+            let mut progress = repl
+                .feed_start(
+                    include_str!("../../../tools/coroutines/concurrent_io/gather_host.py"),
+                    vec![("exchange".into(), MontyObject::function("exchange", None))],
+                    PrintWriter::Disabled,
+                )
+                .unwrap();
+            while let ReplProgress::FunctionCall(call) = progress {
+                progress = call.resume_pending(PrintWriter::Disabled).unwrap();
+            }
+            let ReplResolveFutures {
+                mut repl,
+                mut executor,
+                vm_state,
+                ..
+            } = progress.into_resolve_futures().unwrap();
+            HeapReader::with(&mut repl.heap, &mut executor, |reader, executor| {
+                let mut vm = VM::restore(
+                    vm_state,
+                    &mut executor.tables,
+                    &executor.program,
+                    reader,
+                    PrintWriter::Disabled,
+                );
+                vm.ownership_probe_gather_delivery(cancel);
+                reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+            });
+        }
+    }
+
+    #[test]
+    fn ownership_concurrent2_join_delivery() {
+        let mut repl = MontyRepl::new("join.py", ResourceTracker::default(), CompileOptions::default());
+        repl.feed_run(
+            include_str!("../../../tools/coroutines/concurrent_io/wrappers.py"),
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+        repl.feed_run(
+            include_str!("../../../tools/coroutines/concurrent_io/scope.py"),
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+        let mut progress = repl
+            .feed_start(
+                include_str!("../../../tools/coroutines/concurrent_io/children_errors.py"),
+                vec![("exchange".into(), MontyObject::function("exchange", None))],
+                PrintWriter::Disabled,
+            )
+            .unwrap();
+        while let ReplProgress::FunctionCall(call) = progress {
+            progress = call.resume_pending(PrintWriter::Disabled).unwrap();
+        }
+        let ReplResolveFutures {
+            mut repl,
+            mut executor,
+            vm_state,
+            ..
+        } = progress.into_resolve_futures().unwrap();
+        HeapReader::with(&mut repl.heap, &mut executor, |reader, executor| {
+            let mut vm = VM::restore(
+                vm_state,
+                &mut executor.tables,
+                &executor.program,
+                reader,
+                PrintWriter::Disabled,
+            );
+            vm.ownership_probe_join_delivery();
+            reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+        });
+    }
 
     #[test]
     fn ownership_compatibility11_direct_coroutine_admission() {

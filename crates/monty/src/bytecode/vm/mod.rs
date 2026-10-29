@@ -14,6 +14,7 @@ mod exceptions;
 mod format;
 mod generator;
 mod namespace;
+mod owned_children;
 mod pattern;
 mod recursion;
 mod scheduler;
@@ -710,9 +711,9 @@ pub struct VMSnapshot {
 }
 
 impl VMSnapshot {
-    /// A revoked native wait remains a valid stale reply ID, never an active owner.
-    pub(crate) fn native_revoked_call(&self) -> Option<u32> {
-        self.scheduler.main_task()?.native_cancel.as_ref()?.revoked
+    /// Validate host IDs without consuming the checkpoint or importing any values.
+    pub(crate) fn knows_host_call(&self, id: u32) -> bool {
+        self.scheduler.knows_host_call(id)
     }
 
     /// Discards the in-flight execution state of a snapshot that will never be
@@ -746,6 +747,16 @@ impl VMSnapshot {
             scheduler.cleanup(heap);
         });
         (globals, cwd, random)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ownership_gather_counts(&self) -> (usize, usize, usize, usize) {
+        self.scheduler.ownership_gather_counts()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ownership_child_counts(&self) -> (usize, usize, usize) {
+        self.scheduler.ownership_child_counts()
     }
 
     /// Number of tasks the scheduler held when this snapshot was taken.
@@ -1977,14 +1988,25 @@ impl<'h> VM<'h> {
                 }
                 Opcode::Yield => {
                     let mode = self.current_frame.fetch_u8();
-                    if mode != 0 {
-                        try_catch!(self, self.delegate_generator());
-                    } else if self
+                    let native = self
                         .current_frame
                         .generator_activation
                         .as_ref()
-                        .is_some_and(|a| a.native)
-                    {
+                        .is_some_and(|a| a.native);
+                    // Host-mode await lowers to delegation. Generator delegates
+                    // retain their durable return route; native awaitables use
+                    // the same Scheduler path as a direct native yield.
+                    let native_await = native
+                        && (mode == 0
+                            || matches!(
+                                self.peek().read_heap(self),
+                                Some(
+                                    HeapReadOutput::Coroutine(_)
+                                        | HeapReadOutput::GatherFuture(_)
+                                        | HeapReadOutput::ExternalFuture(_)
+                                )
+                            ));
+                    if native_await {
                         // Native yields keep the generator activation/locals in the Task.
                         // Future errors enter the existing exception path at this yield.
                         match self.exec_get_awaitable() {
@@ -1993,6 +2015,8 @@ impl<'h> VM<'h> {
                             Ok(AwaitResult::Yield(pending)) => return Ok(FrameExit::ResolveFutures(pending)),
                             Err(error) => catch!(self, error),
                         }
+                    } else if mode != 0 {
+                        try_catch!(self, self.delegate_generator());
                     } else {
                         try_catch!(self, self.suspend_generator());
                     }

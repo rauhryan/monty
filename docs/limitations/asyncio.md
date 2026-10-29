@@ -190,16 +190,16 @@ It applies to that source compilation only; a later REPL or `exec` compilation m
 
 In this dialect all `async def` functions return lazy generators driven by `next`, `send`, and one-argument `throw`.
 `await` delegates to a generator continuation, including another dialect async function.
-It does not await native Coroutine, ExternalFuture, GatherFuture, or arbitrary `__await__` objects, and does not select or run sibling tasks.
+When driven with `next`, `send`, or `throw`, it does not await native Coroutine, ExternalFuture, GatherFuture, or arbitrary `__await__` objects, and does not select or run sibling tasks.
 The ordinary `asyncio` scheduler remains the default without the directive; the two kinds of awaitable are not interchangeable.
 `await` outside an async function, in lambdas, or in comprehension bodies is rejected in this dialect.
 Async generators, `async for`, and async comprehensions remain unsupported.
 
-`async with` is available only inside dialect async functions, on simple user-class instances defining class-level `__aenter__` and `__aexit__` methods returning generator continuations.
+`async with` is available only inside dialect async functions, on simple user-class instances defining class-level `__aenter__` and `__aexit__` methods returning generator continuations (or native awaitables when using the native entry below).
 Multiple managers and unpacked targets use the same nesting and binding rules as ordinary `with`.
 There are no async contextmanager decorators, inheritance, or general awaitable protocol adapters.
 Missing async methods raise `AttributeError`; non-instance context values raise `TypeError`.
-Invalid await operands (such as `await 3`) and async protocol methods returning non-generators raise `NotImplementedError`, rather than CPython's `TypeError`.
+When manually driven, invalid await operands (such as `await 3`) and async protocol methods returning non-generators raise `NotImplementedError`, rather than CPython's `TypeError`.
 Exit receives the exception type, exception object and `None` rather than a traceback object.
 As with [ordinary context managers](with.md), exit is looked up again at exit, so replacing `__aexit__` during the body calls the replacement.
 
@@ -210,8 +210,12 @@ They do not provide an importable scheduler package or a production authority jo
 ### Experimental native entry and host cancellation
 
 The explicit generator method `_native1()` runs the dialect continuation on the existing native task.
-Direct yields on that route await native awaitables; ordinary `next`, `send`, `throw`, and dialect delegation retain their separate behavior.
-The experimental single-task host cancellation input delivers a catchable `ValueError`, rather than an asyncio `CancelledError`.
+Direct yields and dialect `await` on that route accept native coroutines, external futures, and `asyncio.gather` results.
+Generator operands still delegate to their durable continuation; arbitrary `__await__` objects remain unsupported.
+Dialect generator children require an ordinary-coroutine binding that calls `_native1()`; nested gathers and external futures remain valid gather inputs.
+This does not make dialect generators directly acceptable as gather children.
+Ordinary `next`, `send`, and `throw` retain their separate behavior.
+The experimental host cancellation input delivers a catchable `ValueError`, rather than an asyncio `CancelledError`.
 Catching it does not clear the native terminal cancelled outcome, and the first host reason wins even when empty.
 Compiler-marked plain `finally` bodies and async context exit delegation protect their external waits from host cancellation; ordinary operation errors remain catchable and are not masked.
 A first cancellation during cleanup preserves its reply and is delivered when outermost protection ends, before ordinary body work or another request.
@@ -223,4 +227,32 @@ A selector return is not suppression of its caller’s error.
 Handlers inside active cleanup retain normal behavior; handlers after cancellation delivery may perform authored recovery.
 Required synchronous and async context exit calls finish their suppression bookkeeping before delivery: a false result retains the error, a true result suppresses it, and a raised exit error replaces it.
 This bookkeeping guarantee does not provide preemption of blocking synchronous I/O or nonterminating exit code.
-This does not implement Python task cancellation, task groups, child cancellation/drain, or aggregate cleanup failures.
+This does not implement Python task cancellation, task groups, or automatic aggregate cleanup failures.
+
+
+### Experimental owned children
+
+`asyncio._scope()`, `_spawn(coroutine)`, `_cancel(handle)` and `_drain()` are experimental native-only authoring primitives, not asyncio compatibility APIs.
+One scope may be open per Rust task; nested scopes in the same task are rejected.
+`_spawn` returns an awaitable child handle; only its owning task and scope can join or cancel it.
+An explicit join delivers the result or exception, consuming the scope's error obligation only when the owner resumes.
+Unjoined ordinary child errors remain owned until `_drain()` returns them as exception objects, in spawn order.
+Sibling failures do not cancel other children.
+`_drain()` closes admission, cancels unfinished children, and waits for their cleanup before returning.
+An authoring context manager must await this drain in `__aexit__` before resource cleanup.
+Cancelling a completed owned handle is a no-op.
+Guest child cancellation raises one catchable `ValueError('guest')`; returning after catching it still makes joining raise that cancellation.
+An ordinary failure during child cleanup remains visible as an error.
+Host cancellation fans out through the owned child tree, including owners parked on child joins.
+A cancelled join detaches its waiter without consuming the child outcome; scope exit still drains the child before parent cleanup.
+A drain in progress preserves its reply and completes before delivery of a pending cancellation.
+Child admission stays closed after host cancellation, including after catching the signal or attempting a new scope.
+Gathered descendants remain scope obligations after first-error delivery or after their immediate owner completes.
+Scope exit cancels and drains those descendants before parent resource cleanup; first-error delivery alone does not cancel siblings.
+Cancellation detaches a gather waiter without consuming an undelivered error, and reaches nested gathered tasks and direct external futures.
+Gathered cleanup continuations retain their protected replies across repeated cancellation.
+Ordinary gather failures that no waiter receives are retained in `scope.errors` before the explicit-child errors.
+Their order follows settlement and lifetime transfer; explicit-child errors retain spawn order.
+New gathers are rejected after cancellation except within protected cleanup.
+The gather lifetime contract requires checkpoints produced with dump version26 or later; older snapshots retain their earlier owned-gather limitations.
+The thin experimental Scope binding supports deferred async cleanup in LIFO order after child drain, retaining ordinary failures in `scope.errors` while attempting the remaining cleanups.

@@ -374,4 +374,14 @@ Deferred cancellation is delivered when outermost cleanup protection ends, befor
 On that error path, prospective exception handlers outside cleanup are bypassed before type-expression evaluation and no second catchable cancellation signal is injected.
 Already-entered matching retains its original error across selector suspension; required synchronous context exit consumes its suppression result before cancellation delivery.
 Blocking synchronous I/O and nonterminating cleanup remain outside the delivery guarantee.
-This is not child scope or task-group cancellation; see the [asyncio limitations](../limitations/asyncio.md#experimental-native-entry-and-host-cancellation).
+The experimental owned-child scope adds descendant cancellation and drain; see the [asyncio limitations](../limitations/asyncio.md#experimental-owned-children).
+
+
+For the experimental native coroutine route, call
+`ReplResolveFutures::validate_results` by reference before transferring a suspended
+execution to `resume_native` when invalid batches must leave it resumable.
+Host cancellation is applied before replies in that batch; replies to revoked
+operations are ignored, while protected cleanup replies remain deliverable.
+
+Gather first-error delivery leaves sibling lifetime obligations with the enclosing
+owned scope. Await its drain before parent cleanup, including after joining a failed group.
