@@ -1260,6 +1260,12 @@ pub enum StaticStrings {
     NativeCancel,
     #[strum(serialize = "_drain")]
     NativeDrain,
+    #[strum(serialize = "_queue")]
+    NativeQueue,
+    #[strum(serialize = "_queue_put")]
+    NativeQueuePut,
+    #[strum(serialize = "_queue_get")]
+    NativeQueueGet,
     /// `random.gauss()` function.
     Gauss,
     /// Module name for `import gc`.

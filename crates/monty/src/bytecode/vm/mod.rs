@@ -13,6 +13,7 @@ mod context_manager;
 mod exceptions;
 mod format;
 mod generator;
+mod guest_queue;
 mod namespace;
 mod owned_children;
 mod pattern;

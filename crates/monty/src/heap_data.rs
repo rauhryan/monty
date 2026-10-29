@@ -651,6 +651,7 @@ impl HeapItem for GatherFuture {
 
 impl HeapItem for ExternalFuture {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        self.queue_dec_ref_ids(stack);
         // `Pending { awaiter: Some(Awaiter::GatherSlot { gather, .. }) }`
         // owns an inc_ref on `gather` — release it when this entry is
         // freed. `Awaiter::Task` and `None` own nothing. `Resolved` owns

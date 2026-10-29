@@ -2148,6 +2148,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
         }
         HeapData::ExternalFuture(fut) => {
+            fut.queue_owned_ids(&mut on_child);
             // `Pending { awaiter: Some(GatherSlot { gather, .. }) }` owns an
             // inc_ref on `gather`. Failed owns its cached exception identity;
             // `Resolved` owns the cached value, and
@@ -2295,6 +2296,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             }
         }
         HeapData::ExternalFuture(fut) => {
+            fut.queue_dec_ref_ids(stack);
             // Mirror `for_each_child_id`: a pending sleep's `result` is owned too.
             if let Some(result) = &mut fut.sleep_result {
                 result.py_dec_ref_ids(stack);

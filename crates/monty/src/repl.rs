@@ -2075,3 +2075,7 @@ entry()._native1()
         }
     }
 }
+
+#[cfg(all(test, feature = "ref-count-return"))]
+#[path = "../tests/unit/queue_repl.rs"]
+mod queue_tests;

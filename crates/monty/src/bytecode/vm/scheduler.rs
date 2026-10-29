@@ -10,7 +10,7 @@ use std::{collections::VecDeque, mem};
 use ahash::AHashMap;
 use smallvec::{SmallVec, smallvec};
 
-use super::{FrameNamespace, exceptions::CaughtException};
+use super::{FrameNamespace, exceptions::CaughtException, guest_queue::finish_queue_operation};
 use crate::{
     asyncio::{Awaiter, CallId, TaskId},
     exception_private::{RunResult, SimpleException},
@@ -89,6 +89,9 @@ pub(crate) struct Task {
     /// Owned join root until this task actually resumes.
     #[serde(default)]
     pub pending_join: Option<HeapId>,
+    /// Owned queue operation until activation commits or cancels its reservation.
+    #[serde(default)]
+    pub pending_queue: Option<HeapId>,
     /// Owned drain future while scope exit waits for children.
     #[serde(default)]
     pub drain: Option<HeapId>,
@@ -171,6 +174,7 @@ impl<C: ContainsHeap> DropWithContext<C> for Task {
             .drain(..)
             .chain(self.child_result.take())
             .chain(self.pending_join.take())
+            .chain(self.pending_queue.take())
             .chain(self.drain.take())
         {
             heap.heap_mut().dec_ref(id);
@@ -239,6 +243,7 @@ impl Task {
             scope_token: None,
             scope_open: false,
             pending_join: None,
+            pending_queue: None,
             drain: None,
             native_cancel: None,
             native_protected: false,
@@ -551,7 +556,7 @@ impl Scheduler {
     fn cancel_one(&mut self, task_id: TaskId, heap: &mut HeapReader<'_>, pending: &mut SmallVec<[TaskId; 4]>) {
         // No-op if the task has already been removed (idempotent — finalization
         // sites may iterate task ids that include already-cancelled siblings).
-        let Some(task) = self.tasks.remove(&task_id) else {
+        let Some(mut task) = self.tasks.remove(&task_id) else {
             return;
         };
 
@@ -583,6 +588,13 @@ impl Scheduler {
             {
                 pending.push(id);
             }
+        }
+        if let Some(id) = task.pending_queue.take() {
+            let (value, queue) = finish_queue_operation(id, false, heap);
+            value.drop_with(heap);
+            self.pump_queue(queue, heap);
+            heap.dec_ref(queue);
+            heap.dec_ref(id);
         }
         task.drop_with(heap);
     }

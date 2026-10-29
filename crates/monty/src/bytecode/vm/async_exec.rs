@@ -85,6 +85,7 @@ impl<'h> VM<'h> {
                         let task_id = this.scheduler.current_task_id().expect("awaiting task");
                         this.scheduler.get_task_mut(task_id).native_protected = protected;
                         this.scheduler.block_current_on(heap_id, this.heap);
+                        this.wake_queue_operation(heap_id);
                         this.switch_or_yield()
                     }
                 }
@@ -421,6 +422,7 @@ impl<'h> VM<'h> {
     ) -> Result<Poll<Value>, RunError> {
         let mut awaiter_guard = DropGuard::new(awaiter, self);
         let (awaiter, this) = awaiter_guard.as_parts_mut();
+        this.prepare_queue_operation(fut.id(), awaiter)?;
         this.prepare_child_join(fut.id(), awaiter)?;
         match &fut.get(this.heap).state {
             ExternalFutureState::Resolved(value) => {
@@ -717,8 +719,10 @@ impl<'h> VM<'h> {
                 .take()
                 .map(Value::Ref)
                 .drop_with(self.heap);
+            self.cancel_queue_operation(task_id);
             return Err(self.native_delivery(None));
         }
+        self.consume_queue_delivery(task_id)?;
         self.consume_child_delivery(task_id);
         result
     }
@@ -1077,6 +1081,8 @@ impl<'h> VM<'h> {
             state: ExternalFutureState::Resolved(value),
             sleep_result: None,
             child: None,
+            queue: None,
+            queue_op: None,
         };
         Value::Ref(self.heap.allocate(HeapData::ExternalFuture(Box::new(future))))
     }

@@ -256,3 +256,20 @@ Their order follows settlement and lifetime transfer; explicit-child errors reta
 New gathers are rejected after cancellation except within protected cleanup.
 The gather lifetime contract requires checkpoints produced with dump version26 or later; older snapshots retain their earlier owned-gather limitations.
 The thin experimental Scope binding supports deferred async cleanup in LIFO order after child drain, retaining ordinary failures in `scope.errors` while attempting the remaining cleanups.
+
+## Experimental bounded queues
+
+`asyncio.Queue` is not provided. The native continuation experiment exposes
+`asyncio._queue(capacity)`, `await asyncio._queue_put(queue, value)` and
+`await asyncio._queue_get(queue)`. Capacity must be an integer from 1 through 4294967295 on both native and Wasm;
+booleans, zero, negative and unbounded capacities are unsupported. Tokens have no public
+attributes or methods. Operations are lazy and single-await; wrap an operation
+in an ordinary coroutine to use it with `gather`.
+
+Values and waiters are FIFO. Both immediate and blocked operations cooperate
+with the scheduler. Cancellation before delivery revokes the reservation,
+leaving a get's value in the queue and a put's value outside it. There is no
+`join`, `task_done`, `shutdown`, timeout or nonblocking API. A program whose
+remaining tasks all wait on queues can deadlock; there is no timer or implicit
+producer. Checkpoints are available at external suspension boundaries, not
+at every queue await.

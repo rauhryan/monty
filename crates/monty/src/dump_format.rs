@@ -68,7 +68,8 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 // Version 24 adds Rust-owned child outcomes and delivery/drain roots.
 // Version 25 reserves the monotonic ID space for host calls, allowing bounded late-reply recognition.
 // Version 26 separates owned gather lifetimes from result delivery.
-pub const DUMP_VERSION: u16 = 26;
+// Version 27 adds traced guest queues and activation-time queue reservations.
+pub const DUMP_VERSION: u16 = 27;
 
 /// The oldest dump version this build loads. `Dump::load` runs `dump_upgrade`
 /// over an older dump, rebuilding what the newer versions changed.

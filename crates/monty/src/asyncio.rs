@@ -4,6 +4,8 @@
 //! and task identifiers. The host acts as the event loop - external function
 //! calls return `ExternalFuture` objects that can be awaited.
 
+use std::collections::VecDeque;
+
 use ahash::AHashMap;
 use smallvec::SmallVec;
 
@@ -138,6 +140,11 @@ impl Coroutine {
 /// wake/raise plumbing as multi-waiter gathers.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ExternalFuture {
+    /// Experimental internal queue token or single-delivery queue operation.
+    #[serde(default)]
+    pub queue: Option<GuestQueue>,
+    #[serde(default)]
+    pub queue_op: Option<QueueOperation>,
     /// Internal child identity, never registered as a host-settleable call.
     #[serde(default)]
     pub child: Option<ChildIdentity>,
@@ -152,6 +159,67 @@ pub(crate) struct ExternalFuture {
     /// Internal child futures instead own their scope token here; they are
     /// never registered for host settlement, so it lives as long as the handle.
     pub sleep_result: Option<Value>,
+}
+
+/// Bounded FIFO storage. Waiter IDs own references; reserved borrows a waiter.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct GuestQueue {
+    pub capacity: usize,
+    pub values: VecDeque<Value>,
+    pub getters: VecDeque<HeapId>,
+    pub putters: VecDeque<HeapId>,
+    pub reserved: Option<HeapId>,
+}
+
+/// An operation owns its queue and optional put value until delivery/cancellation.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct QueueOperation {
+    pub queue: Option<HeapId>,
+    pub put: Option<Value>,
+    pub started: bool,
+    pub task: Option<TaskId>,
+}
+
+impl ExternalFuture {
+    /// Release queue edges and mark Values consumed for memory-model checks.
+    pub(crate) fn queue_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        if let Some(q) = &mut self.queue {
+            for value in &mut q.values {
+                value.py_dec_ref_ids(stack);
+            }
+            stack.extend(q.getters.iter().chain(&q.putters).copied());
+        }
+        if let Some(op) = &mut self.queue_op {
+            if let Some(id) = op.queue {
+                stack.push(id);
+            }
+            if let Some(value) = &mut op.put {
+                value.py_dec_ref_ids(stack);
+            }
+        }
+    }
+
+    /// Enumerate all queue edges for cycle tracing.
+    pub(crate) fn queue_owned_ids(&self, mut visit: impl FnMut(HeapId)) {
+        if let Some(q) = &self.queue {
+            for value in &q.values {
+                if let Value::Ref(id) = value {
+                    visit(*id);
+                }
+            }
+            for id in q.getters.iter().chain(&q.putters) {
+                visit(*id);
+            }
+        }
+        if let Some(op) = &self.queue_op {
+            if let Some(id) = op.queue {
+                visit(id);
+            }
+            if let Some(Value::Ref(id)) = &op.put {
+                visit(*id);
+            }
+        }
+    }
 }
 
 /// Plain identity metadata; outcomes remain owned by the future state.
@@ -184,6 +252,8 @@ impl ExternalFuture {
         Self {
             call_id,
             child: None,
+            queue: None,
+            queue_op: None,
             state: ExternalFutureState::Pending { awaiter: None },
             sleep_result,
         }

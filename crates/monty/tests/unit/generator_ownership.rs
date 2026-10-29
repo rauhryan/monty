@@ -124,6 +124,8 @@ fn ownership_export_poison_depth_and_cached_error_cycles() {
             state: ExternalFutureState::Failed(error.clone_with_heap(vm.heap)),
             sleep_result: None,
             child: None,
+            queue: None,
+            queue_op: None,
         };
         let mut ids = vec![];
         typed_future.py_dec_ref_ids(&mut ids);
@@ -185,6 +187,8 @@ fn ownership_export_poison_depth_and_cached_error_cycles() {
             call_id: CallId::new(12),
             sleep_result: None,
             child: None,
+            queue: None,
+            queue_op: None,
             state: ExternalFutureState::Failed(ExcType::value_error("legacy")),
         }))));
         let legacy_gather = Value::Ref(vm.heap.allocate(HeapData::GatherFuture(Box::new(GatherFuture {
@@ -270,3 +274,6 @@ fn ownership_terminal_export_metadata_releases_identity() {
         assert_eq!(vm.heap.entry_count(), baseline);
     });
 }
+
+#[path = "guest_queue.rs"]
+mod guest_queue;

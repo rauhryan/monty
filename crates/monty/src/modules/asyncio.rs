@@ -40,6 +40,9 @@ pub(crate) enum AsyncioFunctions {
     NativeScope,
     NativeCancel,
     NativeDrain,
+    NativeQueue,
+    NativeQueuePut,
+    NativeQueueGet,
 }
 
 /// Creates the `asyncio` module and allocates it on the heap.
@@ -70,6 +73,9 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         (StaticStrings::NativeSpawn, AsyncioFunctions::NativeSpawn),
         (StaticStrings::NativeCancel, AsyncioFunctions::NativeCancel),
         (StaticStrings::NativeDrain, AsyncioFunctions::NativeDrain),
+        (StaticStrings::NativeQueue, AsyncioFunctions::NativeQueue),
+        (StaticStrings::NativeQueuePut, AsyncioFunctions::NativeQueuePut),
+        (StaticStrings::NativeQueueGet, AsyncioFunctions::NativeQueueGet),
     ] {
         module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Asyncio(function)), vm);
     }
@@ -80,6 +86,22 @@ pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues
         AsyncioFunctions::Gather => gather(vm, args).map(CallResult::Value),
         AsyncioFunctions::Run => run(vm.heap, args),
         AsyncioFunctions::Sleep => sleep(vm, args),
+        AsyncioFunctions::NativeQueue => {
+            let capacity = args.get_one_arg("_queue", vm.heap)?;
+            defer_drop!(capacity, vm);
+            vm.new_guest_queue(capacity).map(CallResult::Value)
+        }
+        AsyncioFunctions::NativeQueueGet => {
+            let queue = args.get_one_arg("_queue_get", vm.heap)?;
+            defer_drop!(queue, vm);
+            vm.new_queue_operation(queue, None).map(CallResult::Value)
+        }
+        AsyncioFunctions::NativeQueuePut => {
+            let (queue, value) = args.get_two_args("_queue_put", vm.heap)?;
+            defer_drop!(queue, vm);
+            defer_drop!(value, vm);
+            vm.new_queue_operation(queue, Some(value)).map(CallResult::Value)
+        }
         AsyncioFunctions::NativeScope => {
             args.check_zero_args("_scope", vm.heap)?;
             vm.open_child_scope().map(|()| CallResult::Value(Value::None))

@@ -147,8 +147,9 @@ impl VM<'_> {
         let Some(wait) = self.scheduler.blocked_on(id) else {
             return;
         };
+        self.cancel_queue_operation(id);
         let (external, call_id) = if let HeapReadOutput::ExternalFuture(future) = self.heap.read(wait) {
-            let external = future.get(self.heap).child.is_none();
+            let external = future.get(self.heap).child.is_none() && future.get(self.heap).queue_op.is_none();
             let call_id = future.get(self.heap).call_id.raw();
             if !external && let ExternalFutureState::Pending { awaiter } = &mut future.get_mut(self.heap).state {
                 awaiter.take().drop_with(self.heap);
