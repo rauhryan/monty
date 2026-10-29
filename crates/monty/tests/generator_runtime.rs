@@ -3920,3 +3920,39 @@ fn standard_python_host_reads() {
         MontyObject::list((0..5).map(|index| MontyObject::string(index.to_string())))
     );
 }
+
+#[test]
+fn playground_capabilities_restore_and_release() {
+    let repl = new_repl();
+    let source = concat!(
+        "from __monty_host__ import host_coroutines\n",
+        "import asyncio\nfrom sandbox import ask, random, echo, sample, decision, document_create, document_read, document_edit, present_choices, display_document\n",
+        "async def main():\n",
+        "    return await asyncio.gather(*(fn({'message': 'owned'}) for fn in [ask, random, echo, sample, decision, document_create, document_read, document_edit, present_choices, display_document]))\n",
+        "main()._native1()",
+    );
+    let mut progress = repl.feed_start(source, vec![], PrintWriter::Stdout).unwrap();
+    let mut ids = Vec::new();
+    while let ReplProgress::FunctionCall(call) = progress {
+        assert_eq!(call.function_name, "sandbox.exchange");
+        ids.push(call.call_id);
+        progress = call.resume_pending(PrintWriter::Stdout).unwrap();
+    }
+    assert_eq!(ids.len(), 10);
+    let bytes = dump("playground.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+    drop(progress.into_repl());
+    let Session::Suspended(restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected pending capabilities")
+    };
+    let pending = restored.into_resolve_futures().unwrap();
+    let result = pending
+        .resume(
+            ids.into_iter()
+                .map(|id| (id, ExtFunctionResult::Return(MontyObject::string("ok"))))
+                .collect(),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let (_, value) = result.into_complete().unwrap();
+    assert_eq!(value, MontyObject::list((0..10).map(|_| MontyObject::string("ok"))));
+}

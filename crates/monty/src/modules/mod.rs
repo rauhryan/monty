@@ -198,6 +198,7 @@ impl StandardLib {
 pub(crate) enum ModuleFunctions {
     Asyncio(asyncio::AsyncioFunctions),
     SandboxReadFile,
+    SandboxCapability(sandbox::Capability),
     Collections(collections::CollectionsFunctions),
     Json(json::JsonFunctions),
     Math(math::MathFunctions),
@@ -237,6 +238,7 @@ impl fmt::Display for ModuleFunctions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::SandboxReadFile => write!(f, "read_file"),
+            Self::SandboxCapability(capability) => write!(f, "{}", capability.name()),
             Self::Asyncio(func) => write!(f, "{func}"),
             Self::Collections(func) => write!(f, "{func}"),
             Self::Json(func) => write!(f, "{func}"),
@@ -275,6 +277,7 @@ impl ModuleFunctions {
     pub fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         match self {
             Self::SandboxReadFile => sandbox::read_file(vm, args).map(CallResult::Value),
+            Self::SandboxCapability(capability) => sandbox::call(capability, vm, args).map(CallResult::Value),
             Self::Asyncio(functions) => asyncio::call(vm, functions, args),
             Self::Collections(functions) => collections::call(vm, functions, args).map(CallResult::Value),
             Self::Json(functions) => json::call(vm, functions, args),

@@ -30,6 +30,9 @@ pub(crate) enum FrozenFunction {
     /// Platform capability; no guest filesystem access.
     #[serde(rename = "sandbox.read_file")]
     SandboxReadFile,
+    /// Journal-backed platform capability with a single request object.
+    #[serde(rename = "sandbox.capability")]
+    SandboxCapability,
     /// Suspendable fold loop behind `functools.reduce`.
     #[serde(rename = "functools.reduce")]
     FunctoolsReduce,
@@ -77,6 +80,9 @@ impl FrozenFunction {
         match self {
             Self::SandboxReadFile => {
                 "def read_file(path, exchange):\n    return (yield exchange({\"capability\": \"sandbox.read_file\", \"arguments\": {\"path\": path}}))\n"
+            }
+            Self::SandboxCapability => {
+                "def capability(name, request, exchange):\n    return (yield exchange({\"capability\": \"sandbox.\" + name, \"arguments\": request}))\n"
             }
             Self::HostContinuation => "async def _bridge(continuation):\n    return continuation._native1()\n",
             Self::FunctoolsReduce => functools::REDUCE_SOURCE,

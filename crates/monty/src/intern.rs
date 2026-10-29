@@ -612,6 +612,23 @@ pub enum StaticStrings {
     /// Async host read capability.
     #[strum(serialize = "read_file")]
     SandboxReadFile,
+    #[strum(serialize = "ask")]
+    SandboxAsk,
+    #[strum(serialize = "echo")]
+    SandboxEcho,
+    #[strum(serialize = "decision")]
+    SandboxDecision,
+    #[strum(serialize = "document_create")]
+    SandboxDocumentCreate,
+    #[strum(serialize = "document_read")]
+    SandboxDocumentRead,
+    #[strum(serialize = "document_edit")]
+    SandboxDocumentEdit,
+    #[strum(serialize = "present_choices")]
+    SandboxPresentChoices,
+    #[strum(serialize = "display_document")]
+    SandboxDisplayDocument,
+
     /// `math.atan()` function.
     Atan,
     /// `math.atan2()` function.

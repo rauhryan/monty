@@ -292,3 +292,11 @@ continuation dialect internally. Ordinary `try/finally` and `async with` in that
 entry participate in protected cancellation cleanup. This does not provide
 `asyncio.TaskGroup`, nor change the experimental scope's cancel-on-exit semantics.
 General coroutine introspection and `return_exceptions` remain unsupported.
+
+The playground also supplies `sandbox.ask`, `echo`, `random`, `sample`, `decision`,
+`document_create`, `document_read`, `document_edit`, `present_choices`, and
+`display_document`. These platform functions accept one positional request
+dictionary and return a lazy continuation. Their names grant no authority: the
+host validates the request against its installed contracts before performing any
+operation. Randomness and human replies are supplied and journaled by the host.
+They are not Python standard-library functions.
