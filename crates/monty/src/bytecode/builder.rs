@@ -33,6 +33,7 @@ pub struct CodeBuilder {
 
     /// Lexical cleanup ownership for experimental native cancellation.
     native_cleanup: Vec<(u32, u32)>,
+    native_cleanup_entries: Vec<u32>,
     native_matching: Vec<(u32, u32, u16)>,
 
     /// Explicit continuation boundaries, implemented without spending an opcode.
@@ -456,6 +457,14 @@ impl CodeBuilder {
         ));
     }
 
+    /// Record entry before any authored finally/exit instruction executes.
+    pub(crate) fn mark_native_cleanup_entry(&mut self, start: Offset) {
+        if start.0 < self.bytecode.len() {
+            self.native_cleanup_entries
+                .push(u32::try_from(start.0).expect("code offset"));
+        }
+    }
+
     /// Record matching while its original exception remains unresolved.
     pub(crate) fn mark_native_matching(&mut self, start: Offset, depth: u16) {
         self.native_matching.push((
@@ -489,6 +498,7 @@ impl CodeBuilder {
             local_names,
         );
         code.native_cleanup = Some(self.native_cleanup);
+        code.native_cleanup_entries = Some(self.native_cleanup_entries);
         code.native_cancel_points = Some(self.native_cancel_points);
         code.native_matching = Some(self.native_matching);
         code

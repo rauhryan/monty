@@ -295,6 +295,9 @@ pub struct Compiler<'a, 'i> {
 
     /// Settings for this scope and its nested compilers.
     flags: ScopeFlags,
+
+    /// Native coroutine bodies await async context methods instead of yielding delegation.
+    native_async: bool,
 }
 
 /// Compiler settings inherited by nested scopes, with await restrictions reset for functions.
@@ -531,6 +534,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             frame_locals,
             comp_slots: Vec::new(),
             flags,
+            native_async: false,
         }
     }
 
@@ -608,6 +612,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             ..flags
         };
         let mut compiler = Compiler::new(interns, false, num_locals, flags);
+        compiler.native_async = func_def.is_async;
         // Parameters, and the cells captured parameters live in, are named up
         // front: a body that never mentions one still reports it from `locals()`.
         let param_names: Vec<StringId> = func_def.signature.param_names().collect();
@@ -2826,6 +2831,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         } else {
             let start = self.code.current_offset();
             self.compile_block(finally)?;
+            self.code.mark_native_cleanup_entry(start);
             self.code.mark_native_cleanup(start);
             Ok(())
         }
@@ -3850,7 +3856,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         region.add_entries(body_end, &mut self.code, handler_start, HandlerKind::Consuming)
     }
 
-    /// Async methods return durable continuations; delegate using the common kernel.
+    /// Await context methods with the enclosing function's execution protocol.
     fn emit_context_call(&mut self, opcode: Opcode, is_async: bool) -> Result<(), CompileError> {
         if is_async {
             let mode = match opcode {
@@ -3861,8 +3867,13 @@ impl<'a, 'i> Compiler<'a, 'i> {
             };
             let start = self.code.current_offset();
             self.code.emit_u8(Opcode::HostContext, mode)?;
-            self.code.emit_u8(Opcode::Yield, 1)?;
+            if self.native_async {
+                self.code.emit(Opcode::Await)?;
+            } else {
+                self.code.emit_u8(Opcode::Yield, 1)?;
+            }
             if mode != 0 {
+                self.code.mark_native_cleanup_entry(start);
                 self.code.mark_native_cleanup(start);
             }
             Ok(())
@@ -3870,6 +3881,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             let start = self.code.current_offset();
             self.code.emit(opcode)?;
             if matches!(opcode, Opcode::WithExit | Opcode::WithExceptStart) {
+                self.code.mark_native_cleanup_entry(start);
                 // Finish required synchronous exit before consuming its result.
                 self.code.mark_native_cleanup(start);
             }

@@ -113,6 +113,7 @@ def main():
             'ownership-unit-tests',
             'concurrent-ownership-tests',
             'queue-ownership-tests',
+            'public-queue-test-cases',
             'concurrent-runtime-tests',
             'dump-compat-tests',
         ],
@@ -369,6 +370,7 @@ def main():
         ],
     }
     commands['concurrent-runtime-tests'] = commands['generator-runtime-tests'] + ['concurrent_io']
+    commands['public-queue-test-cases'] = ['cargo', 'run', '--locked', '-p', 'monty-datatest', '--', 'asyncio__queue']
     commands['queue-ownership-tests'] = commands['ownership-unit-tests'][:-1] + ['ownership_queue', '--', '--nocapture']
     commands['concurrent-ownership-tests'] = commands['ownership-unit-tests'][:-1] + ['ownership_concurrent2', '--', '--nocapture']
     commands['repair10-fatal-tests'] = [

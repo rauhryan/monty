@@ -1,0 +1,39 @@
+import asyncio
+import json
+
+
+class Resource:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, typ, error, tb):
+        await exchange('release')
+        return True
+
+
+async def child():
+    try:
+        try:
+            raise ValueError('caught')
+        except ValueError:
+            pass
+    finally:
+        await exchange('release')
+    await exchange('must-not-run')
+
+
+async def main():
+    task = asyncio.create_task(child())
+    await exchange('control')
+    assert task.cancel()
+    await exchange('repeat')
+    assert task.cancel()
+    try:
+        await task
+    except ValueError:
+        assert task.cancelled()
+        await exchange('parent-release')
+    return json.dumps('ok')
+
+
+asyncio.run(main())

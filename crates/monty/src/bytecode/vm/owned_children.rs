@@ -98,7 +98,7 @@ impl VM<'_> {
 
     /// Logical cancellation follows lifetime links even after gather first-error
     /// delivery. Detach parent routes before signalling descendants.
-    fn cancel_owned_subtree(&mut self, root: TaskId, reason: &str) {
+    pub(super) fn cancel_owned_subtree(&mut self, root: TaskId, reason: &str) {
         for id in self.scheduler.owned_subtree(root, self.heap) {
             self.cancel_child_task(id, reason);
         }
@@ -147,9 +147,25 @@ impl VM<'_> {
         let Some(wait) = self.scheduler.blocked_on(id) else {
             return;
         };
+        // Public Task.cancel forwards through a pending Task join. Keep the
+        // join attached until that task finishes its cleanup; its outcome is
+        // delivered before this waiter's finally/body can resume.
+        if matches!(self.heap.get(wait), HeapData::ExternalFuture(future)
+            if future.public_task.as_ref().and_then(|public| public.task).is_some_and(|target|
+                self.scheduler.public_gather_waits.get(&id).is_some_and(|waits| waits.contains(&target))))
+        {
+            return;
+        }
         self.cancel_queue_operation(id);
         let (external, call_id) = if let HeapReadOutput::ExternalFuture(future) = self.heap.read(wait) {
-            let external = future.get(self.heap).child.is_none() && future.get(self.heap).queue_op.is_none();
+            let external = future.get(self.heap).child.is_none()
+                && future.get(self.heap).queue_op.is_none()
+                && future.get(self.heap).public_task.is_none();
+            if let Some(public) = &mut future.get_mut(self.heap).public_task {
+                public
+                    .waiters
+                    .retain(|waiter| !matches!(waiter, Awaiter::Task(task) if *task == id));
+            }
             let call_id = future.get(self.heap).call_id.raw();
             if !external && let ExternalFutureState::Pending { awaiter } = &mut future.get_mut(self.heap).state {
                 awaiter.take().drop_with(self.heap);
@@ -370,9 +386,18 @@ impl VM<'_> {
     }
 
     pub(super) fn finish_child_drain(&mut self, owner: TaskId) {
+        self.finish_root_shutdown(owner);
+        self.finish_ordinary_cleanup(owner);
+        self.finish_task_groups(owner);
+        self.scheduler.finish_gather_barrier(owner);
         let external = self.scheduler.gather_externals.values().any(|task| *task == owner);
+        let public = self
+            .scheduler
+            .public_gather_waits
+            .get(&owner)
+            .is_some_and(|waits| !waits.is_empty());
         let task = self.scheduler.get_task_mut(owner);
-        if task.drain.is_none() || !task.gather_children.is_empty() || external {
+        if task.drain.is_none() || !task.gather_children.is_empty() || external || public {
             return;
         }
         for id in &task.children {

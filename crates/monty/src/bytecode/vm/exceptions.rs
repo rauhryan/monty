@@ -25,7 +25,14 @@ pub(super) enum CaughtException {
     /// An exception handled by user code, retaining its existing dump representation.
     Value(Value),
     /// An internal handler must not replace the original traceback when its match fails.
-    Frozen { value: Value, error: Box<ExceptionRaise> },
+    Frozen {
+        value: Value,
+        error: Box<ExceptionRaise>,
+        /// Still escaping through finally/context cleanup, rather than caught by except.
+        /// Legacy snapshots did not record this distinction.
+        #[serde(default)]
+        unwinding: bool,
+    },
 }
 
 impl CaughtException {
@@ -33,7 +40,7 @@ impl CaughtException {
     pub(super) fn forget_owned_value(&mut self) {
         match self {
             Self::Value(value) => value.dec_ref_forget(),
-            Self::Frozen { value, error } => {
+            Self::Frozen { value, error, .. } => {
                 value.dec_ref_forget();
                 error.forget_owned_value();
             }
@@ -61,7 +68,7 @@ impl<C: ContainsHeap> DropWithContext<C> for CaughtException {
     fn drop_with(self, ctx: &mut C) {
         match self {
             Self::Value(value) => value.drop_with(ctx),
-            Self::Frozen { value, error } => {
+            Self::Frozen { value, error, .. } => {
                 value.drop_with(ctx);
                 error.drop_with(ctx);
             }
@@ -401,6 +408,24 @@ impl VM<'_> {
             exc.object = Some(exc_value.clone_with_heap(self.heap));
         }
 
+        // The saved handler role is durable across suspension and helper frames.
+        // Match the actual object: an unrelated caught exception on the stack
+        // must not shield new body work from cancellation.
+        let unresolved_cleanup_error = self.exception_stack.iter().any(|caught| {
+            matches!(caught, CaughtException::Frozen { unwinding: true, .. })
+                && matches!((caught.value(), &exc_value), (Value::Ref(a), Value::Ref(b)) if a == b)
+        });
+        let public_cleanup_error = self
+            .scheduler
+            .current_task_id()
+            .is_some_and(|id| self.is_public_task(id))
+            && (unresolved_cleanup_error
+                || self.current_frame.code.native_cleanup_at(self.instruction_ip)
+                || self
+                    .suspended_frames
+                    .iter()
+                    .any(|frame| frame.code.native_cleanup_at(frame.ip.saturating_sub(1))));
+
         // Use DropGuard because exc_value is conditionally consumed (pushed onto
         // exception_stack when handler found) or dropped (when no handler found)
         let mut exc_guard = DropGuard::new(exc_value, self);
@@ -437,6 +462,13 @@ impl VM<'_> {
                 };
                 let diagnostic = super::scheduler::InterruptedError::capture(&exc.exc);
                 let signal = this.native_delivery(Some(diagnostic));
+                // Cancellation deferred by a public Task's authored cleanup
+                // cannot replace that cleanup's actual failure. Consume the
+                // delivery, retaining the exact object for joins/group outcomes.
+                if public_cleanup_error {
+                    signal.drop_with(this);
+                    continue;
+                }
                 error.drop_with(this);
                 error = this.attach_frame_to_error(signal);
                 let RunError::Exc(exc) = &error else {
@@ -480,13 +512,15 @@ impl VM<'_> {
                 // Push exception onto the exception_stack for bare raise.
                 // This allows nested except handlers to restore outer
                 // exception context.
-                let caught = if this.current_frame_is_frozen() {
+                let unwinding = !entry.is_except();
+                let caught = if this.current_frame_is_frozen() || unwinding {
                     let RunError::Exc(error) = error else {
                         unreachable!("only catchable exceptions enter handlers")
                     };
                     CaughtException::Frozen {
                         value: exc_value,
                         error: Box::new(error),
+                        unwinding,
                     }
                 } else {
                     error.drop_with(this);
@@ -499,6 +533,20 @@ impl VM<'_> {
 
                 return ExceptionHandlingResult::Caught;
             }
+
+            // An escaping asyncio root error also cancels/drains unfinished
+            // Tasks before crossing the public run boundary. Retain its identity
+            // and original handler-search position across host-driven cleanup.
+            if this.root_error_needs_shutdown() {
+                drop(exc_guard);
+                return match self.root_error_shutdown(error) {
+                    Ok(()) => ExceptionHandlingResult::Caught,
+                    Err(error) => ExceptionHandlingResult::NextTask(error),
+                };
+            }
+
+            this.leave_cleanup_frame();
+            this.leave_run_frame();
 
             // No handler in this frame - pop frame and try outer
             if this.suspended_frames.is_empty() {

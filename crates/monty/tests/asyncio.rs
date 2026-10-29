@@ -1924,3 +1924,329 @@ await main()
         "only the awaited failure reached the main task"
     );
 }
+
+/// Native async context exits suspend through all non-local paths, including restored frames.
+#[test]
+fn native_async_context_exit_paths_restore() {
+    let source = r"
+import asyncio
+trace = []
+class C:
+    async def __aenter__(self):
+        await pulse()
+        return [1, 2]
+    async def __aexit__(self, kind, value, tb):
+        assert tb is None
+        trace.append('normal' if value is None else str(value))
+        await pulse()
+        return True
+async def work():
+    for i in [0]:
+        async with C() as (x, y), C():
+            assert x + y == 3
+            break
+    async with C():
+        raise ValueError('suppressed')
+    async with C():
+        return 7
+assert asyncio.run(work()) == 7
+assert trace == ['normal', 'normal', 'suppressed', 'normal']
+True
+";
+    let mut progress = start_external(source);
+    let mut cuts = 0;
+    loop {
+        match progress {
+            RunProgress::FunctionCall(call) => {
+                let id = call.call_id;
+                let waiting = call.resume_pending(PrintWriter::Stdout).unwrap();
+                let bytes = dump("context.py", None, &[], SessionRef::Running(&waiting)).unwrap();
+                // Dispose the original independently; continue only from a fresh restoration.
+                waiting
+                    .into_resolve_futures()
+                    .unwrap()
+                    .abort(
+                        MontyException::new(ExcType::RuntimeError, Some("abandoned".to_owned())),
+                        PrintWriter::Stdout,
+                    )
+                    .unwrap_err();
+                let Session::Running(restored) = Dump::load(&bytes).unwrap().state else {
+                    panic!("running context snapshot")
+                };
+                progress = resolve_name_lookups(
+                    restored
+                        .into_resolve_futures()
+                        .unwrap()
+                        .resume(
+                            vec![(id, ExtFunctionResult::Return(MontyObject::none()))],
+                            PrintWriter::Stdout,
+                        )
+                        .unwrap(),
+                )
+                .unwrap();
+                cuts += 1;
+            }
+            RunProgress::Complete(value) => {
+                assert_eq!(value, MontyObject::bool(true));
+                assert_eq!(cuts, 8);
+                break;
+            }
+            other => panic!("unexpected progress: {other:?}"),
+        }
+    }
+}
+
+/// Async context protocol results retain ordinary await validation.
+#[test]
+fn native_async_context_rejects_sync_generator() {
+    let source = r"
+import asyncio
+class C:
+    def __aenter__(self):
+        yield 1
+    async def __aexit__(self, kind, value, tb):
+        return False
+async def work():
+    async with C():
+        pass
+asyncio.run(work())
+";
+    let runner = MontyRun::new(source.to_owned(), "context.py", vec![], CompileOptions::default()).unwrap();
+    let error = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::TypeError);
+}
+
+/// Public handles retain aliased results/errors, support repeated inspection,
+/// multiple pending waiters, discarded handles and scope-free child creation.
+#[test]
+fn public_task_results_errors_and_lifetime() {
+    let code = r"
+import asyncio
+async def value():
+    return token
+async def failure():
+    raise ValueError(token)
+async def join(task):
+    return await task
+async def creator():
+    return asyncio.create_task(value())
+async def main():
+    task = asyncio.create_task(value())
+    alias = task
+    assert not task.done() and not task.cancelled()
+    for method in [task.result, task.exception]:
+        try:
+            method()
+            assert False
+        except RuntimeError:
+            pass
+    results = await asyncio.gather(join(task), join(alias), task, task)
+    assert all(item is token for item in results)
+    assert await task is token and await alias is token
+    assert task.done() and not task.cancelled() and not task.cancel()
+    assert task.result() is token and task.exception() is None
+    method = task.result
+    task = alias = None
+    assert method() is token
+    task = await asyncio.create_task(creator())
+    assert await task is token
+    bad = asyncio.create_task(failure())
+    first = None
+    for i in range(2):
+        try:
+            await bad
+            assert False
+        except ValueError as error:
+            assert error.args[0] is token
+            if first is None:
+                first = error
+            else:
+                assert error is first
+    assert bad.exception() is first
+    for i in range(2):
+        try:
+            bad.result()
+            assert False
+        except ValueError as error:
+            assert error is first
+    asyncio.create_task(failure())
+    asyncio.create_task(value())
+    await asyncio.create_task(value())
+    coro = value()
+    scheduled = asyncio.create_task(coro)
+    try:
+        await coro
+        assert False
+    except RuntimeError:
+        pass
+    assert await scheduled is token
+    return True
+token = []
+asyncio.run(main())
+";
+    let mut runner = MontyRun::new(code.to_owned(), "tasks.py", vec![], CompileOptions::default()).unwrap();
+    assert_eq!(
+        runner
+            .run(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+            .unwrap(),
+        MontyObject::bool(true)
+    );
+}
+
+/// Cancellation before first execution, caught cancellation, self-join and
+/// cancellation of a pending Task join all use the ordinary public entry.
+#[test]
+fn public_task_cancellation_and_join_detachment() {
+    let code = r"
+import asyncio
+async def never():
+    assert False, 'cancelled before first activation'
+async def self_join():
+    try:
+        await target
+        assert False
+    except RuntimeError:
+        return 42
+async def main():
+    task = asyncio.create_task(never())
+    assert task.cancel() and task.cancel()
+    try:
+        await task
+        assert False
+    except ValueError:
+        pass
+    assert task.done() and task.cancelled() and not task.cancel()
+    for method in [task.result, task.exception]:
+        try:
+            method()
+            assert False
+        except ValueError:
+            pass
+    global target
+    target = asyncio.create_task(self_join())
+    assert await target == 42
+    return True
+asyncio.run(main())
+";
+    let mut runner = MontyRun::new(code.to_owned(), "cancel-task.py", vec![], CompileOptions::default()).unwrap();
+    assert_eq!(
+        runner
+            .run(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+            .unwrap(),
+        MontyObject::bool(true)
+    );
+}
+
+/// Groups wait on normal exit, return persistent Tasks, preserve every failure,
+/// and reject reuse/foreign admission independently of private child scopes.
+#[test]
+fn public_task_groups_nested_outcomes_and_failures() {
+    let code = r"
+import asyncio
+async def value():
+    return token
+async def failure(label):
+    raise ValueError(label)
+async def nested():
+    async with asyncio.TaskGroup() as inner:
+        handle = inner.create_task(value())
+    return handle.result()
+async def foreign(group):
+    try:
+        group.create_task(value())
+        assert False
+    except RuntimeError:
+        return True
+async def main():
+    unopened = asyncio.TaskGroup()
+    try:
+        unopened.create_task(value())
+        assert False
+    except RuntimeError:
+        pass
+    async with asyncio.TaskGroup() as group:
+        method = group.create_task
+        first = method(value())
+        second = group.create_task(nested())
+        assert await group.create_task(foreign(group))
+        try:
+            group.create_task(42)
+            assert False
+        except TypeError:
+            pass
+    try:
+        group.create_task(value())
+        assert False
+    except RuntimeError:
+        pass
+    assert first.result() is token and second.result() is token
+    assert await first is token
+    try:
+        async with group:
+            assert False
+    except RuntimeError:
+        pass
+    try:
+        async with asyncio.TaskGroup() as broken:
+            broken.create_task(failure('first'))
+            broken.create_task(failure('second'))
+    except RuntimeError as error:
+        assert len(error.args[0]) == 1
+        assert str(error.args[0][0]) == 'first'
+    else:
+        assert False
+    try:
+        async with asyncio.TaskGroup():
+            raise ValueError('body')
+    except RuntimeError as error:
+        assert str(error.args[0][0]) == 'body'
+    else:
+        assert False
+    async with asyncio.TaskGroup() as later:
+        later.create_task(value())
+    return True
+token = []
+asyncio.run(main())
+";
+    let mut runner = MontyRun::new(code.to_owned(), "groups.py", vec![], CompileOptions::default()).unwrap();
+    assert_eq!(
+        runner
+            .run(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+            .unwrap(),
+        MontyObject::bool(true)
+    );
+}
+
+/// Public terminal metadata must report every group failure even though the host
+/// exception API cannot export the guest exception tuple itself.
+#[test]
+fn public_task_group_terminal_metadata_preserves_all_failures() {
+    let code = r"
+import asyncio
+async def tick():
+    return None
+async def first():
+    await asyncio.gather(tick())
+    raise ValueError('first-error')
+async def second():
+    try:
+        await asyncio.gather(tick())
+    finally:
+        raise TypeError('second-error')
+async def main():
+    async with asyncio.TaskGroup() as group:
+        group.create_task(first())
+        group.create_task(second())
+asyncio.run(main())
+";
+    let mut runner = MontyRun::new(code.to_owned(), "aggregate.py", vec![], CompileOptions::default()).unwrap();
+    let error = runner
+        .run(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::RuntimeError);
+    let message = error.message().unwrap();
+    assert!(message.contains("first-error"), "{message}");
+    assert!(message.contains("second-error"), "{message}");
+}

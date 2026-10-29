@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "cases": {
+    "sequential": {"steps": [[["A"], ["A"]], [["B"], ["B"]]], "batches": [{"A":"alpha"}, {"B":"beta"}], "result": ["alpha","beta"]},
+    "gather": {"steps": [[["A","B"], ["A","B"]], [[], ["A"]]], "batches": [{"B":"beta"}, {"A":"alpha"}], "result": {"values":["alpha","beta"],"trace":["B","A"]}},
+    "context": {"steps": [[["acquire"], ["acquire"]], [["body"], ["body"]], [["release"], ["release"]]], "batches": [{"acquire":"acquired"}, {"body":"worked"}, {"release":"released"}], "result": ["acquired","worked","released"]},
+    "finally": {"steps": [[["body"], ["body"]], [["release"], ["release"]]], "batches": [{"body":"worked"}, {"release":"released"}], "result": ["worked","released","body-error"]},
+    "tasks": {"steps": [[["A","B"], ["A","B"]], [[], ["A"]]], "batches": [{"B":"beta"}, {"A":"alpha"}], "result": [["alpha","beta"],"alpha","beta"]},
+    "task_group": {"steps": [[["A","B"], ["A","B"]], [[], ["A"]], [["parent-exit"], ["parent-exit"]]], "batches": [{"B":"beta"}, {"A":"alpha"}, {"parent-exit":"exited"}], "result": ["alpha","beta","exited"]},
+    "queue": {"steps": [[["allow-get"], ["allow-get"]], [["producer-done"], ["producer-done"]]], "batches": [{"allow-get":"go"}, {"producer-done":"done"}], "result": [["one","two"],["done"]]},
+    "host_cancel": {"steps": [[["body"], ["body"]], [["release"], ["release"]], [["audit:[\"released\"]"], ["audit:[\"released\"]"]]], "batches": [{"$cancel":""}, {"$cancel":"SECOND", "release":"released"}, {"audit:[\"released\"]":"audited"}], "cancelled": ""}
+  }
+}

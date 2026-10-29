@@ -945,6 +945,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 match self {
                     Self::Module(m) => Ok(m.py_getattr(attr, vm)),
                     Self::Exception(e) => Ok(e.py_getattr(attr, vm)),
+                    Self::ExternalFuture(future) => Ok(vm.public_task_method(future.id(), attr)),
                     _ => Ok(None),
                 }
             }

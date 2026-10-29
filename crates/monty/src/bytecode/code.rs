@@ -47,6 +47,10 @@ pub struct Code {
     #[serde(default, rename = "P")]
     pub(crate) native_cleanup: Option<Vec<(u32, u32)>>,
 
+    /// Authored cleanup entry points, distinct from cancellation masking ranges.
+    #[serde(default, rename = "U")]
+    pub(crate) native_cleanup_entries: Option<Vec<u32>>,
+
     /// Nop continuation boundaries after cleanup and non-local unwind.
     /// None identifies older code which cannot promise prompt native cancellation.
     #[serde(default, rename = "Q")]
@@ -92,6 +96,7 @@ impl Code {
             exception_table,
             local_names,
             native_cleanup: Some(Vec::new()),
+            native_cleanup_entries: Some(Vec::new()),
             native_cancel_points: Some(Vec::new()),
             native_error_dispatch: true,
             native_matching: Some(Vec::new()),
@@ -194,6 +199,7 @@ impl Clone for Code {
             exception_table: self.exception_table.clone(),
             local_names: self.local_names.clone(),
             native_cleanup: self.native_cleanup.clone(),
+            native_cleanup_entries: self.native_cleanup_entries.clone(),
             native_cancel_points: self.native_cancel_points.clone(),
             native_error_dispatch: self.native_error_dispatch,
             native_matching: self.native_matching.clone(),

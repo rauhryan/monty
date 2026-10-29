@@ -20,7 +20,7 @@ use super::{
 use crate::{
     asyncio::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
-        GatherState, PendingChildren, TaskId,
+        GatherState, PendingChildren, TaskGroupState, TaskId,
     },
     bytecode::{
         Code,
@@ -70,7 +70,26 @@ impl<'h> VM<'h> {
                 let heap_id = *heap_id;
                 let poll = match this.heap.read(heap_id) {
                     HeapReadOutput::Coroutine(coro) => return this.await_coroutine(&coro),
-                    HeapReadOutput::GatherFuture(gather) => this.await_gather_future(gather, awaiter)?,
+                    HeapReadOutput::GatherFuture(gather) => match this.await_gather_future(gather, awaiter) {
+                        Ok(poll) => poll,
+                        Err(error) => {
+                            // Commit can fail after admitting earlier operands
+                            // (for example a reused coroutine in a later slot).
+                            // Such children obey the same cleanup barrier as
+                            // children of an asynchronously failed gather.
+                            if let Some((task_id, true)) = this.gather_lifetime_context() {
+                                this.scheduler.get_task_mut(task_id).native_protected = true;
+                                this.scheduler.block_current_on(heap_id, this.heap);
+                                this.scheduler.make_ready(task_id, Err(error), this.heap);
+                                if this.hold_protected_gather_error(task_id) {
+                                    return this.switch_or_yield();
+                                }
+                                this.scheduler.remove_from_ready_queue(task_id);
+                                return Err(this.scheduler.take_resume_result(task_id).unwrap_err());
+                            }
+                            return Err(error);
+                        }
+                    },
                     HeapReadOutput::ExternalFuture(fut) => this.await_external_future(&fut, awaiter)?,
                     _ => return Err(ExcType::object_not_awaitable(&awaitable.py_type_name(this))),
                 };
@@ -100,7 +119,7 @@ impl<'h> VM<'h> {
     /// and cells, marks it as `Running`, and pushes a frame to execute the coroutine body.
     fn await_coroutine(&mut self, coro: &HeapObjectRead<'h, Coroutine>) -> Result<AwaitResult, RunError> {
         // Check if coroutine can be awaited (must be New)
-        if coro.get(self.heap).state != CoroutineState::New {
+        if coro.get(self.heap).state != CoroutineState::New || self.scheduler.has_coroutine_task(coro.id()) {
             return Err(ExcType::cannot_reuse_already_awaited_coroutine());
         }
 
@@ -276,9 +295,12 @@ impl<'h> VM<'h> {
                     };
                     if let Some((owner, protected)) = lifetime {
                         self.scheduler.get_task_mut(owner).gather_children.push(child);
+                        let group = self.scheduler.get_task_mut(owner).group_parent;
                         let task = self.scheduler.get_task_mut(child);
+                        task.group_parent = group;
                         task.lifetime_parent = Some(owner);
                         task.gather_protected = protected;
+                        task.cleanup_parent_frame = (!protected).then_some(self.suspended_frames.len());
                     }
                     Poll::Pending
                 }
@@ -290,11 +312,38 @@ impl<'h> VM<'h> {
                     };
                     let poll = self.await_external_future(&fut, sub_awaiter)?;
                     if poll.is_pending()
+                        && let Some((owner, true)) = lifetime
+                        && let Some(task) = fut.get(self.heap).public_task.as_ref().and_then(|task| task.task)
+                    {
+                        let waits = self.scheduler.public_gather_waits.entry(owner).or_default();
+                        if !waits.contains(&task) {
+                            waits.push(task);
+                        }
+                    }
+                    if poll.is_pending()
+                        && fut.get(self.heap).public_task.is_none()
                         && let Some((owner, _)) = lifetime
                     {
-                        self.scheduler
-                            .gather_externals
-                            .insert(fut.get(self.heap).call_id, owner);
+                        let call = fut.get(self.heap).call_id;
+                        self.scheduler.gather_externals.insert(call, owner);
+                        if lifetime.is_some_and(|(_, protected)| !protected) {
+                            self.scheduler
+                                .get_task_mut(owner)
+                                .cleanup_externals
+                                .push((call, self.suspended_frames.len()));
+                        }
+                        if let Some(group) = self.scheduler.get_task_mut(owner).group_parent {
+                            let HeapReadOutput::ExternalFuture(group) = self.heap.read(group) else {
+                                unreachable!()
+                            };
+                            group
+                                .get_mut(self.heap)
+                                .task_group
+                                .as_mut()
+                                .expect("group")
+                                .externals
+                                .push(call);
+                        }
                     }
                     poll
                 }
@@ -330,30 +379,17 @@ impl<'h> VM<'h> {
         Ok(None)
     }
 
-    /// Ordinary asyncio outside owned/native execution keeps its existing policy.
+    /// Every ordinary gather installs durable lifetime links, even if its first
+    /// error is caught and its creator completes before the remaining operands.
     fn gather_lifetime_context(&self) -> Option<(TaskId, bool)> {
         let task = self.scheduler.current_task()?;
-        let native = self
-            .suspended_frames
-            .iter()
-            .chain([&self.current_frame])
-            .any(|f| f.generator_activation.as_ref().is_some_and(|a| a.native));
-        if task.scope_open
-            || task.drain.is_some()
-            || task.child_result.is_some()
-            || task.lifetime_parent.is_some()
-            || native
-        {
-            let protected = task.gather_protected
-                || self
-                    .suspended_frames
-                    .iter()
-                    .chain([&self.current_frame])
-                    .any(|f| f.code.native_cleanup_at(f.ip.saturating_sub(1)));
-            Some((task.id, protected))
-        } else {
-            None
-        }
+        let protected = task.gather_protected
+            || self
+                .suspended_frames
+                .iter()
+                .chain([&self.current_frame])
+                .any(|f| f.code.native_cleanup_at(f.ip.saturating_sub(1)));
+        Some((task.id, protected))
     }
 
     /// Settles a fully-committed frame.
@@ -422,6 +458,27 @@ impl<'h> VM<'h> {
     ) -> Result<Poll<Value>, RunError> {
         let mut awaiter_guard = DropGuard::new(awaiter, self);
         let (awaiter, this) = awaiter_guard.as_parts_mut();
+        if fut.get(this.heap).task_group.as_ref().is_some_and(|group| {
+            group.state != TaskGroupState::Exiting && group.state != TaskGroupState::Finished
+                || !matches!(awaiter, Awaiter::Task(task) if Some(*task) == group.owner)
+        }) {
+            return Err(ExcType::type_error(
+                "TaskGroup is an async context manager, not an awaitable",
+            ));
+        }
+        if fut.get(this.heap).public_task.is_some() {
+            this.prepare_public_join(fut.id(), awaiter)?;
+            if matches!(fut.get(this.heap).state, ExternalFutureState::Pending { .. }) {
+                let awaiter = awaiter_guard.into_inner();
+                fut.get_mut(self.heap)
+                    .public_task
+                    .as_mut()
+                    .expect("public task")
+                    .waiters
+                    .push(awaiter);
+                return Ok(Poll::Pending);
+            }
+        }
         this.prepare_queue_operation(fut.id(), awaiter)?;
         this.prepare_child_join(fut.id(), awaiter)?;
         match &fut.get(this.heap).state {
@@ -488,7 +545,7 @@ impl<'h> VM<'h> {
     }
 
     /// Selects another task after blocking, or yields to the host with the current context intact.
-    fn switch_or_yield(&mut self) -> Result<AwaitResult, RunError> {
+    pub(super) fn switch_or_yield(&mut self) -> Result<AwaitResult, RunError> {
         if let Some(next_task_id) = self.scheduler.next_ready_task() {
             self.activate_task(next_task_id)?;
             Ok(AwaitResult::FramePushed)
@@ -504,6 +561,9 @@ impl<'h> VM<'h> {
             .scheduler
             .current_task_id()
             .expect("handle_task_completion called without current task");
+        if self.is_public_task(task_id) {
+            return self.complete_public_task(Ok(result));
+        }
         if self.scheduler.get_task_mut(task_id).child_result.is_some() {
             return self.complete_owned_child(Ok(result));
         }
@@ -521,8 +581,12 @@ impl<'h> VM<'h> {
         coro.get_mut(self.heap).state = CoroutineState::Completed;
         drop(coro);
 
+        let group = self.scheduler.get_task_mut(task_id).group_parent;
         let parent = self.scheduler.transfer_gather_lifetime(task_id);
         self.scheduler.cancel_task(task_id, self.heap);
+        if let Some(group) = group {
+            self.task_group_child_completed(group, false);
+        }
 
         let delivery = if let Some(awaiter) = awaiter {
             self.deliver_awaiter_success(awaiter, result)
@@ -563,6 +627,10 @@ impl<'h> VM<'h> {
             .expect("handle_task_failure called without current task");
         debug_assert!(!task_id.is_main(), "handle_task_failure called for main task");
 
+        if self.is_public_task(task_id) {
+            self.complete_public_task(Err(error))?;
+            return Ok(());
+        }
         if self.scheduler.get_task_mut(task_id).child_result.is_some() {
             self.complete_owned_child(Err(error))?;
             return Ok(());
@@ -577,13 +645,32 @@ impl<'h> VM<'h> {
             None
         };
         if delivery.is_none() {
+            if let Some(group) = self.scheduler.get_task_mut(task_id).group_parent
+                && let Some(value) = &retained
+            {
+                let value = value.clone_with_heap(self.heap);
+                let HeapReadOutput::ExternalFuture(group) = self.heap.read(group) else {
+                    unreachable!()
+                };
+                group
+                    .get_mut(self.heap)
+                    .task_group
+                    .as_mut()
+                    .expect("group")
+                    .errors
+                    .push(value);
+            }
             self.scheduler.get_task_mut(task_id).gather_errors.extend(retained);
         } else {
             retained.drop_with(self);
         }
+        let group = self.scheduler.get_task_mut(task_id).group_parent;
         let parent = self.scheduler.transfer_gather_lifetime(task_id);
         self.cleanup_current_task();
         self.scheduler.cancel_task(task_id, self.heap);
+        if let Some(group) = group {
+            self.task_group_child_completed(group, false);
+        }
         if let Some(parent) = parent {
             self.finish_child_drain(parent);
         }
@@ -626,12 +713,17 @@ impl<'h> VM<'h> {
     ///
     /// Serializes frames, moves stack/exception_stack, stores instruction_ip,
     /// and adjusts the global recursion depth counter.
-    fn save_task_context(&mut self, task_id: TaskId) {
-        let protected = self
-            .suspended_frames
-            .iter()
-            .chain([&self.current_frame])
-            .any(|f| f.code.native_cleanup_at(f.ip.saturating_sub(1)));
+    pub(super) fn save_task_context(&mut self, task_id: TaskId) {
+        let barrier = self
+            .scheduler
+            .task(task_id)
+            .is_some_and(|task| task.root_shutdown.is_some() || task.cleanup_shutdown.is_some());
+        let protected = barrier
+            || self
+                .suspended_frames
+                .iter()
+                .chain([&self.current_frame])
+                .any(|f| f.code.native_cleanup_at(f.ip.saturating_sub(1)));
         self.scheduler.get_task_mut(task_id).native_protected = protected;
         let mut frames: Vec<SerializedTaskFrame> = self
             .suspended_frames
@@ -897,6 +989,10 @@ impl<'h> VM<'h> {
         }
         drop(fut);
         if let Some(owner) = this.scheduler.gather_externals.remove(&call_id) {
+            this.scheduler
+                .get_task_mut(owner)
+                .cleanup_externals
+                .retain(|(call, _)| *call != call_id);
             this.finish_child_drain(owner);
         }
     }
@@ -978,7 +1074,37 @@ impl<'h> VM<'h> {
             GatherErrorDelivery::None
         };
         this.scheduler.make_ready(target, Err(error), this.heap);
+        // Protected ordinary cleanup cannot continue to parent release while a
+        // failed gather still owns children. Keep the first error in Ready (so
+        // late settlements cannot overwrite it), but withhold its runnable slot.
+        // Explicit experimental scopes retain their separate drain/error policy.
+        if gathered && this.hold_protected_gather_error(target) {
+            return None;
+        }
         Some(target)
+    }
+
+    /// A Ready(error) owns the retained first error; only its runnable slot is
+    /// withheld. Lifetime completion, including transferred descendants, releases
+    /// the slot. Late gather settlements cannot overwrite this ready state.
+    fn hold_protected_gather_error(&mut self, target: TaskId) -> bool {
+        let external = self.scheduler.gather_externals.values().any(|owner| *owner == target);
+        let public = self
+            .scheduler
+            .public_gather_waits
+            .get(&target)
+            .is_some_and(|waits| !waits.is_empty());
+        let task = self.scheduler.get_task_mut(target);
+        if (task.native_protected || task.gather_protected)
+            && task.scope_token.is_none()
+            && (!task.gather_children.is_empty() || external || public)
+        {
+            task.pending_gather_error = GatherErrorDelivery::Draining;
+            self.scheduler.remove_from_ready_queue(target);
+            true
+        } else {
+            false
+        }
     }
 
     /// Records a host rejection and queues the task that must raise it.
@@ -997,6 +1123,12 @@ impl<'h> VM<'h> {
         };
         error.materialize_object(this.heap);
         let owner = this.scheduler.gather_externals.remove(&CallId::new(call_id));
+        if let Some(owner) = owner {
+            this.scheduler
+                .get_task_mut(owner)
+                .cleanup_externals
+                .retain(|(call, _)| *call != CallId::new(call_id));
+        }
         let retained = if owner.is_some() {
             if let RunError::Exc(exc) = &error {
                 exc.object.as_ref().map(|v| v.clone_with_heap(this.heap))
@@ -1077,6 +1209,8 @@ impl<'h> VM<'h> {
     pub(crate) fn settled_awaitable(&mut self, value: Value) -> Value {
         let call_id = self.allocate_call_id();
         let future = ExternalFuture {
+            public_task: None,
+            task_group: None,
             call_id,
             state: ExternalFutureState::Resolved(value),
             sleep_result: None,
@@ -1154,7 +1288,7 @@ impl<'h> VM<'h> {
             return self.deliver_native_cancel();
         }
         self.check_native_cancel_code()?;
-        let native = self
+        let native_generator = self
             .suspended_frames
             .iter()
             .chain([&self.current_frame])
@@ -1164,14 +1298,27 @@ impl<'h> VM<'h> {
                     .iter()
                     .any(|f| f.generator_activation.as_ref().is_some_and(|a| a.native))
             });
-        if !native {
+        let coroutine = self
+            .suspended_frames
+            .iter()
+            .chain([&self.current_frame])
+            .any(|f| self.is_coroutine_frame(f.function_id))
+            || self
+                .scheduler
+                .main_task()
+                .is_some_and(|task| task.frames.iter().any(|f| self.is_coroutine_frame(f.function_id)));
+        if !native_generator && !coroutine {
             return Err(MontyException::runtime_error("native cancellation requires a suspended native task").into());
         }
-        let targets = self.scheduler.owned_task_tree(self.heap);
-        for id in targets {
-            self.cancel_child_task(id, reason);
-        }
+        self.scheduler.adopt_root_tasks();
+        self.cancel_public_task_reason(TaskId::default(), reason);
         self.deliver_native_cancel()
+    }
+
+    /// Function identity survives task parking and snapshot restoration. Module-level
+    /// await and ordinary generators retain their separate execution policies.
+    pub(super) fn is_coroutine_frame(&self, function: Option<FunctionId>) -> bool {
+        function.is_some_and(|id| self.interns.get_function(id).is_async)
     }
 
     /// Older genuine dumps remain usable for ordinary execution, but cannot
@@ -1206,6 +1353,9 @@ impl<'h> VM<'h> {
     pub(super) fn native_cleanup_continuation(&mut self, returning: bool) -> RunResult<()> {
         if self.scheduler.current_task().is_some_and(|task| task.gather_protected) {
             return Ok(());
+        }
+        if let Some(error) = self.pending_group_interrupt() {
+            return Err(error);
         }
         let Some(cancel) = self
             .scheduler
@@ -1278,12 +1428,12 @@ impl<'h> VM<'h> {
         cancel.interrupted_error = diagnostic;
         cancel.delivered = true;
         let mut signal: RunError = MontyException::new(ExcType::ValueError, Some(cancel.reason.clone())).into();
-        if self.scheduler.get_task_mut(task_id).lifetime_parent.is_some() {
-            signal.materialize_object(self.heap);
-            if let RunError::Exc(error) = &signal {
-                self.scheduler.get_task_mut(task_id).child_cancel_signal =
-                    error.object.as_ref().map(|value| value.clone_with_heap(self.heap));
-            }
+        // Root groups also need the exact cancellation identity to exclude
+        // their own delivery from ordinary body failure aggregation.
+        signal.materialize_object(self.heap);
+        if let RunError::Exc(error) = &signal {
+            self.scheduler.get_task_mut(task_id).child_cancel_signal =
+                error.object.as_ref().map(|value| value.clone_with_heap(self.heap));
         }
         signal
     }

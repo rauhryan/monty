@@ -11,18 +11,18 @@ use super::{CallResult, VM};
 use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::HeapReadOutput,
+    heap::{HeapData, HeapReadOutput},
     types::PyTrait,
     value::Value,
 };
 
 impl VM<'_> {
-    /// Class-only async methods for the explicit host continuation dialect.
+    /// Class-only async protocol calls shared by native and generator continuations.
     pub(super) fn exec_host_context(&mut self, mode: u8) -> RunResult<CallResult> {
         let this = self;
         let index = this.stack.len() - if mode == 2 { 2 } else { 1 };
         let Value::Ref(ctx_id) = this.stack[index] else {
-            return Err(ExcType::type_error("host async context requires a user instance"));
+            return Err(ExcType::type_error("async context requires a user instance"));
         };
         let exc = if mode == 2 {
             let Value::Ref(id) = this.stack[index + 1] else {
@@ -34,8 +34,11 @@ impl VM<'_> {
         };
         let owned = if mode == 1 { Some(this.pop()) } else { None };
         defer_drop!(owned, this);
+        if matches!(this.heap.get(ctx_id), HeapData::ExternalFuture(f) if f.task_group.is_some()) {
+            return this.task_group_context(ctx_id, mode, exc);
+        }
         let HeapReadOutput::Instance(ctx) = this.heap.read(ctx_id) else {
-            return Err(ExcType::type_error("host async context requires a user instance"));
+            return Err(ExcType::type_error("async context requires a user instance"));
         };
         ctx.call_host_context(this, mode == 0, exc)
     }

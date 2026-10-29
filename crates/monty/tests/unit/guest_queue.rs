@@ -128,3 +128,57 @@ fn queue_counts(vm: &VM<'_>, id: HeapId) -> (usize, usize, usize, bool) {
     let q = f.queue.as_ref().unwrap();
     (q.values.len(), q.getters.len(), q.putters.len(), q.reserved.is_some())
 }
+
+/// Public construction cannot create a host settlement route, including when an
+/// item/slot is reserved. Dropping an unstarted operation does not mutate storage.
+#[test]
+fn ownership_queue_public_host_isolation() {
+    let mut heap = Heap::new(32, ResourceTracker::default());
+    let tables = SessionTables {
+        interns: Interns::new(""),
+        global_names: NameMap::new(),
+    };
+    let program = Program::for_tests();
+    HeapReader::with(&mut heap, &mut (program, tables), |heap, (program, tables)| {
+        let mut vm = VM::new(vec![], tables, program, heap, PrintWriter::Disabled);
+        let baseline = vm.heap.entry_count();
+        for size in [0, -2, 1, 4_294_967_295] {
+            for _ in 0..32 {
+                let queue = vm.new_public_queue(&Value::Int(size)).unwrap();
+                let Value::Ref(qid) = &queue else { unreachable!() };
+                let put = vm.new_queue_operation(&queue, Some(&Value::Int(123))).unwrap();
+                assert_eq!(queue_counts(&vm, *qid), (0, 0, 0, false));
+                put.drop_with(&mut vm);
+                let put = vm.new_queue_operation(&queue, Some(&Value::Int(123))).unwrap();
+                let Value::Ref(id) = &put else { unreachable!() };
+                let task = TaskId::default();
+                vm.prepare_queue_operation(*id, &Awaiter::Task(task)).unwrap();
+                vm.scheduler.block_current_on(*id, vm.heap);
+                vm.wake_queue_operation(*id);
+                assert_eq!(queue_counts(&vm, *qid), (0, 0, 1, true));
+                vm.resolve_future(u32::MAX, Value::Int(999));
+                assert_eq!(queue_counts(&vm, *qid), (0, 0, 1, true));
+                vm.scheduler.remove_from_ready_queue(task);
+                vm.activate_task(task).unwrap();
+                vm.pop().drop_with(&mut vm);
+                put.drop_with(&mut vm);
+                let get = vm.new_queue_operation(&queue, None).unwrap();
+                let Value::Ref(id) = &get else { unreachable!() };
+                vm.prepare_queue_operation(*id, &Awaiter::Task(task)).unwrap();
+                vm.scheduler.block_current_on(*id, vm.heap);
+                vm.wake_queue_operation(*id);
+                assert_eq!(queue_counts(&vm, *qid), (1, 1, 0, true));
+                vm.resolve_future(u32::MAX, Value::Int(999));
+                assert_eq!(queue_counts(&vm, *qid), (1, 1, 0, true));
+                vm.scheduler.remove_from_ready_queue(task);
+                vm.activate_task(task).unwrap();
+                assert!(matches!(vm.pop(), Value::Int(123)));
+                get.drop_with(&mut vm);
+                assert_eq!(queue_counts(&vm, *qid), (0, 0, 0, false));
+                queue.drop_with(&mut vm);
+                vm.heap.collect_cycles();
+                assert_eq!(vm.heap.entry_count(), baseline, "public queue before teardown");
+            }
+        }
+    });
+}

@@ -18,8 +18,6 @@ before any code runs. Other restrictions are described in their feature sections
     scope and applied bottom-up. Rejected at parse time on **methods**, so
     `@classmethod`, `@staticmethod`, `@property` and any decorator on a `def`
     inside a class body are unavailable. See [classes.md](classes.md).
-- **`async with` statements** — rejected by default; available in the explicit experimental
-    [host coroutine dialect](asyncio.md#experimental-host-coroutine-dialect).
 - **`del` statements** — neither `del x` nor `del d[k]` parse.
 - **`try*` / `except*` exception groups** — PEP 654 syntax rejected.
 - **`type` aliases** (PEP 695 `type Foo = int`).

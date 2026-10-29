@@ -17,8 +17,11 @@ mod guest_queue;
 mod namespace;
 mod owned_children;
 mod pattern;
+mod public_tasks;
 mod recursion;
+mod run_cleanup;
 mod scheduler;
+mod task_groups;
 
 use std::{borrow::Cow, mem};
 
@@ -1247,14 +1250,32 @@ impl<'h> VM<'h> {
                 effect,
             },
             CallResult::AwaitValue(value) => {
-                // Push the value and implicitly await it (used by asyncio.run())
+                // Capture the frame installed by this call, rather than guessing
+                // the run boundary later from instruction or wrapper depth.
+                if self
+                    .scheduler
+                    .current_task()
+                    .is_some_and(|task| task.run_frame.is_some() || task.run_owner.is_some())
+                {
+                    value.drop_with(self);
+                    return Err(SimpleException::new_msg(
+                        ExcType::RuntimeError,
+                        "asyncio.run() cannot be called from a running event loop",
+                    )
+                    .into());
+                }
+                let run_frame = self.suspended_frames.len() + 1;
                 self.push(value);
                 return match self.exec_get_awaitable()? {
                     AwaitResult::ValueReady(value) => {
                         self.push(value);
                         Ok(None)
                     }
-                    AwaitResult::FramePushed => Ok(None),
+                    AwaitResult::FramePushed => {
+                        let owner = self.scheduler.current_task_id().expect("run caller");
+                        self.scheduler.get_task_mut(owner).run_frame = Some(run_frame);
+                        Ok(None)
+                    }
                     AwaitResult::Yield(pending_calls) => Ok(Some(FrameExit::ResolveFutures(pending_calls))),
                 };
             }
@@ -1335,6 +1356,15 @@ impl<'h> VM<'h> {
 
             // Track instruction IP for exception table lookup
             self.instruction_ip = self.current_frame.ip;
+
+            if let Some(result) = self.ordinary_cleanup_barrier() {
+                match result {
+                    Ok(AwaitResult::Yield(pending)) => return Ok(FrameExit::ResolveFutures(pending)),
+                    Ok(_) => {}
+                    Err(error) => catch!(self, error),
+                }
+                continue;
+            }
 
             if self
                 .current_frame
@@ -2024,10 +2054,20 @@ impl<'h> VM<'h> {
                 }
                 // Return
                 Opcode::ReturnValue => {
+                    if let Some(result) = self.root_shutdown_return() {
+                        match result {
+                            Ok(AwaitResult::Yield(pending)) => return Ok(FrameExit::ResolveFutures(pending)),
+                            Ok(_) => {}
+                            Err(error) => catch!(self, error),
+                        }
+                        continue;
+                    }
                     if let Err(error) = self.native_cleanup_continuation(true) {
                         catch!(self, error);
                         continue;
                     }
+                    self.leave_cleanup_frame();
+                    self.leave_run_frame();
                     let value = self.pop();
                     if self.current_frame.generator_activation.is_some() {
                         try_catch!(self, self.finish_generator(value));

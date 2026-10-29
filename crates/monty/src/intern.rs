@@ -1274,6 +1274,13 @@ pub enum StaticStrings {
     Gammavariate,
     /// `asyncio.gather()` function.
     Gather,
+    #[strum(serialize = "create_task")]
+    CreateTask,
+    #[strum(serialize = "TaskGroup")]
+    TaskGroup,
+    #[strum(serialize = "Queue")]
+    AsyncioQueue,
+    Item,
     #[strum(serialize = "_spawn")]
     NativeSpawn,
     #[strum(serialize = "_scope")]

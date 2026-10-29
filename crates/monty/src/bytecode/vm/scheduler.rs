@@ -13,7 +13,7 @@ use smallvec::{SmallVec, smallvec};
 use super::{FrameNamespace, exceptions::CaughtException, guest_queue::finish_queue_operation};
 use crate::{
     asyncio::{Awaiter, CallId, TaskId},
-    exception_private::{RunResult, SimpleException},
+    exception_private::{RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, Heap, HeapId, HeapReadOutput, HeapReader},
     intern::{FunctionId, StringId},
     value::Value,
@@ -95,6 +95,42 @@ pub(crate) struct Task {
     /// Owned drain future while scope exit waits for children.
     #[serde(default)]
     pub drain: Option<HeapId>,
+    /// Owning roots for nested public groups; membership borrows the owner's root.
+    #[serde(default)]
+    pub groups: Vec<HeapId>,
+    #[serde(default)]
+    pub group_parent: Option<HeapId>,
+    /// The interrupted body waits only for its current await graph, rather
+    /// than unrelated children of an outer group owned by the same task.
+    #[serde(default)]
+    pub group_body_waits: Option<Vec<TaskId>>,
+    /// Root normal-return shutdown barrier; separate from physical disposal.
+    #[serde(default)]
+    pub root_shutdown: Option<HeapId>,
+    #[serde(default)]
+    pub root_shutdown_error: Option<RunError>,
+    /// Exact frame installed by the public run call, independent of sync wrappers.
+    /// Older producers did not record a run boundary.
+    #[serde(default)]
+    pub run_frame: Option<usize>,
+    /// Enclosing explicit run inherited at task admission; a borrowed live task ID.
+    #[serde(default)]
+    pub run_owner: Option<TaskId>,
+    /// Frame in the lifetime parent which admitted this gather continuation.
+    /// Public Tasks have no implicit lexical cleanup obligation.
+    #[serde(default)]
+    pub cleanup_parent_frame: Option<usize>,
+    /// Transferred descendants retain the established normal-wait contract.
+    #[serde(default)]
+    pub cleanup_transferred: CleanupLifetime,
+    /// Borrowed direct external gather slots and their admitting frames.
+    #[serde(default)]
+    pub cleanup_externals: Vec<(CallId, usize)>,
+    /// Protected wait before an admitting frame enters authored cleanup.
+    #[serde(default)]
+    pub cleanup_shutdown: Option<HeapId>,
+    #[serde(default)]
+    pub cleanup_shutdown_frame: Option<usize>,
     /// Current execution state.
     state: TaskState,
     /// First cancellation cause, independent of guest exceptions and physical disposal.
@@ -105,12 +141,36 @@ pub(crate) struct Task {
     pub native_protected: bool,
 }
 
+/// Distinct cleanup policies are lifetime roles, not independent task flags.
+/// Keep the bool representation written by initial round8 producers.
+#[derive(Debug, Default, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(from = "bool", into = "bool")]
+pub(crate) enum CleanupLifetime {
+    #[default]
+    Admitted,
+    Transferred,
+}
+
+impl From<bool> for CleanupLifetime {
+    fn from(transferred: bool) -> Self {
+        if transferred { Self::Transferred } else { Self::Admitted }
+    }
+}
+
+impl From<CleanupLifetime> for bool {
+    fn from(policy: CleanupLifetime) -> Self {
+        policy == CleanupLifetime::Transferred
+    }
+}
+
 /// A queued gather error remains unconsumed until task activation.
 #[derive(Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum GatherErrorDelivery {
     #[default]
     None,
     Pending,
+    /// The ready error owns its roots but cannot run until protected children drain.
+    Draining,
 }
 
 /// Plain owned metadata: no heap edges or guest-controlled latch.
@@ -165,10 +225,14 @@ impl<C: ContainsHeap> DropWithContext<C> for Task {
             frame.namespace.drop_with(heap);
             frame.generator_activation.drop_with(heap);
         }
+        for id in self.groups.drain(..) {
+            heap.heap_mut().dec_ref(id);
+        }
         self.scope_token.take().drop_with(heap);
         self.child_cancel_signal.take().drop_with(heap);
         self.gather_errors.drain(..).drop_with(heap);
         self.state.drop_with(heap);
+        self.root_shutdown_error.take().drop_with(heap);
         for id in self
             .children
             .drain(..)
@@ -176,6 +240,8 @@ impl<C: ContainsHeap> DropWithContext<C> for Task {
             .chain(self.pending_join.take())
             .chain(self.pending_queue.take())
             .chain(self.drain.take())
+            .chain(self.root_shutdown.take())
+            .chain(self.cleanup_shutdown.take())
         {
             heap.heap_mut().dec_ref(id);
         }
@@ -245,6 +311,18 @@ impl Task {
             pending_join: None,
             pending_queue: None,
             drain: None,
+            groups: Vec::new(),
+            group_parent: None,
+            group_body_waits: None,
+            root_shutdown: None,
+            root_shutdown_error: None,
+            run_frame: None,
+            run_owner: None,
+            cleanup_parent_frame: None,
+            cleanup_transferred: CleanupLifetime::Admitted,
+            cleanup_externals: Vec::new(),
+            cleanup_shutdown: None,
+            cleanup_shutdown_frame: None,
             native_cancel: None,
             native_protected: false,
         }
@@ -286,6 +364,10 @@ pub(crate) struct Scheduler {
     /// dispatch from coroutine heap id back to the driving task without
     /// scanning all tasks.
     coroutine_to_task: AHashMap<HeapId, TaskId>,
+    /// Borrowed live task IDs awaited by protected gathers or forwarded cancellation. Public Tasks may
+    /// have several waiters, so these barriers are independent of ownership.
+    #[serde(default)]
+    pub public_gather_waits: AHashMap<TaskId, Vec<TaskId>>,
 }
 
 impl Scheduler {
@@ -305,6 +387,7 @@ impl Scheduler {
             pending_externals: AHashMap::new(),
             gather_externals: AHashMap::new(),
             coroutine_to_task: AHashMap::new(),
+            public_gather_waits: AHashMap::new(),
         }
     }
 
@@ -334,10 +417,15 @@ impl Scheduler {
         let mut index = 0;
         while index < ids.len() {
             if let Some(task) = self.tasks.get(&ids[index]) {
-                ids.extend(task.gather_children.iter().copied());
+                for child in &task.gather_children {
+                    if !ids.contains(child) {
+                        ids.push(*child);
+                    }
+                }
                 for child in &task.children {
                     if let HeapReadOutput::ExternalFuture(future) = heap.read(*child)
                         && let Some(id) = future.get(heap).child.as_ref().and_then(|child| child.task)
+                        && !ids.contains(&id)
                     {
                         ids.push(id);
                     }
@@ -353,21 +441,80 @@ impl Scheduler {
     pub fn transfer_gather_lifetime(&mut self, id: TaskId) -> Option<TaskId> {
         let task = self.tasks.get_mut(&id).expect("live task");
         let parent = task.lifetime_parent?;
+        let cleanup_frame = task.cleanup_parent_frame;
+        let externals = mem::take(&mut task.cleanup_externals);
         let children = mem::take(&mut task.gather_children);
         let errors = mem::take(&mut task.gather_errors);
         for child in &children {
             self.get_task_mut(*child).lifetime_parent = Some(parent);
+            self.get_task_mut(*child).cleanup_parent_frame = cleanup_frame;
+            self.get_task_mut(*child).cleanup_transferred = CleanupLifetime::Transferred;
         }
         for owner in self.gather_externals.values_mut() {
             if *owner == id {
                 *owner = parent;
             }
         }
+        if let Some(waiting) = self.public_gather_waits.remove(&id) {
+            self.public_gather_waits.entry(parent).or_default().extend(waiting);
+        }
         let owner = self.get_task_mut(parent);
+        let depth = cleanup_frame.or(owner.run_frame).unwrap_or(0);
+        owner
+            .cleanup_externals
+            .extend(externals.into_iter().map(|(call, _)| (call, depth)));
         owner.gather_children.retain(|child| *child != id);
         owner.gather_children.extend(children);
         owner.gather_errors.extend(errors);
         Some(parent)
+    }
+
+    /// Older genuine snapshots may predate ordinary/public root edges. Adopt
+    /// otherwise unowned live continuations before logical shutdown, never drop them.
+    pub fn adopt_root_tasks(&mut self) {
+        let root = TaskId::default();
+        let mut children: Vec<_> = self
+            .tasks
+            .values()
+            .filter_map(|task| {
+                (!task.id.is_main() && (task.lifetime_parent.is_none() || task.lifetime_parent == Some(root)))
+                    .then_some(task.id)
+            })
+            .collect();
+        children.sort_unstable();
+        for child in children {
+            self.get_task_mut(child).lifetime_parent = Some(root);
+            let task = self.get_task_mut(root);
+            if !task.gather_children.contains(&child) {
+                task.gather_children.push(child);
+            }
+        }
+    }
+
+    /// Membership is captured at admission, not inferred from the execution root.
+    pub fn run_tasks(&self, owner: TaskId) -> Vec<TaskId> {
+        let mut tasks: Vec<_> = self
+            .tasks
+            .values()
+            .filter_map(|task| (task.run_owner == Some(owner)).then_some(task.id))
+            .collect();
+        tasks.sort_unstable();
+        tasks
+    }
+
+    pub fn run_externals(&self, owner: TaskId) -> Vec<CallId> {
+        let task = self.task(owner).expect("run owner");
+        let Some(depth) = task.run_frame else { return Vec::new() };
+        task.cleanup_externals
+            .iter()
+            .filter_map(|(call, frame)| {
+                (*frame >= depth && self.gather_externals.get(call) == Some(&owner)).then_some(*call)
+            })
+            .collect()
+    }
+
+    pub fn group_has_tasks(&self, group: HeapId) -> bool {
+        self.tasks.values().any(|task| task.group_parent == Some(group))
     }
 
     /// Currently loaded task, for task-local cancellation policy.
@@ -469,6 +616,38 @@ impl Scheduler {
         self.ready_queue.retain(|&id| id != task_id);
     }
 
+    /// Release a protected gather's first error only after all lifetime obligations settle.
+    pub fn finish_gather_barrier(&mut self, owner: TaskId) {
+        if self.gather_externals.values().any(|task| *task == owner)
+            || self
+                .public_gather_waits
+                .get(&owner)
+                .is_some_and(|waits| !waits.is_empty())
+        {
+            return;
+        }
+        let drained = self.task(owner).is_some_and(|task| {
+            task.group_body_waits.as_ref().map_or_else(
+                || task.gather_children.is_empty(),
+                |waits| waits.iter().all(|id| !self.tasks.contains_key(id)),
+            )
+        });
+        let task = self.get_task_mut(owner);
+        if task.pending_gather_error == GatherErrorDelivery::Draining && drained {
+            task.group_body_waits = None;
+            task.pending_gather_error = GatherErrorDelivery::Pending;
+            self.ready_queue.push_back(owner);
+        }
+    }
+
+    pub fn coroutine_task(&self, id: HeapId) -> Option<TaskId> {
+        self.coroutine_to_task.get(&id).copied()
+    }
+
+    pub fn has_coroutine_task(&self, id: HeapId) -> bool {
+        self.coroutine_to_task.contains_key(&id)
+    }
+
     /// Spawns a new task from a coroutine, enforcing one-task-per-coroutine.
     ///
     /// Returns `None` if `coroutine_id` is already driving a task —
@@ -501,7 +680,10 @@ impl Scheduler {
             }
         });
 
-        let task = Task::new(task_id, Some(coroutine_id), awaiter);
+        let mut task = Task::new(task_id, Some(coroutine_id), awaiter);
+        task.run_owner = self
+            .current_task()
+            .and_then(|parent| parent.run_frame.map(|_| parent.id).or(parent.run_owner));
         self.tasks.insert(task_id, task);
         self.coroutine_to_task.insert(coroutine_id, task_id);
         self.ready_queue.push_back(task_id);
@@ -570,6 +752,7 @@ impl Scheduler {
         }
 
         self.ready_queue.retain(|&id| id != task_id);
+        self.public_gather_waits.remove(&task_id);
 
         pending.extend(task.gather_children.iter().copied());
         self.gather_externals.retain(|_, owner| *owner != task_id);
@@ -642,11 +825,6 @@ impl Scheduler {
             .is_some_and(|task| matches!(task.state, TaskState::Blocked(_)))
     }
 
-    /// Number of tasks the scheduler still holds.
-    ///
-    /// Test-only: a task whose await has already failed must not stay parked,
-    /// and a finished run tears the scheduler down, so this count while
-    /// suspended is the only way a test can see one.
     #[cfg(feature = "test-hooks")]
     pub fn task_count(&self) -> usize {
         self.tasks.len()

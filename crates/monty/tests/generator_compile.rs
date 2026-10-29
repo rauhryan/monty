@@ -144,3 +144,25 @@ fn host_async_dialect_boundaries() {
     )
     .unwrap();
 }
+
+/// Async context syntax must not inherit permission across lexical function/class boundaries.
+#[test]
+fn native_async_context_lexical_boundaries() {
+    for source in [
+        "async with C():\n    pass",
+        "async def outer():\n    def inner():\n        async with C():\n            pass",
+        "async def outer():\n    class C:\n        async with D():\n            pass",
+    ] {
+        assert!(
+            MontyRun::new(source.to_owned(), "context.py", vec![], CompileOptions::default()).is_err(),
+            "{source}"
+        );
+    }
+    MontyRun::new(
+        "async def f():\n    async with C():\n        pass".to_owned(),
+        "context.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+}

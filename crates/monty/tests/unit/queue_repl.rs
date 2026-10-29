@@ -126,3 +126,48 @@ fn ownership_queue_fifo_reservation_cancel() {
         });
     }
 }
+
+/// The public coroutine wrapper retains the original activation-time arbitration:
+/// cancelling a reserved first waiter gives the next FIFO waiter the same item/slot.
+#[test]
+fn ownership_queue_public_fifo_reservation_cancel() {
+    for (fixture, put) in [
+        (
+            include_str!("../../../../tools/coroutines/native_async_queues/cases/bounded-fifo.py"),
+            true,
+        ),
+        (
+            include_str!("../../../../tools/coroutines/native_async_queues/cases/getters-fifo.py"),
+            false,
+        ),
+    ] {
+        let repl = MontyRepl::new("queues.py", ResourceTracker::default(), CompileOptions::default());
+        let mut progress = repl
+            .feed_start(
+                fixture,
+                vec![("exchange".into(), MontyObject::function("exchange", None))],
+                PrintWriter::Disabled,
+            )
+            .unwrap();
+        while let ReplProgress::FunctionCall(call) = progress {
+            progress = call.resume_pending(PrintWriter::Disabled).unwrap();
+        }
+        let ReplResolveFutures {
+            mut repl,
+            mut executor,
+            vm_state,
+            ..
+        } = progress.into_resolve_futures().unwrap();
+        HeapReader::with(&mut repl.heap, &mut executor, |reader, executor| {
+            let mut vm = VM::restore(
+                vm_state,
+                &mut executor.tables,
+                &executor.program,
+                reader,
+                PrintWriter::Disabled,
+            );
+            vm.ownership_probe_queue_waiter(put);
+            reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+        });
+    }
+}

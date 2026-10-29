@@ -5,7 +5,7 @@ external calls. The sandbox schedules its own tasks; host event loops execute ex
 
 ## Module surface
 
-The `asyncio` module exposes exactly three functions:
+The public module surface includes `run`, `gather`, `sleep`, `create_task`, `TaskGroup` and `Queue`:
 
 - `asyncio.run(coro)` — runs a coroutine to completion. Returns the value
     the coroutine `return`s, or re-raises an exception from it.
@@ -22,16 +22,90 @@ The `asyncio` module exposes exactly three functions:
 
 Not implemented (raise `AttributeError`):
 
-`create_task`, `wait`, `wait_for`, `shield`, `to_thread`,
-`new_event_loop`, `get_event_loop`, `get_running_loop`, `Queue`, `Lock`,
-`Semaphore`, `Event`, `Future`, `Task`, `TaskGroup`, `timeout`,
+`wait`, `wait_for`, `shield`, `to_thread`,
+`new_event_loop`, `get_event_loop`, `get_running_loop`, `Lock`,
+`Semaphore`, `Event`, `Future`, `Task`, `timeout`,
 `timeout_at`, `Timeout`, `as_completed`, `iscoroutine`, `ensure_future`,
 the whole `asyncio.subprocess` / `asyncio.streams` / `asyncio.protocols`
 surface.
 
-`asyncio.timeout()` / `asyncio.timeout_at()` would be unreachable in any
-case: they are async context managers, and `async with` is rejected at parse
-time (see [language.md](language.md)).
+## Public Task subset
+
+`create_task(coro)` accepts one positional new native coroutine.
+Keyword arguments (including `name`, `context` and `eager_start`) are unsupported.
+Scheduling is also available at the VM root; there is no running-event-loop check.
+The `Task` class constructor, task names, callbacks, context copying, task enumeration,
+`get_coro`, `get_stack`, `cancelling` and `uncancel` are unsupported.
+Handles report the internal coroutine type rather than a separate Python Task type.
+Pending `result()` and `exception()` raise `RuntimeError` instead of `InvalidStateError`.
+Unobserved failures are retained while handles exist but do not produce asyncio's
+"Task exception was never retrieved" warning when the last handle is dropped.
+
+Guest `Task.cancel()` currently accepts no message argument and raises catchable
+`ValueError('guest')` rather than `CancelledError`.
+It requests logical cancellation; cleanup can suspend on host calls.
+A pending Task join forwards the request and waits for that task's outcome before
+resuming the waiting task. A caught cancellation can return a successful result.
+Repeated cancellation does not inject additional signals or revoke protected cleanup replies.
+Creating more tasks after a cancellation request is rejected, even if the signal was caught.
+If cancellation first becomes pending during protected cleanup, an unresolved body exception or a new cleanup exception remains the public Task's actual outcome.
+`exception()` retains that object and `cancelled()` is false.
+Catching or suppressing a body error before cleanup finishes does not reserve an error outcome: pending cancellation still takes precedence over subsequent body work or a successful return.
+These protections differ from CPython's unshielded task cancellation.
+Host cancellation is terminal even when guest code catches its signal. It reaches
+live concurrent tasks and retains protected cleanup replies; it coalesces repeated
+requests rather than implementing CPython cancellation counters.
+
+Physical snapshot disposal remains abandonment and runs no authored cleanup.
+Ordinary coroutine gathers retain outstanding lifetime obligations after caught first errors
+and helper completion.
+Recovery code can run before cleanup.
+On entry to the admitting frame's `finally` or context exit, unfinished ordinary gather
+continuations are cancelled and drained before authored cleanup starts.
+This differs from CPython's ordinary gather policy, which leaves siblings running.
+Transferred descendants retain the established normal-wait policy; logical cancellation
+can interrupt their body waits while preserving cleanup replies.
+It avoids waiting for a child that needs more ordinary parent body code.
+Normal gathers and normal TaskGroup exits wait for completion; protected cleanup gathers
+retain their existing wait barrier instead of receiving this cleanup-entry cancellation.
+Public Tasks are run-owned, not implicit lexical TaskGroups.
+A shared Task handle in an ordinary gather is a wait dependency, not ownership of that Task;
+protected waits and explicit TaskGroups retain their stronger barriers.
+Logical shutdown and cleanup still require host advancement and cleanup replies.
+Snapshots from producers lacking explicit run/cleanup ownership still load, but do not
+acquire those missing boundaries retroactively.
+
+## Public TaskGroup subset
+
+`async with asyncio.TaskGroup() as group` and `group.create_task(coro)` use persistent
+Task handles. Only the task that entered a group may admit children or exit it;
+CPython also allows admission from other tasks while a group is active.
+Only one positional coroutine is supported; `name`, `context`, `eager_start` and
+other keyword options are rejected. Explicit `__aenter__` / `__aexit__` calls and
+TaskGroup introspection are unsupported. Directly awaiting a finished group currently
+replays its cached exit result/error, whereas CPython raises TypeError; author groups
+with `async with`. Invalid admission raises RuntimeError
+with subset-specific wording and does not close a retained new coroutine.
+
+Normal exit waits for group children. A non-cancellation child failure interrupts
+the body, cancels siblings and waits for cleanup before group exit. Protected cleanup
+waits retain their replies before the interruption can continue. Nested groups have
+separate membership even when one task owns both. These cleanup protections are
+stronger than CPython's unshielded cancellation behavior.
+
+ExceptionGroup, BaseExceptionGroup and `except*` are unavailable. Group failure
+instead raises `RuntimeError` whose `args[0]` is a tuple retaining exception objects,
+including body errors and sibling cleanup failures. Public child failures are in
+admission order; undelivered gathered errors precede them. Nested group failures
+retain nested RuntimeError tuples. The host exception metadata includes every
+retained failure's type/message summary; it cannot export the guest tuple or
+exception identity through the terminal exception API. KeyboardInterrupt/SystemExit special handling,
+exception-group splitting/subgroup/derive and cancellation counters are unsupported.
+The internal wake-up interruption is excluded from aggregation; guest cancellation
+still uses the ValueError subset described above.
+
+Public group and root-shutdown snapshots require dump version 30 or later.
+Saved unresolved cleanup roles require dump version 31 or later.
 
 ## `async def` / `await`
 
@@ -40,9 +114,14 @@ time (see [language.md](language.md)).
     raises `RuntimeError`. Store the *result*, not the coroutine, if you need
     it again.
 - `await` on a non-awaitable raises `TypeError`.
-- `async for` and `async with` are **rejected at parse time** (see
-    [language.md](language.md)). Async iteration and async context-manager
-    protocols do not exist.
+- `async for` is **rejected at parse time** (see [language.md](language.md)).
+    Async iteration is unsupported.
+- `async with` accepts TaskGroup or a simple user-class instance with class-level
+    `__aenter__` and `__aexit__` methods returning supported native awaitables.
+    There is no general `__await__` protocol or async contextmanager decorator.
+    Missing async methods raise `AttributeError`; non-instance managers raise `TypeError`.
+    Exit receives `None` instead of a traceback object, and `__aexit__` is looked
+    up again at exit, as with [ordinary context managers](with.md).
 - Async comprehensions (`[x async for x in ...]`) are rejected at parse
     time.
 - There is no `__await__` protocol. Awaitables are only the things Monty
@@ -104,7 +183,8 @@ threads and no exposed event loop.
 When one child of a `gather` raises, the siblings keep running as they do in CPython.
 They resume only when a host result arrives or when another task awaits: Monty's scheduler runs ready tasks only at
 those suspension points and has no idle loop that would otherwise turn.
-Code that catches the error and then returns without awaiting again leaves them parked where they were:
+Code that catches the error and then returns begins root cancel-and-drain shutdown;
+siblings may be cancelled before their ordinary body resumes:
 
 ```python test="skip"
 import asyncio
@@ -181,7 +261,6 @@ A session with `max_memory` set can therefore build a nest it cannot await: the 
 The nesting is not charged against the recursion limit in either interpreter, and a session with no memory limit has
 no bound to hit.
 
-
 ## Experimental host coroutine dialect
 
 A first module statement `from __monty_host__ import host_coroutines` selects a Monty compiler dialect.
@@ -195,7 +274,7 @@ The ordinary `asyncio` scheduler remains the default without the directive; the 
 `await` outside an async function, in lambdas, or in comprehension bodies is rejected in this dialect.
 Async generators, `async for`, and async comprehensions remain unsupported.
 
-`async with` is available only inside dialect async functions, on simple user-class instances defining class-level `__aenter__` and `__aexit__` methods returning generator continuations (or native awaitables when using the native entry below).
+`async with` inside dialect async functions accepts simple user-class instances defining class-level `__aenter__` and `__aexit__` methods returning generator continuations (or native awaitables when using the native entry below).
 Multiple managers and unpacked targets use the same nesting and binding rules as ordinary `with`.
 There are no async contextmanager decorators, inheritance, or general awaitable protocol adapters.
 Missing async methods raise `AttributeError`; non-instance context values raise `TypeError`.
@@ -207,7 +286,7 @@ Cancellation and resource/child ownership are host/library policy; the syntax it
 The experimental examples in `tools/coroutines/` include a combined `Timebox` resource/child scope with explicit host-driven spawn, join and exit drain requests.
 They do not provide an importable scheduler package or a production authority journal.
 
-### Experimental native entry and host cancellation
+### Host cancellation and experimental native entry
 
 The explicit generator method `_native1()` runs the dialect continuation on the existing native task.
 Direct yields and dialect `await` on that route accept native coroutines, external futures, and `asyncio.gather` results.
@@ -219,7 +298,14 @@ Passing the same suspended generator object twice (for example, `c = read_file("
 Unlike CPython asyncio, this bridge does not deduplicate repeated awaitables into shared result slots.
 Use distinct calls such as `asyncio.gather(*(read_file(path) for path in paths))` for the five-read program.
 Ordinary `next`, `send`, and `throw` retain their separate behavior.
-The experimental host cancellation input delivers a catchable `ValueError`, rather than an asyncio `CancelledError`.
+The host cancellation input supports a suspended ordinary `async def` call chain as well as the experimental native entry.
+Within ordinary protected cleanup, a failed `gather` waits for its remaining children and their cleanup,
+including nested gathered descendants and direct external calls, before raising its first error to the parent.
+Those protected operations retain their host replies across repeated cancellation; failure does not cancel them.
+This differs from CPython's immediate first-error delivery. Public TaskGroup uses
+its separate failure aggregation policy above. Protected drain snapshots require dump version 28 or later.
+Module-level `await` without an active coroutine also remains unsupported.
+Cancellation delivers a catchable `ValueError`, rather than an asyncio `CancelledError`.
 Catching it does not clear the native terminal cancelled outcome, and the first host reason wins even when empty.
 Compiler-marked plain `finally` bodies and async context exit delegation protect their external waits from host cancellation; ordinary operation errors remain catchable and are not masked.
 A first cancellation during cleanup preserves its reply and is delivered when outermost protection ends, before ordinary body work or another request.
@@ -231,8 +317,7 @@ A selector return is not suppression of its caller’s error.
 Handlers inside active cleanup retain normal behavior; handlers after cancellation delivery may perform authored recovery.
 Required synchronous and async context exit calls finish their suppression bookkeeping before delivery: a false result retains the error, a true result suppresses it, and a raised exit error replaces it.
 This bookkeeping guarantee does not provide preemption of blocking synchronous I/O or nonterminating exit code.
-This does not implement Python task cancellation, task groups, or automatic aggregate cleanup failures.
-
+This does not implement CancelledError parity or automatic exception-group typing.
 
 ### Experimental owned children
 
@@ -261,9 +346,41 @@ New gathers are rejected after cancellation except within protected cleanup.
 The gather lifetime contract requires checkpoints produced with dump version26 or later; older snapshots retain their earlier owned-gather limitations.
 The thin experimental Scope binding supports deferred async cleanup in LIFO order after child drain, retaining ordinary failures in `scope.errors` while attempting the remaining cleanups.
 
+## Public Queue subset
+
+`asyncio.Queue(maxsize=0)` supplies `await put(item)`, `await get()`, `qsize()`,
+`empty()`, `full()` and read-only `maxsize`. Construction accepts signed-64-bit integers
+and booleans; positive sizes are limited to 4294967295 on native and Wasm.
+Nonpositive sizes are unbounded, subject to session memory limits. Boolean
+maxsize values are reported as the equivalent integer. Other numeric
+objects, including floats and arbitrary `__index__` objects, are rejected.
+The constructor is a native callable rather than a subclassable Python class;
+Queue type identity, generic subscripting and introspection parity are unsupported.
+
+Public put/get return lazy single-use coroutines and compose with gather,
+create_task and TaskGroup without an experimental scope. Unlike CPython, even
+an immediately eligible operation cooperates with the scheduler. Values and
+waiters are FIFO within each side; eligible getters take precedence over putters.
+Waking reserves permission; inspection still reports committed contents until
+activation commits delivery. Cancellation before delivery revokes the reservation:
+a get leaves its item stored and a put keeps its item outside storage. Cancellation
+after delivery does not undo the transfer. Cancellation uses the platform's
+ValueError contract described above, including protected cleanup and sticky host
+cancellation, rather than CancelledError.
+
+`put_nowait`, `get_nowait`, `task_done`, `join`, `shutdown`, QueueEmpty and QueueFull
+are not supplied. Method signatures/error wording and the object's reported type
+are not complete stdlib parity. Queues may be reused across sequential runs after
+run-owned Tasks drain. A stored, unawaited operation belongs to its eventual
+awaiting task; it neither starts work nor acquires a run at creation.
+Authored dependencies must permit progress; there is no deadlock detection or
+implicit producer. Internal queue operations are never host I/O or host-settleable
+requests. Snapshots occur at supported external boundaries, including a ready
+reservation saved at a host call, rather than every queue await.
+
 ## Experimental bounded queues
 
-`asyncio.Queue` is not provided. The native continuation experiment exposes
+The native continuation experiment exposes
 `asyncio._queue(capacity)`, `await asyncio._queue_put(queue, value)` and
 `await asyncio._queue_get(queue)`. Capacity must be an integer from 1 through 4294967295 on both native and Wasm;
 booleans, zero, negative and unbounded capacities are unsupported. Tokens have no public
@@ -289,8 +406,8 @@ This is a platform module, not a Python standard-library module.
 Variadic `asyncio.gather`, including starred generator expressions, accepts these
 continuations directly. The host-mode platform entry still selects the durable
 continuation dialect internally. Ordinary `try/finally` and `async with` in that
-entry participate in protected cancellation cleanup. This does not provide
-`asyncio.TaskGroup`, nor change the experimental scope's cancel-on-exit semantics.
+entry participate in protected cancellation cleanup. Public `asyncio.TaskGroup` has the bounded subset above; experimental scopes retain
+their separate cancel-on-exit semantics.
 General coroutine introspection and `return_exceptions` remain unsupported.
 
 The playground also supplies `sandbox.ask`, `echo`, `random`, `sample`, `decision`,

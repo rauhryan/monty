@@ -69,7 +69,13 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 // Version 25 reserves the monotonic ID space for host calls, allowing bounded late-reply recognition.
 // Version 26 separates owned gather lifetimes from result delivery.
 // Version 27 adds traced guest queues and activation-time queue reservations.
-pub const DUMP_VERSION: u16 = 27;
+// Version 28 persists a protected gather's first error while its children drain.
+// Version 29 adds public Task lifetimes and multiple pending join routes.
+// Version 30 adds durable public TaskGroup ownership and exit barriers.
+// Version 31 records unresolved exceptional-cleanup roles on saved exceptions.
+// Version 32 records explicit run ownership and admitting-frame cleanup barriers.
+// Version 33 adds public Queue metadata and zero-capacity unbounded storage.
+pub const DUMP_VERSION: u16 = 33;
 
 /// The oldest dump version this build loads. `Dump::load` runs `dump_upgrade`
 /// over an older dump, rebuilding what the newer versions changed.

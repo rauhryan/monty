@@ -27,6 +27,9 @@ pub(crate) enum FrozenFunction {
     /// Durable host continuation adapted to the ordinary task scheduler.
     #[serde(rename = "asyncio._host_continuation")]
     HostContinuation,
+    /// Ordinary lazy coroutine over a Rust queue reservation.
+    #[serde(rename = "asyncio.Queue.operation")]
+    QueueOperation,
     /// Platform capability; no guest filesystem access.
     #[serde(rename = "sandbox.read_file")]
     SandboxReadFile,
@@ -84,6 +87,7 @@ impl FrozenFunction {
             Self::SandboxCapability => {
                 "def capability(name, request, exchange):\n    return (yield exchange({\"capability\": \"sandbox.\" + name, \"arguments\": request}))\n"
             }
+            Self::QueueOperation => "async def _queue_operation(operation):\n    return await operation\n",
             Self::HostContinuation => "async def _bridge(continuation):\n    return continuation._native1()\n",
             Self::FunctoolsReduce => functools::REDUCE_SOURCE,
             Self::Iter => iter::ITER_SOURCE,

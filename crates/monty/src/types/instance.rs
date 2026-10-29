@@ -96,7 +96,7 @@ pub(crate) struct BoundMethod {
 }
 
 impl<'h> HeapObjectRead<'h, Instance> {
-    /// Class-only async context protocol for the explicit host dialect.
+    /// Class-only async context protocol for native and generator continuations.
     pub(crate) fn call_host_context(&self, vm: &mut VM<'h>, enter: bool, exc: Option<HeapId>) -> RunResult<CallResult> {
         let class_id = self.get(vm.heap).class;
         let name = if enter { "__aenter__" } else { "__aexit__" };

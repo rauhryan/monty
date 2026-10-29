@@ -345,6 +345,8 @@ pub struct Parser<'a, 'i> {
     /// Explicit compiler dialect, separate from asyncio.
     host_coroutines: bool,
     host_async_body: bool,
+    /// Whether the current lexical function is async, in either execution mode.
+    async_body: bool,
     /// Ascending source offsets of every `class` keyword, taken from the lexer.
     ///
     /// Ruff's AST is abstract — a `StmtClassDef` *is* a class statement, so it
@@ -370,6 +372,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             generator_scope: None,
             host_coroutines: false,
             host_async_body: false,
+            async_body: false,
             class_keyword_offsets,
         }
     }
@@ -760,9 +763,9 @@ impl<'a, 'i> Parser<'a, 'i> {
                 range,
                 ..
             }) => {
-                if is_async && !self.host_async_body {
+                if is_async && !self.async_body {
                     return Err(ParseError::not_implemented(
-                        "async context managers (async with) outside the host_coroutines dialect",
+                        "async context managers (async with) outside an async function",
                         self.convert_range(range),
                     ));
                 }
@@ -1064,6 +1067,8 @@ impl<'a, 'i> Parser<'a, 'i> {
         // Parse function body recursively
         let outer_scope = self.generator_scope.replace(false);
         let outer_host_body = self.host_async_body;
+        let outer_async_body = self.async_body;
+        self.async_body = function.is_async;
         self.host_async_body = function.is_async && self.host_coroutines;
         if function.is_async {
             self.generator_scope = if self.host_async_body { Some(true) } else { None };
@@ -1073,6 +1078,7 @@ impl<'a, 'i> Parser<'a, 'i> {
         self.generator_scope = outer_scope;
         let is_async = function.is_async && !self.host_async_body;
         self.host_async_body = outer_host_body;
+        self.async_body = outer_async_body;
 
         Ok((
             RawFunctionDef {
@@ -1153,6 +1159,7 @@ impl<'a, 'i> Parser<'a, 'i> {
 
         let outer_scope = self.generator_scope.take();
         let outer_host_body = mem::take(&mut self.host_async_body);
+        let outer_async_body = mem::take(&mut self.async_body);
         for (i, stmt) in class.body.into_iter().enumerate() {
             match stmt {
                 Stmt::FunctionDef(function) => {
@@ -1256,6 +1263,7 @@ impl<'a, 'i> Parser<'a, 'i> {
 
         self.generator_scope = outer_scope;
         self.host_async_body = outer_host_body;
+        self.async_body = outer_async_body;
 
         // The synthesized `__doc__` binding runs first (like CPython's docstring
         // store); the namespace assembly loads final local values, so an explicit

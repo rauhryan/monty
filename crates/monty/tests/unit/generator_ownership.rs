@@ -106,6 +106,7 @@ fn ownership_export_poison_depth_and_cached_error_cycles() {
         assert_eq!(vm.heap.get_refcount(*object_id), 2);
         let frozen = match &error {
             RunError::Exc(error) => CaughtException::Frozen {
+                unwinding: false,
                 value: object.clone_with_heap(vm.heap),
                 error: Box::new(error.clone_with_heap(vm.heap)),
             },
@@ -126,6 +127,8 @@ fn ownership_export_poison_depth_and_cached_error_cycles() {
             child: None,
             queue: None,
             queue_op: None,
+            public_task: None,
+            task_group: None,
         };
         let mut ids = vec![];
         typed_future.py_dec_ref_ids(&mut ids);
@@ -189,6 +192,8 @@ fn ownership_export_poison_depth_and_cached_error_cycles() {
             child: None,
             queue: None,
             queue_op: None,
+            public_task: None,
+            task_group: None,
             state: ExternalFutureState::Failed(ExcType::value_error("legacy")),
         }))));
         let legacy_gather = Value::Ref(vm.heap.allocate(HeapData::GatherFuture(Box::new(GatherFuture {

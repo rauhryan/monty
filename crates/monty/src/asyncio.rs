@@ -43,7 +43,7 @@ impl CallId {
 /// Sequential integers allocated by the scheduler. Task 0 is always the main task
 /// which uses the VM's stack/frames directly. Spawned tasks (1+) store their own context,
 /// hence `TaskId::default()` is the main task.
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) struct TaskId(u32);
 
 impl TaskId {
@@ -136,10 +136,15 @@ impl Coroutine {
 /// await yields a clone of the cached value or replays the cached exception,
 /// matching CPython's Future semantics. `Pending` futures still support only
 /// a single in-flight awaiter (the `awaiter: Option<Awaiter>` slot);
-/// multi-awaiter on `Pending` is a planned follow-up that needs the same
-/// wake/raise plumbing as multi-waiter gathers.
+/// public Tasks instead keep independent join routes in `public_task`.
+/// Other pending external futures retain the single-waiter restriction.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ExternalFuture {
+    /// Public task outcome and independent pending join routes.
+    #[serde(default)]
+    pub public_task: Option<PublicTask>,
+    #[serde(default)]
+    pub task_group: Option<TaskGroup>,
     /// Experimental internal queue token or single-delivery queue operation.
     #[serde(default)]
     pub queue: Option<GuestQueue>,
@@ -161,10 +166,43 @@ pub(crate) struct ExternalFuture {
     pub sleep_result: Option<Value>,
 }
 
+/// A public Task has scheduler-owned lifetime, independent of its creator's scope.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct PublicTask {
+    pub task: Option<TaskId>,
+    pub cancelled: bool,
+    pub waiters: Vec<Awaiter>,
+}
+
+/// Admission and exit are single-use transitions, persisted across cleanup waits.
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum TaskGroupState {
+    Created,
+    Active,
+    Exiting,
+    Finished,
+}
+
+/// Public structured group. The owner task roots active groups; groups root outcomes.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct TaskGroup {
+    pub owner: Option<TaskId>,
+    pub state: TaskGroupState,
+    pub children: Vec<HeapId>,
+    pub body_error: Option<Value>,
+    pub interrupt: Option<Value>,
+    pub failure_pending: bool,
+    pub externals: Vec<CallId>,
+    pub errors: Vec<Value>,
+}
+
 /// Bounded FIFO storage. Waiter IDs own references; reserved borrows a waiter.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct GuestQueue {
     pub capacity: usize,
+    /// Public maxsize (including negative unbounded sizes); absent on private/old tokens.
+    #[serde(default)]
+    pub public_maxsize: Option<i64>,
     pub values: VecDeque<Value>,
     pub getters: VecDeque<HeapId>,
     pub putters: VecDeque<HeapId>,
@@ -181,8 +219,24 @@ pub(crate) struct QueueOperation {
 }
 
 impl ExternalFuture {
-    /// Release queue edges and mark Values consumed for memory-model checks.
+    /// Release queue edges and public Task join routes; mark Values consumed.
     pub(crate) fn queue_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        if let Some(task) = &self.public_task {
+            for waiter in &task.waiters {
+                if let Awaiter::GatherSlot { gather, .. } = waiter {
+                    stack.push(*gather);
+                }
+            }
+        }
+        if let Some(group) = &mut self.task_group {
+            stack.extend(group.children.iter().copied());
+            for value in &mut group.errors {
+                value.py_dec_ref_ids(stack);
+            }
+            for value in [&mut group.body_error, &mut group.interrupt].into_iter().flatten() {
+                value.py_dec_ref_ids(stack);
+            }
+        }
         if let Some(q) = &mut self.queue {
             for value in &mut q.values {
                 value.py_dec_ref_ids(stack);
@@ -199,8 +253,30 @@ impl ExternalFuture {
         }
     }
 
-    /// Enumerate all queue edges for cycle tracing.
+    /// Enumerate queue edges and public Task join routes for cycle tracing.
     pub(crate) fn queue_owned_ids(&self, mut visit: impl FnMut(HeapId)) {
+        if let Some(task) = &self.public_task {
+            for waiter in &task.waiters {
+                if let Awaiter::GatherSlot { gather, .. } = waiter {
+                    visit(*gather);
+                }
+            }
+        }
+        if let Some(group) = &self.task_group {
+            for value in &group.errors {
+                if let Value::Ref(id) = value {
+                    visit(*id);
+                }
+            }
+            for id in &group.children {
+                visit(*id);
+            }
+            for value in [&group.body_error, &group.interrupt].into_iter().flatten() {
+                if let Value::Ref(id) = value {
+                    visit(*id);
+                }
+            }
+        }
         if let Some(q) = &self.queue {
             for value in &q.values {
                 if let Value::Ref(id) = value {
@@ -251,6 +327,8 @@ impl ExternalFuture {
     pub fn new_pending(call_id: CallId, sleep_result: Option<Value>) -> Self {
         Self {
             call_id,
+            public_task: None,
+            task_group: None,
             child: None,
             queue: None,
             queue_op: None,

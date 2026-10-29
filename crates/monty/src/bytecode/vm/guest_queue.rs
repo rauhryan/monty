@@ -1,12 +1,18 @@
 //! Bounded guest queues. A wake reserves permission; only task activation commits.
 use std::{collections::VecDeque, mem::size_of};
 
-use super::{VM, scheduler::Scheduler};
+use super::{CallResult, VM, scheduler::Scheduler};
 use crate::{
+    args::ArgValues,
     asyncio::{Awaiter, CallId, ExternalFuture, ExternalFutureState, GuestQueue, QueueOperation, TaskId},
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData, HeapId, HeapReadOutput, HeapReader},
-    value::Value,
+    modules::{
+        ModuleFunctions,
+        asyncio::{self as asyncio_module, AsyncioFunctions},
+    },
+    types::BoundMethod,
+    value::{EitherStr, Value},
 };
 
 impl VM<'_> {
@@ -22,6 +28,7 @@ impl VM<'_> {
         let mut future = ExternalFuture::new_pending(CallId::new(u32::MAX), None);
         future.queue = Some(GuestQueue {
             capacity: capacity as usize,
+            public_maxsize: None,
             values: VecDeque::new(),
             getters: VecDeque::new(),
             putters: VecDeque::new(),
@@ -30,6 +37,29 @@ impl VM<'_> {
         Ok(Value::Ref(
             self.heap.allocate(HeapData::ExternalFuture(Box::new(future))),
         ))
+    }
+
+    /// Public construction uses the same reservation protocol, with zero as unbounded.
+    pub(crate) fn new_public_queue(&mut self, maxsize: &Value) -> RunResult<Value> {
+        let size = match maxsize {
+            Value::Int(n) => *n,
+            Value::Bool(b) => i64::from(*b),
+            _ => return Err(ExcType::type_error("Queue maxsize must be an integer")),
+        };
+        let capacity = if size <= 0 {
+            0
+        } else {
+            u32::try_from(size).map_err(|_| ExcType::value_error("Queue maxsize must be at most 4294967295"))?
+        };
+        let value = self.new_guest_queue(&Value::Int(1))?;
+        let Value::Ref(id) = &value else { unreachable!() };
+        let HeapReadOutput::ExternalFuture(future) = self.heap.read(*id) else {
+            unreachable!()
+        };
+        let queue = future.get_mut(self.heap).queue.as_mut().expect("queue");
+        queue.capacity = capacity as usize;
+        queue.public_maxsize = Some(size);
+        Ok(value)
     }
 
     /// Create a lazy, single-await operation. No queue mutation before await.
@@ -171,7 +201,7 @@ impl Scheduler {
         }
         let next = if !state.values.is_empty() && !state.getters.is_empty() {
             state.getters.front().copied()
-        } else if state.values.len() < state.capacity {
+        } else if state.capacity == 0 || state.values.len() < state.capacity {
             state.putters.front().copied()
         } else {
             None
@@ -296,5 +326,51 @@ impl VM<'_> {
             assert_eq!(state.putters.len(), 0);
         }
         eprintln!("queue put={put}: first wake cancelled, next FIFO waiter delivered, values preserved");
+    }
+}
+
+impl VM<'_> {
+    /// Queue inspection reads committed storage; a reservation has not transferred ownership.
+    pub(crate) fn public_queue_method(&mut self, id: HeapId, attr: &EitherStr) -> Option<CallResult> {
+        let function = match attr.as_str(self.interns) {
+            "maxsize" => {
+                let HeapData::ExternalFuture(future) = self.heap.get(id) else {
+                    unreachable!()
+                };
+                return Some(CallResult::Value(Value::Int(future.queue.as_ref()?.public_maxsize?)));
+            }
+            "put" => AsyncioFunctions::QueuePut,
+            "get" => AsyncioFunctions::QueueGet,
+            "qsize" => AsyncioFunctions::QueueSize,
+            "empty" => AsyncioFunctions::QueueEmpty,
+            "full" => AsyncioFunctions::QueueFull,
+            _ => return None,
+        };
+        self.heap.inc_ref(id);
+        Some(CallResult::Value(Value::Ref(self.heap.allocate(
+            HeapData::BoundMethod(BoundMethod {
+                instance: Value::Ref(id),
+                func: Value::ModuleFunction(ModuleFunctions::Asyncio(function)),
+            }),
+        ))))
+    }
+}
+
+impl VM<'_> {
+    /// Direct calls and extracted bound methods share the same argument binder.
+    pub(crate) fn call_public_queue(&mut self, id: HeapId, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        let function = match attr.as_str(self.interns) {
+            "put" => AsyncioFunctions::QueuePut,
+            "get" => AsyncioFunctions::QueueGet,
+            "qsize" => AsyncioFunctions::QueueSize,
+            "empty" => AsyncioFunctions::QueueEmpty,
+            "full" => AsyncioFunctions::QueueFull,
+            name => {
+                args.drop_with(self);
+                return Err(ExcType::attribute_error("Queue", name));
+            }
+        };
+        self.heap.inc_ref(id);
+        asyncio_module::call(self, function, args.prepend(Value::Ref(id)))
     }
 }

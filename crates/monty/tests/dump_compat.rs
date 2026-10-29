@@ -233,8 +233,47 @@ assert add5(2) == 7
 /// regenerate with `UPDATE_DUMP_FIXTURE=1 cargo test -p monty --test dump_compat`.
 #[test]
 fn fixture_dump_loads_and_resumes() {
-    let path = fixture_path();
-    if env::var_os(UPDATE_FIXTURE).is_some() {
+    check_fixture_dump(fixture_path());
+}
+
+/// Genuine version-32 snapshots predate public Queue metadata.
+#[test]
+fn previous_run_cleanup_fixture_loads_and_resumes() {
+    check_fixture_dump(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v32.bin"));
+}
+
+/// Genuine version-31 snapshots predate explicit run and ordinary cleanup ownership.
+#[test]
+fn previous_saved_cleanup_fixture_loads_and_resumes() {
+    check_fixture_dump(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v31.bin"));
+}
+
+/// Genuine version-30 snapshots predate saved exceptional-cleanup roles.
+#[test]
+fn previous_public_groups_fixture_loads_and_resumes() {
+    check_fixture_dump(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v30.bin"));
+}
+
+/// Genuine version-29 snapshots predate TaskGroup ownership and root shutdown.
+#[test]
+fn previous_public_tasks_fixture_loads_and_resumes() {
+    check_fixture_dump(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v29.bin"));
+}
+
+/// Genuine version-28 snapshots predate public Task metadata and join routes.
+#[test]
+fn previous_protected_gather_fixture_loads_and_resumes() {
+    check_fixture_dump(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v28.bin"));
+}
+
+/// Version 27 also predates the protected-gather barrier.
+#[test]
+fn previous_queue_fixture_loads_and_resumes() {
+    check_fixture_dump(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v27.bin"));
+}
+
+fn check_fixture_dump(path: PathBuf) {
+    if env::var_os(UPDATE_FIXTURE).is_some() && path == fixture_path() {
         let mut repl = MontyRepl::new("fixture.py", ResourceTracker::default(), CompileOptions::default());
         repl.feed_run(FIXTURE_STATE, vec![], PrintWriter::Stdout).unwrap();
         let mut progress = repl.feed_start(FIXTURE_CALL, vec![], PrintWriter::Stdout).unwrap();

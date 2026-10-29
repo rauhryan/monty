@@ -18,6 +18,8 @@ Lookup is type-level, as in CPython: an instance attribute named
 `__enter__`/`__exit__` is ignored by the `with` statement, but used by an
 explicit `obj.__enter__()` call, which is an ordinary method call.
 
+For async context-manager limitations, see [asyncio.md](asyncio.md#async-def-await).
+
 ## Supported but desugared
 
 - **Multiple context managers in a single `with`** (`with a() as x, b() as y:`)
@@ -32,8 +34,6 @@ explicit `obj.__enter__()` call, which is an ordinary method call.
 
 ## Not supported
 
-- **Async `with`** (`async with EXPR:`) is rejected at parse time with
-    `SyntaxError: async context managers (async with) is not yet implemented`.
 - **`contextlib`** (`@contextmanager`, `ExitStack`, etc.) — the module is not
     available; only the language-level `with` statement is.
 
