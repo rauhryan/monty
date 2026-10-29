@@ -36,6 +36,7 @@ pub(crate) mod os_path;
 pub(crate) mod pathlib;
 pub(crate) mod random;
 pub(crate) mod re;
+pub(crate) mod sandbox;
 pub(crate) mod sys;
 pub(crate) mod time;
 pub(crate) mod tomllib;
@@ -51,6 +52,8 @@ pub(crate) enum StandardLib {
     Typing,
     /// The `asyncio` module providing async/await support (only `run()` and `gather()` implemented).
     Asyncio,
+    /// Supplied platform capabilities, never OS filesystem access.
+    Sandbox,
     /// The `pathlib` module providing object-oriented filesystem paths.
     Pathlib,
     /// The `os` module: environment access, host-mediated filesystem calls and `os.path`.
@@ -115,6 +118,7 @@ impl StandardLib {
             StaticStrings::Sys => Some(Self::Sys),
             StaticStrings::Typing => Some(Self::Typing),
             StaticStrings::Asyncio => Some(Self::Asyncio),
+            StaticStrings::Sandbox => Some(Self::Sandbox),
             StaticStrings::Pathlib => Some(Self::Pathlib),
             StaticStrings::Os => Some(Self::Os),
             StaticStrings::OsPath | StaticStrings::Posixpath => Some(Self::OsPath),
@@ -157,6 +161,7 @@ impl StandardLib {
             Self::Sys => sys::create_module(vm),
             Self::Typing => typing::create_module(vm),
             Self::Asyncio => asyncio::create_module(vm),
+            Self::Sandbox => sandbox::create_module(vm),
             Self::Pathlib => pathlib::create_module(vm),
             Self::Os => os::create_module(vm),
             Self::OsPath => os_path::create_module(vm),
@@ -192,6 +197,7 @@ impl StandardLib {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ModuleFunctions {
     Asyncio(asyncio::AsyncioFunctions),
+    SandboxReadFile,
     Collections(collections::CollectionsFunctions),
     Json(json::JsonFunctions),
     Math(math::MathFunctions),
@@ -230,6 +236,7 @@ pub(crate) enum ModuleFunctions {
 impl fmt::Display for ModuleFunctions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::SandboxReadFile => write!(f, "read_file"),
             Self::Asyncio(func) => write!(f, "{func}"),
             Self::Collections(func) => write!(f, "{func}"),
             Self::Json(func) => write!(f, "{func}"),
@@ -267,6 +274,7 @@ impl ModuleFunctions {
     /// require host involvement (e.g., `os.getenv()` needs the host to provide environment variables).
     pub fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         match self {
+            Self::SandboxReadFile => sandbox::read_file(vm, args).map(CallResult::Value),
             Self::Asyncio(functions) => asyncio::call(vm, functions, args),
             Self::Collections(functions) => collections::call(vm, functions, args).map(CallResult::Value),
             Self::Json(functions) => json::call(vm, functions, args),

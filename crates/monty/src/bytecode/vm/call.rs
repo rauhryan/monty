@@ -848,6 +848,39 @@ impl<'h> VM<'h> {
         CallResult::Value(Value::Ref(coroutine_id))
     }
 
+    /// Build a snapshot-owned scheduler coroutine for a durable continuation.
+    /// Compilation is fallible; the argument remains guarded until publication.
+    pub(crate) fn host_continuation_coroutine(&mut self, continuation: Value) -> RunResult<Value> {
+        self.frozen_awaitable(FrozenFunction::HostContinuation, vec![continuation], false)
+    }
+
+    /// Frozen awaitables retain all arguments in the serialized heap.
+    pub(crate) fn frozen_awaitable(
+        &mut self,
+        function: FrozenFunction,
+        args: Vec<Value>,
+        generator: bool,
+    ) -> RunResult<Value> {
+        let mut guard = DropGuard::new(args, self);
+        let (_, vm) = guard.as_parts_mut();
+        let interns = vm.interns;
+        let id = if let Some(id) = interns.frozen_function(function) {
+            id
+        } else {
+            let (id, overlay) = function.compile(interns)?;
+            overlay.commit();
+            interns.set_frozen_function(function, id);
+            id
+        };
+        let (args, vm) = guard.into_parts();
+        let data = if generator {
+            HeapData::Generator(Box::new(super::Generator::new(id, args, None)))
+        } else {
+            HeapData::Coroutine(Coroutine::new(id, args, None))
+        };
+        Ok(Value::Ref(vm.heap.allocate(data)))
+    }
+
     /// Calls an internal function, compiling it on first use.
     /// Arguments transfer into ordinary frame locals; implementation frames do not charge recursion depth.
     pub(crate) fn call_frozen_exact<const N: usize>(

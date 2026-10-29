@@ -24,6 +24,12 @@ use crate::{
 /// Qualified names persist in dumps; the registry uses compact enum keys at runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) enum FrozenFunction {
+    /// Durable host continuation adapted to the ordinary task scheduler.
+    #[serde(rename = "asyncio._host_continuation")]
+    HostContinuation,
+    /// Platform capability; no guest filesystem access.
+    #[serde(rename = "sandbox.read_file")]
+    SandboxReadFile,
     /// Suspendable fold loop behind `functools.reduce`.
     #[serde(rename = "functools.reduce")]
     FunctoolsReduce,
@@ -69,6 +75,10 @@ impl FrozenFunction {
     /// Selects one self-contained function; dependencies arrive as arguments, not globals.
     fn source(self) -> &'static str {
         match self {
+            Self::SandboxReadFile => {
+                "def read_file(path, exchange):\n    return (yield exchange({\"capability\": \"sandbox.read_file\", \"arguments\": {\"path\": path}}))\n"
+            }
+            Self::HostContinuation => "async def _bridge(continuation):\n    return continuation._native1()\n",
             Self::FunctoolsReduce => functools::REDUCE_SOURCE,
             Self::Iter => iter::ITER_SOURCE,
             Self::LruCacheMiss => lru_cache::CACHE_MISS_SOURCE,

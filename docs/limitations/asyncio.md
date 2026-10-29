@@ -212,8 +212,12 @@ They do not provide an importable scheduler package or a production authority jo
 The explicit generator method `_native1()` runs the dialect continuation on the existing native task.
 Direct yields and dialect `await` on that route accept native coroutines, external futures, and `asyncio.gather` results.
 Generator operands still delegate to their durable continuation; arbitrary `__await__` objects remain unsupported.
-Dialect generator children require an ordinary-coroutine binding that calls `_native1()`; nested gathers and external futures remain valid gather inputs.
-This does not make dialect generators directly acceptable as gather children.
+`asyncio.gather` accepts dialect generators and ordinary synchronous generators directly, as well as native coroutines, nested gathers and external futures.
+Each generator runs through the native continuation bridge: it may return without yielding, delegate to another generator, or yield a native coroutine, external future or gather result.
+Arbitrary yielded values and arbitrary `__await__` objects are unsupported; accepting a synchronous generator does not make general Python iteration an asyncio operation.
+Passing the same suspended generator object twice (for example, `c = read_file("a.txt")` followed by `asyncio.gather(c, c)`) raises `ValueError: generator already executing`.
+Unlike CPython asyncio, this bridge does not deduplicate repeated awaitables into shared result slots.
+Use distinct calls such as `asyncio.gather(*(read_file(path) for path in paths))` for the five-read program.
 Ordinary `next`, `send`, and `throw` retain their separate behavior.
 The experimental host cancellation input delivers a catchable `ValueError`, rather than an asyncio `CancelledError`.
 Catching it does not clear the native terminal cancelled outcome, and the first host reason wins even when empty.
@@ -273,3 +277,18 @@ leaving a get's value in the queue and a put's value outside it. There is no
 remaining tasks all wait on queues can deadlock; there is no timer or implicit
 producer. Checkpoints are available at external suspension boundaries, not
 at every queue await.
+
+## Supplied host read capability
+
+The experimental platform supplies `from sandbox import read_file`. Calling it
+creates a lazy durable continuation; awaiting it emits a `sandbox.read_file`
+capability request with a `path` argument. There is no guest filesystem access.
+The host must authorize and fulfill the request, or raise a supported exception.
+This is a platform module, not a Python standard-library module.
+
+Variadic `asyncio.gather`, including starred generator expressions, accepts these
+continuations directly. The host-mode platform entry still selects the durable
+continuation dialect internally. Ordinary `try/finally` and `async with` in that
+entry participate in protected cancellation cleanup. This does not provide
+`asyncio.TaskGroup`, nor change the experimental scope's cancel-on-exit semantics.
+General coroutine introspection and `return_exceptions` remain unsupported.

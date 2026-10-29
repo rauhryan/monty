@@ -3872,3 +3872,51 @@ fn concurrent_io_child_scope_ownership() {
         }
     }
 }
+
+/// Public authoring acceptance: real imports, variadic starred gathering and
+/// snapshot-owned host requests, with no authored bridge calls.
+#[test]
+fn standard_python_host_reads() {
+    let repl = new_repl();
+    let source = concat!(
+        "from __monty_host__ import host_coroutines\n",
+        "import asyncio\nfrom sandbox import read_file\n",
+        "async def main():\n",
+        "    paths = ['a.txt', 'b.txt', 'c.txt', 'd.txt', 'e.txt']\n",
+        "    return await asyncio.gather(*(read_file(path) for path in paths))\n",
+        "main()._native1()",
+    );
+    let mut progress = repl.feed_start(source, vec![], PrintWriter::Stdout).unwrap();
+    let mut ids = Vec::new();
+    while let ReplProgress::FunctionCall(call) = progress {
+        assert_eq!(call.function_name, "sandbox.exchange");
+        ids.push(call.call_id);
+        progress = call.resume_pending(PrintWriter::Stdout).unwrap();
+    }
+    assert_eq!(ids.len(), 5);
+    for index in (0..5).rev() {
+        let bytes = dump("reads.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+        drop(progress.into_repl());
+        let Session::Suspended(restored) = Dump::load(&bytes).unwrap().state else {
+            panic!("expected suspended reads")
+        };
+        let pending = restored.into_resolve_futures().unwrap();
+        let mut actual = pending.pending_call_ids().to_vec();
+        actual.sort_unstable();
+        assert_eq!(actual, ids[..=index]);
+        progress = pending
+            .resume(
+                vec![(
+                    ids[index],
+                    ExtFunctionResult::Return(MontyObject::string(index.to_string())),
+                )],
+                PrintWriter::Stdout,
+            )
+            .unwrap();
+    }
+    let (_, value) = progress.into_complete().unwrap();
+    assert_eq!(
+        value,
+        MontyObject::list((0..5).map(|index| MontyObject::string(index.to_string())))
+    );
+}

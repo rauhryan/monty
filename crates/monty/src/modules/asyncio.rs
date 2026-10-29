@@ -8,6 +8,8 @@
 //! Other asyncio functions (`create_task`, `wait`, etc.) are not implemented.
 //! The host acts as the event loop - Monty yields control when tasks are blocked.
 
+use std::mem;
+
 use monty_types::{OsFunctionCall, sleep_duration_saturating};
 use num_traits::ToPrimitive;
 
@@ -231,12 +233,21 @@ pub(crate) fn gather(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             Value::Ref(id)
                 if matches!(
                     vm.heap.get(*id),
-                    HeapData::Coroutine(_) | HeapData::ExternalFuture(_) | HeapData::GatherFuture(_)
+                    HeapData::Coroutine(_) | HeapData::ExternalFuture(_) | HeapData::GatherFuture(_) | HeapData::Generator(_)
                 )
         ) {
             return Err(ExcType::type_error(
                 "An asyncio.Future, a coroutine or an awaitable is required",
             ));
+        }
+    }
+
+    // Keep the vector guarded through every fallible bridge compilation. Each
+    // replacement transfers exactly one owned reference into a VM coroutine.
+    for arg in awaitables.iter_mut() {
+        if matches!(arg, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Generator(_))) {
+            let continuation = mem::replace(arg, Value::None);
+            *arg = vm.host_continuation_coroutine(continuation)?;
         }
     }
 

@@ -150,3 +150,7 @@ The pages are the `limitations/` directory of the [repository](https://github.co
 verbatim.
 If you hit something that is neither in the subset nor on these pages, [open an
 issue](https://github.com/pydantic/monty/issues).
+
+The experimental platform also supplies a host-mediated `sandbox.read_file`
+capability and direct variadic gathering of durable host continuations; see
+[asyncio.md](asyncio.md#supplied-host-read-capability).

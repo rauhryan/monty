@@ -607,6 +607,11 @@ pub enum StaticStrings {
     Astimezone,
     /// Module name for `import asyncio`.
     Asyncio,
+    /// Supplied host capability module.
+    Sandbox,
+    /// Async host read capability.
+    #[strum(serialize = "read_file")]
+    SandboxReadFile,
     /// `math.atan()` function.
     Atan,
     /// `math.atan2()` function.
