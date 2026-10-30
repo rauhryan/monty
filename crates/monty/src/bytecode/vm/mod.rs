@@ -3,6 +3,7 @@
 //! The VM uses a stack-based execution model with an operand stack for computation
 //! and a call stack for function frames. Each frame owns its instruction pointer (IP).
 
+mod anyio_scopes;
 mod async_exec;
 mod attr;
 mod binary;
@@ -1222,12 +1223,18 @@ impl<'h> VM<'h> {
                 self.activate_generator(generator, input, default, throwing)?;
                 return Ok(None);
             }
-            CallResult::External(name, args) => FrameExit::ExternalCall {
-                function_name: name,
-                args,
-                call_id: self.allocate_call_id(),
-                name_load_ip: self.ext_function_load_ip.take(),
-            },
+            CallResult::External(name, args) => {
+                if let Some(error) = self.anyio_checkpoint() {
+                    args.drop_with(self);
+                    return Err(error);
+                }
+                FrameExit::ExternalCall {
+                    function_name: name,
+                    args,
+                    call_id: self.allocate_call_id(),
+                    name_load_ip: self.ext_function_load_ip.take(),
+                }
+            }
             CallResult::OsCall(call) => return self.prepare_os_call(call, None),
             CallResult::OsCallWithEffect { call, effect } => return self.prepare_os_call(call, Some(effect)),
             CallResult::MethodCall { name, args, object_id } => FrameExit::MethodCall {
@@ -1273,6 +1280,8 @@ impl<'h> VM<'h> {
                     }
                     AwaitResult::FramePushed => {
                         let owner = self.scheduler.current_task_id().expect("run caller");
+                        let run = self.scheduler.allocate_anyio_id();
+                        self.scheduler.get_task_mut(owner).anyio_run = run;
                         self.scheduler.get_task_mut(owner).run_frame = Some(run_frame);
                         Ok(None)
                     }

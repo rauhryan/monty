@@ -59,8 +59,9 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// Older builds then reject the new dumps instead of misexecuting them, and this
 /// build rejects dumps below [`MIN_SUPPORTED_DUMP_VERSION`].
 ///
-/// Before bumping, check there's already been a bump since the last release - multiple bumps
-/// between releases is unnecessary and can lead to confusion.
+/// Unreleased bumps may be coalesced only when no captured supported state needs
+/// the intervening distinction. Preserve a new version when an older reader would
+/// accept the header but misinterpret the stored semantics.
 // Version 20 persists cleanup-exit cancellation continuation points.
 // Older readers must not silently ignore prompt delivery at these boundaries.
 // Version 21 distinguishes prospective except dispatch for native cancellation.
@@ -75,7 +76,10 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 // Version 31 records unresolved exceptional-cleanup roles on saved exceptions.
 // Version 32 records explicit run ownership and admitting-frame cleanup barriers.
 // Version 33 adds public Queue metadata and zero-capacity unbounded storage.
-pub const DUMP_VERSION: u16 = 33;
+// Version 34 distinguishes AnyIO TaskGroup surfaces and named helper identities.
+// A v33 reader ignores the defaulted flag and would expose create_task instead.
+// Version 35 persists task/run-owned lexical cancellation origins and ancestry.
+pub const DUMP_VERSION: u16 = 35;
 
 /// The oldest dump version this build loads. `Dump::load` runs `dump_upgrade`
 /// over an older dump, rebuilding what the newer versions changed.

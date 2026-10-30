@@ -121,6 +121,8 @@ fn ownership_export_poison_depth_and_cached_error_cycles() {
         scheduler.cleanup(vm.heap);
         assert_eq!(vm.heap.get_refcount(*object_id), 2);
         let mut typed_future = ExternalFuture {
+            protected_group_entry: false,
+            cancel_scope: None,
             call_id: CallId::new(4),
             state: ExternalFutureState::Failed(error.clone_with_heap(vm.heap)),
             sleep_result: None,
@@ -187,6 +189,8 @@ fn ownership_export_poison_depth_and_cached_error_cycles() {
         // Old snapshots can carry metadata-only Failed states. Normalize the
         // stored cache once, rather than reconstructing on each replay.
         let legacy_external = Value::Ref(vm.heap.allocate(HeapData::ExternalFuture(Box::new(ExternalFuture {
+            protected_group_entry: false,
+            cancel_scope: None,
             call_id: CallId::new(12),
             sleep_result: None,
             child: None,

@@ -24,6 +24,9 @@ use crate::{
 /// Qualified names persist in dumps; the registry uses compact enum keys at runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) enum FrozenFunction {
+    /// Call an authored async function and admit it into the existing group.
+    #[serde(rename = "anyio.TaskGroup.start_soon")]
+    AnyioStartSoon,
     /// Durable host continuation adapted to the ordinary task scheduler.
     #[serde(rename = "asyncio._host_continuation")]
     HostContinuation,
@@ -81,11 +84,14 @@ impl FrozenFunction {
     /// Selects one self-contained function; dependencies arrive as arguments, not globals.
     fn source(self) -> &'static str {
         match self {
+            Self::AnyioStartSoon => {
+                "def start_soon(group, func, args, check, create):\n    check(group)\n    create(group, func(*args))\n    return None\n"
+            }
             Self::SandboxReadFile => {
-                "def read_file(path, exchange):\n    return (yield exchange({\"capability\": \"sandbox.read_file\", \"arguments\": {\"path\": path}}))\n"
+                "async def read_file(path, exchange):\n    return await exchange({\"capability\": \"sandbox.read_file\", \"arguments\": {\"path\": path}})\n"
             }
             Self::SandboxCapability => {
-                "def capability(name, request, exchange):\n    return (yield exchange({\"capability\": \"sandbox.\" + name, \"arguments\": request}))\n"
+                "async def capability(name, request, exchange):\n    return await exchange({\"capability\": \"sandbox.\" + name, \"arguments\": request})\n"
             }
             Self::QueueOperation => "async def _queue_operation(operation):\n    return await operation\n",
             Self::HostContinuation => "async def _bridge(continuation):\n    return continuation._native1()\n",

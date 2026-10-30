@@ -60,6 +60,7 @@ nav:
       - str.encode() / bytes.decode(): 'limitations/encoding.md'
       - typing: 'limitations/typing.md'
       - asyncio: 'limitations/asyncio.md'
+      - Supplied AnyIO subset: 'limitations/anyio.md'
       - Standard library modules: 'limitations/modules.md'
       - base64: 'limitations/base64.md'
       - bisect: 'limitations/bisect.md'

@@ -56,6 +56,9 @@ impl VM<'_> {
         let HeapData::ExternalFuture(future) = self.heap.get(id) else {
             return None;
         };
+        if future.cancel_scope.is_some() {
+            return self.anyio_scope_attr(id, attr);
+        }
         if future
             .queue
             .as_ref()
@@ -226,10 +229,12 @@ impl VM<'_> {
 
     pub(super) fn complete_public_task(&mut self, mut result: RunResult<Value>) -> RunResult<AwaitResult> {
         let task = self.scheduler.current_task_id().expect("public task");
+        let scope_cancelled = self.anyio_result_cancelled(&result);
         let record = self.scheduler.get_task_mut(task);
         let group = record.group_parent;
         let id = record.child_result.take().expect("outcome root");
-        let cancelled = matches!((&result, &record.child_cancel_signal),
+        let cancelled = scope_cancelled
+            || matches!((&result, &record.child_cancel_signal),
             (Err(RunError::Exc(error)), Some(Value::Ref(signal)))
                 if matches!(error.object, Some(Value::Ref(id)) if id == *signal));
         let coroutine = record.coroutine_id.expect("public coroutine");

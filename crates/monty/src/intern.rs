@@ -607,6 +607,17 @@ pub enum StaticStrings {
     Astimezone,
     /// Module name for `import asyncio`.
     Asyncio,
+    /// Supplied AnyIO feasibility surface.
+    Anyio,
+    #[strum(serialize = "create_task_group")]
+    CreateTaskGroup,
+    #[strum(serialize = "CancelScope")]
+    CancelScope,
+    /// AnyIO lexical shield constructor keyword.
+    Shield,
+    /// Supplied cancellation exception class mapping.
+    #[strum(serialize = "get_cancelled_exc_class")]
+    GetCancelledExcClass,
     /// Supplied host capability module.
     Sandbox,
     /// Async host read capability.

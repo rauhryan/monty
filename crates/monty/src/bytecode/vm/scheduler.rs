@@ -98,6 +98,11 @@ pub(crate) struct Task {
     /// Owning roots for nested public groups; membership borrows the owner's root.
     #[serde(default)]
     pub groups: Vec<HeapId>,
+    /// Owned lexical ancestry, including inherited read-only membership.
+    #[serde(default)]
+    pub anyio_scopes: Vec<HeapId>,
+    #[serde(default)]
+    pub anyio_run: u64,
     #[serde(default)]
     pub group_parent: Option<HeapId>,
     /// The interrupted body waits only for its current await graph, rather
@@ -225,6 +230,9 @@ impl<C: ContainsHeap> DropWithContext<C> for Task {
             frame.namespace.drop_with(heap);
             frame.generator_activation.drop_with(heap);
         }
+        for id in self.anyio_scopes.drain(..) {
+            heap.heap_mut().dec_ref(id);
+        }
         for id in self.groups.drain(..) {
             heap.heap_mut().dec_ref(id);
         }
@@ -312,6 +320,8 @@ impl Task {
             pending_queue: None,
             drain: None,
             groups: Vec::new(),
+            anyio_scopes: Vec::new(),
+            anyio_run: 0,
             group_parent: None,
             group_body_waits: None,
             root_shutdown: None,
@@ -342,6 +352,9 @@ pub(crate) struct Scheduler {
     current_task: Option<TaskId>,
     /// Counter for generating new task IDs.
     next_task_id: u32,
+    /// Shared monotonically increasing run/scope identities, never recycled.
+    #[serde(default)]
+    next_anyio_id: u64,
     /// Counter for external call IDs (always incremented, even for sync resolution).
     next_call_id: u32,
     /// New runs issue only host IDs from this counter. Legacy runs retain strict
@@ -382,6 +395,7 @@ impl Scheduler {
             ready_queue: VecDeque::new(), // Main task is current, not in ready queue
             current_task: Some(main_task_id),
             next_task_id: 1,
+            next_anyio_id: 0,
             next_call_id: 0,
             host_id_floor: Some(0),
             pending_externals: AHashMap::new(),
@@ -389,6 +403,17 @@ impl Scheduler {
             coroutine_to_task: AHashMap::new(),
             public_gather_waits: AHashMap::new(),
         }
+    }
+
+    pub(super) fn allocate_anyio_id(&mut self) -> u64 {
+        self.next_anyio_id = self.next_anyio_id.checked_add(1).expect("scope identity exhaustion");
+        self.next_anyio_id
+    }
+
+    pub(super) fn anyio_task_ids(&self) -> Vec<TaskId> {
+        let mut ids: Vec<_> = self.tasks.keys().copied().collect();
+        ids.sort_unstable();
+        ids
     }
 
     /// Identifies the VM's loaded context, even when that task is blocked on a host call.
@@ -684,6 +709,13 @@ impl Scheduler {
         task.run_owner = self
             .current_task()
             .and_then(|parent| parent.run_frame.map(|_| parent.id).or(parent.run_owner));
+        if let Some(parent) = self.current_task() {
+            task.anyio_run = parent.anyio_run;
+            task.anyio_scopes.clone_from(&parent.anyio_scopes);
+            for id in &task.anyio_scopes {
+                heap.inc_ref(*id);
+            }
+        }
         self.tasks.insert(task_id, task);
         self.coroutine_to_task.insert(coroutine_id, task_id);
         self.ready_queue.push_back(task_id);

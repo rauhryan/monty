@@ -58,6 +58,9 @@ impl VM<'_> {
         let Value::Ref(ctx_id) = *self.peek() else {
             return Err(not_a_context_manager(self));
         };
+        if self.is_anyio_scope(ctx_id) {
+            return self.anyio_scope_context(ctx_id, None, true);
+        }
         let mut ctx = self.heap.read(ctx_id);
         if ctx.py_is_context_manager(self) {
             ctx.py_enter(self)
@@ -80,6 +83,9 @@ impl VM<'_> {
         // py_exit returns a value, yields, or errors. This matches the ref-count
         // balance from BeforeWith's push.
         defer_drop!(ctx, this);
+        if this.is_anyio_scope(ctx_id) {
+            return this.anyio_scope_context(ctx_id, None, false);
+        }
         this.heap.read(ctx_id).py_exit(this, None)
     }
 
@@ -97,6 +103,9 @@ impl VM<'_> {
         let Value::Ref(ctx_id) = self.stack[len - 2] else {
             unreachable!("WithExceptStart: expected context-manager ref on stack");
         };
+        if self.is_anyio_scope(ctx_id) {
+            return self.anyio_scope_context(ctx_id, Some(exc_id), false);
+        }
         self.heap.read(ctx_id).py_exit(self, Some(exc_id))
     }
 }

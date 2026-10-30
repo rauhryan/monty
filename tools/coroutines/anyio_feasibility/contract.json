@@ -1,0 +1,312 @@
+{
+  "reference": {
+    "python": "3.14.5",
+    "anyio": "4.11.0",
+    "backend": "asyncio"
+  },
+  "supported": {
+    "normal": {
+      "steps": [
+        [
+          [
+            "A",
+            "B"
+          ],
+          [
+            "A",
+            "B"
+          ]
+        ],
+        [
+          [],
+          [
+            "B"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "A": "a"
+        },
+        {
+          "B": "b"
+        },
+        {
+          "parent-release": "released"
+        }
+      ],
+      "result": "ok"
+    },
+    "failure": {
+      "steps": [
+        [
+          [
+            "body",
+            "A",
+            "B"
+          ],
+          [
+            "A",
+            "B",
+            "body"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "A": "a"
+        },
+        {
+          "parent-release": "released"
+        }
+      ],
+      "result": "ok"
+    },
+    "host-cancel": {
+      "steps": [
+        [
+          [
+            "body",
+            "A"
+          ],
+          [
+            "A",
+            "body"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ],
+        [
+          [],
+          [
+            "parent-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "$cancel": "FIRST"
+        },
+        {
+          "$cancel": "SECOND"
+        },
+        {
+          "child-release": "released"
+        },
+        {
+          "$cancel": "THIRD"
+        },
+        {
+          "parent-release": "released"
+        }
+      ],
+      "cancelled": "FIRST"
+    },
+    "failure-drain": {
+      "steps": [
+        [
+          [
+            "body",
+            "A",
+            "B"
+          ],
+          [
+            "A",
+            "B",
+            "body"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "A": "a"
+        },
+        {
+          "child-release": "released"
+        },
+        {
+          "parent-release": "released"
+        }
+      ],
+      "result": "ok",
+      "platform": true
+    }
+  },
+  "scope_targets": {
+    "scope": {
+      "steps": [
+        [
+          [
+            "cleanup"
+          ],
+          [
+            "cleanup"
+          ]
+        ],
+        [
+          [
+            "after"
+          ],
+          [
+            "after"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "cleanup": "released"
+        },
+        {
+          "after": "ok"
+        }
+      ],
+      "result": "ok"
+    },
+    "nested": {
+      "steps": [
+        [
+          [
+            "shielded"
+          ],
+          [
+            "shielded"
+          ]
+        ],
+        [
+          [
+            "after"
+          ],
+          [
+            "after"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "shielded": "protected"
+        },
+        {
+          "after": "ok"
+        }
+      ],
+      "result": "ok"
+    },
+    "level": {
+      "steps": [
+        [
+          [
+            "shielded"
+          ],
+          [
+            "shielded"
+          ]
+        ],
+        [
+          [
+            "after"
+          ],
+          [
+            "after"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "shielded": "protected"
+        },
+        {
+          "after": "ok"
+        }
+      ],
+      "result": "ok"
+    }
+  },
+  "scope_capability_result": {
+    "unsupported": "AnyIO CancelScope requires task-owned level cancellation and shield boundaries"
+  },
+  "native_seams": {
+    "coalesced-seam": {
+      "steps": [
+        [
+          [
+            "control",
+            "A"
+          ],
+          [
+            "A",
+            "control"
+          ]
+        ],
+        [
+          [
+            "after-catch"
+          ],
+          [
+            "after-catch"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "go"
+        },
+        {
+          "after-catch": "reply"
+        }
+      ],
+      "result": "coalesced"
+    }
+  }
+}

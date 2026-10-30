@@ -65,6 +65,21 @@ impl<'h> VM<'h> {
                 .expect("exec_get_awaitable called without a current task"),
         );
 
+        // Async group exit is a drain barrier, not a cancellable body wait.
+        let group_exit = matches!(awaitable, Value::Ref(id) if matches!(this.heap.get(*id),
+            HeapData::ExternalFuture(f) if f.task_group.as_ref().is_some_and(|g| g.state != TaskGroupState::Active)));
+        // __aenter__ has already installed the scope and returns immediately.
+        // Its synthetic settled result must not inject between installation and
+        // the compiler's establishment of the async-with exit handler.
+        let group_entry = matches!(awaitable, Value::Ref(id) if matches!(this.heap.get(*id),
+            HeapData::ExternalFuture(f) if f.protected_group_entry));
+        if !group_exit
+            && !group_entry
+            && let Some(error) = this.anyio_checkpoint()
+        {
+            return Err(error);
+        }
+
         match awaitable {
             Value::Ref(heap_id) => {
                 let heap_id = *heap_id;
@@ -456,6 +471,10 @@ impl<'h> VM<'h> {
         fut: &HeapObjectRead<'h, ExternalFuture>,
         awaiter: Awaiter,
     ) -> Result<Poll<Value>, RunError> {
+        if fut.get(self.heap).cancel_scope.is_some() {
+            awaiter.drop_with(self);
+            return Err(ExcType::type_error("CancelScope is not awaitable"));
+        }
         let mut awaiter_guard = DropGuard::new(awaiter, self);
         let (awaiter, this) = awaiter_guard.as_parts_mut();
         if fut.get(this.heap).task_group.as_ref().is_some_and(|group| {
@@ -813,6 +832,18 @@ impl<'h> VM<'h> {
                 .drop_with(self.heap);
             self.cancel_queue_operation(task_id);
             return Err(self.native_delivery(None));
+        }
+        if result.is_ok()
+            && let Some(error) = self.anyio_checkpoint()
+        {
+            self.cancel_queue_operation(task_id);
+            self.scheduler
+                .get_task_mut(task_id)
+                .pending_join
+                .take()
+                .map(Value::Ref)
+                .drop_with(self.heap);
+            return Err(error);
         }
         self.consume_queue_delivery(task_id)?;
         self.consume_child_delivery(task_id);
@@ -1209,6 +1240,8 @@ impl<'h> VM<'h> {
     pub(crate) fn settled_awaitable(&mut self, value: Value) -> Value {
         let call_id = self.allocate_call_id();
         let future = ExternalFuture {
+            protected_group_entry: false,
+            cancel_scope: None,
             public_task: None,
             task_group: None,
             call_id,

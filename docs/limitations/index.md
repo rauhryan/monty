@@ -71,6 +71,7 @@ They exist for development and for agents debugging code that runs on Monty; mos
 
 - Third-party packages.
     There is no `sys.path` and no site-packages.
+    A supplied [AnyIO subset](anyio.md) provides task groups, lexical cancellation scopes and shielding with explicit platform restrictions.
 
 ## Standard library
 

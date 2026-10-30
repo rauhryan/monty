@@ -1,0 +1,264 @@
+{
+  "group": {
+    "steps": [
+      [
+        [
+          "before"
+        ],
+        [
+          "before"
+        ]
+      ],
+      [
+        [
+          "after"
+        ],
+        [
+          "after"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "before": "ok"
+      },
+      {
+        "after": "ok"
+      }
+    ],
+    "result": "ok",
+    "platform": true
+  },
+  "native-group": {
+    "steps": [
+      [
+        [
+          "before"
+        ],
+        [
+          "before"
+        ]
+      ],
+      [
+        [
+          "after"
+        ],
+        [
+          "after"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "before": "ok"
+      },
+      {
+        "after": "ok"
+      }
+    ],
+    "result": "ok",
+    "platform": true
+  },
+  "list": {
+    "steps": [
+      [
+        [
+          "before"
+        ],
+        [
+          "before"
+        ]
+      ],
+      [
+        [
+          "after"
+        ],
+        [
+          "after"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "before": "ok"
+      },
+      {
+        "after": "ok"
+      }
+    ],
+    "result": "ok",
+    "platform": true
+  },
+  "scope": {
+    "steps": [
+      [
+        [
+          "before"
+        ],
+        [
+          "before"
+        ]
+      ],
+      [
+        [
+          "after"
+        ],
+        [
+          "after"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "before": "ok"
+      },
+      {
+        "after": "ok"
+      }
+    ],
+    "result": "ok",
+    "platform": true
+  },
+  "alias-shield-group": {
+    "steps": [
+      [
+        [
+          "before"
+        ],
+        [
+          "before"
+        ]
+      ],
+      [
+        [
+          "after"
+        ],
+        [
+          "after"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "before": "ok"
+      },
+      {
+        "after": "ok"
+      }
+    ],
+    "result": "ok",
+    "platform": true
+  },
+  "pending-group": {
+    "steps": [
+      [
+        [
+          "control",
+          "child"
+        ],
+        [
+          "child",
+          "control"
+        ]
+      ],
+      [
+        [],
+        [
+          "child"
+        ]
+      ],
+      [
+        [
+          "after"
+        ],
+        [
+          "after"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "control": "ok"
+      },
+      {
+        "child": "ok"
+      },
+      {
+        "after": "ok"
+      }
+    ],
+    "result": "ok",
+    "platform": true
+  },
+  "alias-shield-native-group": {
+    "steps": [
+      [
+        [
+          "before"
+        ],
+        [
+          "before"
+        ]
+      ],
+      [
+        [
+          "after"
+        ],
+        [
+          "after"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "before": "ok"
+      },
+      {
+        "after": "ok"
+      }
+    ],
+    "result": "ok",
+    "platform": true
+  },
+  "pending-native-group": {
+    "steps": [
+      [
+        [
+          "control",
+          "child"
+        ],
+        [
+          "child",
+          "control"
+        ]
+      ],
+      [
+        [],
+        [
+          "child"
+        ]
+      ],
+      [
+        [
+          "after"
+        ],
+        [
+          "after"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "control": "ok"
+      },
+      {
+        "child": "ok"
+      },
+      {
+        "after": "ok"
+      }
+    ],
+    "result": "ok",
+    "platform": true
+  }
+}

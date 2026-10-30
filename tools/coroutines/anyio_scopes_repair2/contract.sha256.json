@@ -1,0 +1,11 @@
+{
+  "cases/alias-shield-group.py": "e7d8f4187a38bb7c4838176177fa2dd59fc993393fc680a9e0d5ff1bb07065ba",
+  "cases/alias-shield-native-group.py": "bb4e88d96dac2ea67eb2a9f679e1183b6290ba037d403b8c78a1dd4f1a05cbdd",
+  "cases/group.py": "6f7e8bbe59c7811db13a98313a64efc7d60eb40e1a5c3df886d4271f3a3dcf1f",
+  "cases/list.py": "b0bcd3d139a2726c2f4bb32d98efcff50258eab89885503fb0ef8323314fb34c",
+  "cases/native-group.py": "b0530b36834f0bfa407abbcf06ee55e128853043282d01aa4c9f5ecd58fe9300",
+  "cases/pending-group.py": "ce23dd55eb4a3672410ff706f4ad1837e53c8165347720b307150d2504d0b482",
+  "cases/pending-native-group.py": "a21e1b137477c3e4002640eaac8bbd5d20102d4a002d5a85dbb54dcfeba4f6a7",
+  "cases/scope.py": "15df1a90b3f7cd78d54b4f2e2c449e1d7b18845914f747882180bd3c6c685f51",
+  "contract.json": "296f09390c4e601eff133638530d58eb0fdbc7fe1c1ad2cc4e26d8193e8ee008"
+}

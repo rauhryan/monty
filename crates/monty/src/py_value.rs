@@ -533,6 +533,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
         forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
             Self::Module(value) => value.py_call_attr(vm, attr, args),
             Self::ExternalFuture(value) if value.get(vm.heap).queue.as_ref().is_some_and(|q| q.public_maxsize.is_some()) => vm.call_public_queue(value.id(), attr, args),
+            Self::ExternalFuture(value) if value.get(vm.heap).cancel_scope.is_some() => vm.call_anyio_scope(value.id(), attr, args),
             Self::ExternalFuture(value) if value.get(vm.heap).task_group.is_some() => vm.call_task_group(value.id(), attr, args),
             Self::ExternalFuture(value) if value.get(vm.heap).public_task.is_some() => vm.call_public_task(value.id(), attr, args),
             Self::Builtin(Builtins::Type(ty)) if let EitherStr::Interned(id) = attr => Type::from(*ty).call_class_method(*id, args, vm),

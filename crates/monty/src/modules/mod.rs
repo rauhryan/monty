@@ -14,6 +14,7 @@ use crate::{
     intern::StaticStrings,
 };
 
+pub(crate) mod anyio;
 pub(crate) mod asyncio;
 pub(crate) mod base64;
 pub(crate) mod binascii;
@@ -50,8 +51,10 @@ pub(crate) enum StandardLib {
     Sys,
     /// The `typing` module providing type hints support.
     Typing,
-    /// The `asyncio` module providing async/await support (only `run()` and `gather()` implemented).
+    /// The `asyncio` module providing the supported run, gather, Task, TaskGroup and Queue APIs.
     Asyncio,
+    /// Bounded supplied AnyIO task-group authoring surface.
+    Anyio,
     /// Supplied platform capabilities, never OS filesystem access.
     Sandbox,
     /// The `pathlib` module providing object-oriented filesystem paths.
@@ -118,6 +121,7 @@ impl StandardLib {
             StaticStrings::Sys => Some(Self::Sys),
             StaticStrings::Typing => Some(Self::Typing),
             StaticStrings::Asyncio => Some(Self::Asyncio),
+            StaticStrings::Anyio => Some(Self::Anyio),
             StaticStrings::Sandbox => Some(Self::Sandbox),
             StaticStrings::Pathlib => Some(Self::Pathlib),
             StaticStrings::Os => Some(Self::Os),
@@ -161,6 +165,7 @@ impl StandardLib {
             Self::Sys => sys::create_module(vm),
             Self::Typing => typing::create_module(vm),
             Self::Asyncio => asyncio::create_module(vm),
+            Self::Anyio => anyio::create_module(vm),
             Self::Sandbox => sandbox::create_module(vm),
             Self::Pathlib => pathlib::create_module(vm),
             Self::Os => os::create_module(vm),
@@ -197,6 +202,9 @@ impl StandardLib {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ModuleFunctions {
     Asyncio(asyncio::AsyncioFunctions),
+    Anyio(anyio::AnyioFunctions),
+    /// Private frozen start_soon admission helper.
+    AnyioCheckGroup,
     SandboxReadFile,
     SandboxCapability(sandbox::Capability),
     Collections(collections::CollectionsFunctions),
@@ -240,6 +248,8 @@ impl fmt::Display for ModuleFunctions {
             Self::SandboxReadFile => write!(f, "read_file"),
             Self::SandboxCapability(capability) => write!(f, "{}", capability.name()),
             Self::Asyncio(func) => write!(f, "{func}"),
+            Self::Anyio(func) => write!(f, "{func}"),
+            Self::AnyioCheckGroup => write!(f, "anyio_group_admission"),
             Self::Collections(func) => write!(f, "{func}"),
             Self::Json(func) => write!(f, "{func}"),
             Self::Math(func) => write!(f, "{func}"),
@@ -279,6 +289,8 @@ impl ModuleFunctions {
             Self::SandboxReadFile => sandbox::read_file(vm, args).map(CallResult::Value),
             Self::SandboxCapability(capability) => sandbox::call(capability, vm, args).map(CallResult::Value),
             Self::Asyncio(functions) => asyncio::call(vm, functions, args),
+            Self::Anyio(functions) => anyio::call(vm, functions, args),
+            Self::AnyioCheckGroup => anyio::check_group(vm, args),
             Self::Collections(functions) => collections::call(vm, functions, args).map(CallResult::Value),
             Self::Json(functions) => json::call(vm, functions, args),
             Self::Math(functions) => math::call(vm, functions, args).map(CallResult::Value),

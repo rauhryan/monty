@@ -9,7 +9,9 @@
 use std::{env, fs, path::PathBuf};
 
 use insta::assert_snapshot;
-use monty::{DUMP_VERSION, Dump, MontyRepl, ReplProgress, Session, SessionRef, dump};
+use monty::{
+    DUMP_VERSION, Dump, DumpError, MIN_SUPPORTED_DUMP_VERSION, MontyRepl, ReplProgress, Session, SessionRef, dump,
+};
 use monty_types::{CompileOptions, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
 use serde::{Deserialize, Serialize};
 
@@ -234,6 +236,125 @@ assert add5(2) == 7
 #[test]
 fn fixture_dump_loads_and_resumes() {
     check_fixture_dump(fixture_path());
+}
+
+/// Genuine accepted v33 bytes remain readable; never regenerate this fixture.
+#[test]
+fn previous_accepted_v33_fixture_loads_and_resumes() {
+    check_fixture_dump(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v33.bin"));
+}
+
+/// Header-only protocol probes: unsupported versions must fail before CBOR decoding.
+#[test]
+fn unsupported_versions_are_rejected_before_payload() {
+    assert_eq!(MIN_SUPPORTED_DUMP_VERSION, 13);
+    for (version, expected) in [
+        (
+            12_u16,
+            DumpError::VersionTooOld {
+                found: 12,
+                min_supported: 13,
+            },
+        ),
+        (
+            DUMP_VERSION + 1,
+            DumpError::VersionTooNew {
+                found: DUMP_VERSION + 1,
+                max_supported: DUMP_VERSION,
+            },
+        ),
+    ] {
+        let mut header = b"MONTY\0".to_vec();
+        header.extend_from_slice(&version.to_le_bytes());
+        assert_eq!(Dump::load(&header).unwrap_err(), expected);
+    }
+}
+
+/// Genuine milestone2 producer state remains unchanged and readable.
+#[test]
+fn previous_accepted_v34_fixture_loads_and_resumes() {
+    check_fixture_dump(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v34.bin"));
+}
+
+/// Both identity-only state and retained named helpers must survive a genuine dump.
+/// CREATE_ANYIO_DUMP_FIXTURES writes only missing fixtures, never historical bytes.
+#[test]
+fn anyio_v34_fixtures_preserve_group_identity() {
+    for named in [false, true] {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(if named {
+            "tests/fixtures/anyio_named_v34.bin"
+        } else {
+            "tests/fixtures/anyio_identity_v34.bin"
+        });
+        if env::var_os("CREATE_ANYIO_DUMP_FIXTURES").is_some() && !path.exists() {
+            let binding = if named {
+                "method = group.start_soon"
+            } else {
+                "create_task_group = None"
+            };
+            let invocation = if named {
+                "method(child, 42)"
+            } else {
+                "group.start_soon(child, 42)"
+            };
+            let preflight = if named {
+                "assert method(child, 0) is None"
+            } else {
+                "pass"
+            };
+            let expected = if named { "[0, 42]" } else { "[42]" };
+            let source = format!(
+                r"
+import asyncio
+from anyio import create_task_group
+group = create_task_group()
+{binding}
+results = []
+async def child(value):
+    results.append(value)
+async def main():
+    async with group:
+        {preflight}
+        assert host_call() == 41
+        try:
+            group.create_task
+            assert False
+        except AttributeError:
+            pass
+        assert {invocation} is None
+    assert results == {expected}
+    return 42
+asyncio.run(main())
+"
+            );
+            let repl = MontyRepl::new("anyio.py", ResourceTracker::default(), CompileOptions::default());
+            let mut progress = repl.feed_start(&source, vec![], PrintWriter::Stdout).unwrap();
+            while let ReplProgress::NameLookup(lookup) = progress {
+                let host = MontyObject::function(lookup.name.clone(), None);
+                progress = lookup
+                    .resume(NameLookupResult::Value(host), PrintWriter::Stdout)
+                    .unwrap();
+            }
+            assert!(matches!(&progress, ReplProgress::FunctionCall(call) if call.function_name == "host_call"));
+            let bytes = dump("anyio.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+            fs::write(&path, bytes).unwrap();
+            drop(progress.into_function_call().unwrap().into_repl());
+        }
+        let bytes = fs::read(path).unwrap();
+        assert_eq!(&bytes[..8], b"MONTY\0\x22\x00");
+        let frozen_name = b"anyio.TaskGroup.start_soon";
+        assert_eq!(bytes.windows(frozen_name.len()).any(|part| part == frozen_name), named);
+        for _ in 0..2 {
+            let Session::Suspended(progress) = Dump::load(&bytes).unwrap().state else {
+                panic!("expected host_call suspension");
+            };
+            let call = progress.into_function_call().unwrap();
+            assert_eq!(call.function_name, "host_call");
+            let progress = call.resume(MontyObject::int(41), PrintWriter::Stdout).unwrap();
+            let (_, value) = progress.into_complete().unwrap();
+            assert_eq!(value, MontyObject::int(42));
+        }
+    }
 }
 
 /// Genuine version-32 snapshots predate public Queue metadata.
@@ -630,7 +751,7 @@ fn persisted_key_hashes_are_stable() {
 }
 
 /// The fixture for the current `DUMP_VERSION`; the name carries the version so
-/// a bump leaves the old file behind to delete rather than silently reuse.
+/// a bump preserves the historical file rather than silently overwriting it.
 fn fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
@@ -734,4 +855,63 @@ fn previous_delegating_fixture_resumes() {
         repl.feed_run(FIXTURE_CHECK, vec![], PrintWriter::Stdout).unwrap(),
         MontyObject::tuple(vec![MontyObject::int(42), MontyObject::int(13)])
     );
+}
+
+/// Genuine v35 state retains a cancelled ancestor, active shield and exact signal.
+/// Creation only writes a missing prospective fixture; never rewrites old bytes.
+#[test]
+fn anyio_v35_scope_fixture_resumes_twice() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/anyio_scope_v35.bin");
+    if env::var_os("CREATE_ANYIO_SCOPE_FIXTURE").is_some() && !path.exists() {
+        let repl = MontyRepl::new("scope.py", ResourceTracker::default(), CompileOptions::default());
+        let mut progress = repl
+            .feed_start(
+                r"
+import asyncio
+import anyio
+async def main():
+    with anyio.CancelScope() as scope:
+        scope.cancel()
+        try:
+            await rejected()
+        except ValueError as caught:
+            signal = caught
+        with anyio.CancelScope(shield=True) as shield:
+            assert host_call() == 41
+            assert scope.cancel_called and not scope.cancelled_caught
+            assert isinstance(signal, anyio.get_cancelled_exc_class())
+        await rejected()
+    assert scope.cancelled_caught
+    return 42
+asyncio.run(main())
+",
+                vec![],
+                PrintWriter::Disabled,
+            )
+            .unwrap();
+        while let ReplProgress::NameLookup(lookup) = progress {
+            let host = MontyObject::function(lookup.name.clone(), None);
+            progress = lookup
+                .resume(NameLookupResult::Value(host), PrintWriter::Disabled)
+                .unwrap();
+        }
+        assert!(matches!(&progress, ReplProgress::FunctionCall(call) if call.function_name == "host_call"));
+        let bytes = dump("scope.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+        fs::write(&path, bytes).unwrap();
+        drop(progress.into_function_call().unwrap().into_repl());
+    }
+    let bytes = fs::read(path).unwrap();
+    assert_eq!(&bytes[..8], b"MONTY\0\x23\x00");
+    for _ in 0..2 {
+        let Session::Suspended(progress) = Dump::load(&bytes).unwrap().state else {
+            panic!("suspended")
+        };
+        let progress = progress
+            .into_function_call()
+            .unwrap()
+            .resume(MontyObject::int(41), PrintWriter::Disabled)
+            .unwrap();
+        let (_, value) = progress.into_complete().unwrap();
+        assert_eq!(value, MontyObject::int(42));
+    }
 }

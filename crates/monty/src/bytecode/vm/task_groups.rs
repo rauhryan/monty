@@ -7,7 +7,11 @@ use crate::{
     asyncio::{Awaiter, CallId, ExternalFuture, ExternalFutureState, TaskGroup, TaskGroupState, TaskId},
     exception_private::{ExcType, ExcTypeExt, ExceptionObject, ExceptionRaise, RunError, RunResult, SimpleException},
     heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
-    modules::{ModuleFunctions, asyncio::AsyncioFunctions},
+    modules::{
+        ModuleFunctions,
+        anyio::{self, AnyioFunctions},
+        asyncio::AsyncioFunctions,
+    },
     types::{BoundMethod, allocate_tuple},
     value::{EitherStr, Value},
 };
@@ -73,7 +77,15 @@ impl VM<'_> {
     pub(super) fn leave_run_frame(&mut self) {
         if self.at_run_frame() {
             let owner = self.scheduler.current_task_id().expect("run owner");
-            self.scheduler.get_task_mut(owner).run_frame = None;
+            let task = self.scheduler.get_task_mut(owner);
+            task.run_frame = None;
+            task.anyio_run = 0;
+            // Malformed manual __enter__ use must not retain scope history
+            // after the owning run has ended. No authored cleanup runs here.
+            let scopes = mem::take(&mut task.anyio_scopes);
+            for scope in scopes {
+                Value::Ref(scope).drop_with(self);
+            }
         }
     }
 
@@ -134,6 +146,9 @@ impl VM<'_> {
     pub(crate) fn new_task_group(&mut self) -> Value {
         let mut future = ExternalFuture::new_pending(CallId::new(u32::MAX), None);
         future.task_group = Some(TaskGroup {
+            anyio: false,
+            cancel_scope: None,
+            cancel_suppressed: false,
             owner: None,
             state: TaskGroupState::Created,
             children: Vec::new(),
@@ -147,20 +162,38 @@ impl VM<'_> {
     }
 
     pub(crate) fn task_group_method(&mut self, id: HeapId, attr: &EitherStr) -> Option<CallResult> {
-        if attr.as_str(self.interns) != "create_task" {
+        let HeapData::ExternalFuture(future) = self.heap.get(id) else {
             return None;
+        };
+        let group = future.task_group.as_ref()?;
+        let anyio = group.anyio;
+        if anyio && attr.as_str(self.interns) == "cancel_scope" {
+            let scope = group.cancel_scope?;
+            self.heap.inc_ref(scope);
+            return Some(CallResult::Value(Value::Ref(scope)));
         }
+        let function = match (anyio, attr.as_str(self.interns)) {
+            (true, "start_soon") => ModuleFunctions::Anyio(AnyioFunctions::StartSoon),
+            (false, "create_task") => ModuleFunctions::Asyncio(AsyncioFunctions::GroupCreateTask),
+            _ => return None,
+        };
         self.heap.inc_ref(id);
         Some(CallResult::Value(Value::Ref(self.heap.allocate(
             HeapData::BoundMethod(BoundMethod {
                 instance: Value::Ref(id),
-                func: Value::ModuleFunction(ModuleFunctions::Asyncio(AsyncioFunctions::GroupCreateTask)),
+                func: Value::ModuleFunction(function),
             }),
         ))))
     }
 
     pub(crate) fn call_task_group(&mut self, id: HeapId, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if attr.as_str(self.interns) != "create_task" {
+        let anyio =
+            matches!(self.heap.get(id), HeapData::ExternalFuture(f) if f.task_group.as_ref().is_some_and(|g| g.anyio));
+        if anyio && attr.as_str(self.interns) == "start_soon" {
+            self.heap.inc_ref(id);
+            return anyio::call(self, AnyioFunctions::StartSoon, args.prepend(Value::Ref(id)));
+        }
+        if anyio || attr.as_str(self.interns) != "create_task" {
             args.drop_with(self);
             return Err(ExcType::attribute_error("TaskGroup", attr.as_str(self.interns)));
         }
@@ -170,23 +203,53 @@ impl VM<'_> {
         result
     }
 
-    pub(crate) fn group_create_task(&mut self, id: HeapId, coro: &Value) -> RunResult<Value> {
+    /// Shared preflight before an AnyIO callable or an asyncio coroutine is admitted.
+    pub(crate) fn check_group_admission(&self, id: HeapId) -> RunResult<()> {
         let HeapData::ExternalFuture(future) = self.heap.get(id) else {
             unreachable!()
         };
         let group = future.task_group.as_ref().expect("group");
         let owner = group.owner;
-        if group.state != TaskGroupState::Active || group.failure_pending || owner != self.scheduler.current_task_id() {
+        let scope_open = group.cancel_scope.is_none_or(|scope| {
+            self.scheduler
+                .current_task()
+                .is_some_and(|task| task.anyio_scopes.contains(&scope))
+        });
+        if group.state != TaskGroupState::Active
+            || group.failure_pending
+            || owner != self.scheduler.current_task_id()
+            || !scope_open
+        {
             return Err(
                 SimpleException::new_msg(ExcType::RuntimeError, "TaskGroup admission is closed or foreign").into(),
             );
         }
+        Ok(())
+    }
+
+    pub(crate) fn group_create_task(&mut self, id: HeapId, coro: &Value) -> RunResult<Value> {
+        self.check_group_admission(id)?;
+        let HeapData::ExternalFuture(future) = self.heap.get(id) else {
+            unreachable!()
+        };
+        let group = future.task_group.as_ref().expect("group");
+        let (owner, scope) = (group.owner, group.cancel_scope);
         let value = self.spawn_public_task(coro)?;
         let Value::Ref(child) = value else { unreachable!() };
         let HeapData::ExternalFuture(future) = self.heap.get(child) else {
             unreachable!()
         };
         let task = future.public_task.as_ref().expect("Task").task.expect("live Task");
+        if let Some(scope) = scope {
+            // A group child inherits the group's lexical ancestry, not temporary
+            // scopes subsequently entered by its owner around start_soon.
+            let scopes = &mut self.scheduler.get_task_mut(task).anyio_scopes;
+            let end = scopes.iter().position(|id| *id == scope).expect("admitted group scope") + 1;
+            let temporary = scopes.split_off(end);
+            for id in temporary {
+                Value::Ref(id).drop_with(self);
+            }
+        }
         let previous = self.scheduler.get_task_mut(task).lifetime_parent;
         if let Some(previous) = previous {
             self.scheduler
@@ -222,6 +285,35 @@ impl VM<'_> {
                 matches!(&group.interrupt, Some(Value::Ref(signal)) if *signal == exc)))
             })
         });
+        let is_anyio =
+            matches!(self.heap.get(id), HeapData::ExternalFuture(f) if f.task_group.as_ref().is_some_and(|g| g.anyio));
+        let guest_cancel = exc.is_some_and(|exc| self.anyio_exception_cancelled(exc));
+        let own_cancel = match self.heap.get(id) {
+            HeapData::ExternalFuture(f) => f
+                .task_group
+                .as_ref()
+                .and_then(|g| g.cancel_scope)
+                .is_some_and(|scope| self.anyio_scope_owns_exception(scope, exc)),
+            _ => false,
+        };
+        if mode == 0
+            && matches!(self.heap.get(id), HeapData::ExternalFuture(f) if f.task_group.as_ref().is_some_and(|g| g.state != TaskGroupState::Created))
+        {
+            return Err(SimpleException::new_msg(ExcType::RuntimeError, "TaskGroup has already been entered").into());
+        }
+        let new_scope = if mode == 0 && is_anyio {
+            let scope = self.new_anyio_scope(false)?.into_ref_id().expect("scope carrier");
+            match self.anyio_scope_context(scope, None, true) {
+                Ok(result) => result.drop_with(self),
+                Err(error) => {
+                    Value::Ref(scope).drop_with(self);
+                    return Err(error);
+                }
+            }
+            Some(scope)
+        } else {
+            None
+        };
         let HeapReadOutput::ExternalFuture(future) = self.heap.read(id) else {
             unreachable!()
         };
@@ -232,27 +324,34 @@ impl VM<'_> {
                     SimpleException::new_msg(ExcType::RuntimeError, "TaskGroup has already been entered").into(),
                 );
             }
+            group.cancel_scope = new_scope;
             group.state = TaskGroupState::Active;
             group.owner = Some(owner);
             self.heap.inc_ref(id);
             self.scheduler.get_task_mut(owner).groups.push(id);
             self.heap.inc_ref(id);
             drop(future);
-            return Ok(CallResult::Value(self.settled_awaitable(Value::Ref(id))));
+            let mut entry = ExternalFuture::new_pending(self.allocate_call_id(), None);
+            entry.protected_group_entry = true;
+            entry.state = ExternalFutureState::Resolved(Value::Ref(id));
+            return Ok(CallResult::Value(Value::Ref(
+                self.heap.allocate(HeapData::ExternalFuture(Box::new(entry))),
+            )));
         }
         if group.owner != Some(owner) || group.state != TaskGroupState::Active {
             return Err(SimpleException::new_msg(ExcType::RuntimeError, "TaskGroup exit is closed or foreign").into());
         }
         group.state = TaskGroupState::Exiting;
+        group.cancel_suppressed = own_cancel;
         // Our own interruption wakes the body but is not another user failure.
         let cancelled = matches!((&self.scheduler.get_task_mut(owner).child_cancel_signal, exc),
             (Some(Value::Ref(a)), Some(b)) if *a == b);
-        if let Some(exc) = exc.filter(|_| !internal && !cancelled) {
+        if let Some(exc) = exc.filter(|_| !internal && !cancelled && !guest_cancel) {
             group.body_error = Some(Value::Ref(exc));
         }
-        let cancel = exc.is_some() || group.failure_pending;
+        let cancel = (exc.is_some() && !guest_cancel) || group.failure_pending;
         let children = group.children.clone();
-        if let Some(exc) = exc.filter(|_| !internal && !cancelled) {
+        if let Some(exc) = exc.filter(|_| !internal && !cancelled && !guest_cancel) {
             self.heap.inc_ref(exc);
         }
         drop(future);
@@ -465,6 +564,8 @@ impl VM<'_> {
                 continue;
             }
             let group = future.get_mut(self.heap).task_group.as_mut().expect("group");
+            let scope = group.cancel_scope;
+            let suppressed = group.cancel_suppressed;
             group.state = TaskGroupState::Finished;
             let body = group.body_error.take();
             let interrupt = group.interrupt.take();
@@ -487,8 +588,24 @@ impl VM<'_> {
             // fails. With failures it is retained as well; cancellation typing
             // remains the VM's documented ValueError subset.
             errors.extend(body);
+            if let Some(scope) = scope {
+                let exc = if suppressed {
+                    self.anyio_scope_signal_id(scope)
+                } else {
+                    None
+                };
+                if let Err(mut error) = self.exit_anyio_scope(owner, scope, exc) {
+                    // Guest dunder misuse must remain a guest error, never a
+                    // Rust panic; preserve it alongside actual child/body errors.
+                    error.materialize_object(self.heap);
+                    let RunError::Exc(mut error) = error else {
+                        unreachable!("scope protocol error")
+                    };
+                    errors.push(error.object.take().expect("materialized scope protocol error"));
+                }
+            }
             let result = if errors.is_empty() {
-                Ok(Value::Bool(false))
+                Ok(Value::Bool(suppressed))
             } else {
                 // The public exception boundary exports metadata, not guest
                 // argument graphs. Preserve every failure there as well as in

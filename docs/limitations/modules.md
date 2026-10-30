@@ -3,6 +3,7 @@
 Monty provides a fixed set of stdlib modules.
 Other imports request [host modules](#host-modules) and raise `ModuleNotFoundError` if none is provided.
 There is no `sys.path` or site-packages; sandboxed code cannot load additional modules itself.
+The supplied [AnyIO subset](anyio.md) is also importable, independently of any installed upstream package.
 
 `os.path` (also importable as `posixpath`) is the only submodule.
 

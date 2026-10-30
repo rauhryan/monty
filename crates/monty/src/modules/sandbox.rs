@@ -81,7 +81,7 @@ struct ReadFileArgs {
 pub(super) fn read_file(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let ReadFileArgs { path } = ReadFileArgs::from_args(args, vm)?;
     let exchange = vm.heap.get_ext_function("sandbox.exchange");
-    vm.frozen_awaitable(FrozenFunction::SandboxReadFile, vec![path, exchange], true)
+    vm.frozen_awaitable(FrozenFunction::SandboxReadFile, vec![path, exchange], false)
 }
 
 /// Platform contract names, not authority: every request is authorized by the host.
@@ -133,5 +133,5 @@ pub(super) fn call(capability: Capability, vm: &mut VM<'_>, args: ArgValues) -> 
     let request = args.get_one_arg(capability.name(), vm.heap)?;
     let name = Value::InternString(vm.interns.intern_static(capability.attribute()));
     let exchange = vm.heap.get_ext_function("sandbox.exchange");
-    vm.frozen_awaitable(FrozenFunction::SandboxCapability, vec![name, request, exchange], true)
+    vm.frozen_awaitable(FrozenFunction::SandboxCapability, vec![name, request, exchange], false)
 }

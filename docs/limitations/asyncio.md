@@ -294,7 +294,7 @@ Generator operands still delegate to their durable continuation; arbitrary `__aw
 `asyncio.gather` accepts dialect generators and ordinary synchronous generators directly, as well as native coroutines, nested gathers and external futures.
 Each generator runs through the native continuation bridge: it may return without yielding, delegate to another generator, or yield a native coroutine, external future or gather result.
 Arbitrary yielded values and arbitrary `__await__` objects are unsupported; accepting a synchronous generator does not make general Python iteration an asyncio operation.
-Passing the same suspended generator object twice (for example, `c = read_file("a.txt")` followed by `asyncio.gather(c, c)`) raises `ValueError: generator already executing`.
+Passing the same suspended generator object twice (for example, `c = legacy_generator()` followed by `asyncio.gather(c, c)`) raises `ValueError: generator already executing`.
 Unlike CPython asyncio, this bridge does not deduplicate repeated awaitables into shared result slots.
 Use distinct calls such as `asyncio.gather(*(read_file(path) for path in paths))` for the five-read program.
 Ordinary `next`, `send`, and `throw` retain their separate behavior.
@@ -398,22 +398,22 @@ at every queue await.
 ## Supplied host read capability
 
 The experimental platform supplies `from sandbox import read_file`. Calling it
-creates a lazy durable continuation; awaiting it emits a `sandbox.read_file`
+creates a lazy native coroutine; awaiting it emits a `sandbox.read_file`
 capability request with a `path` argument. There is no guest filesystem access.
 The host must authorize and fulfill the request, or raise a supported exception.
 This is a platform module, not a Python standard-library module.
 
 Variadic `asyncio.gather`, including starred generator expressions, accepts these
-continuations directly. The host-mode platform entry still selects the durable
-continuation dialect internally. Ordinary `try/finally` and `async with` in that
-entry participate in protected cancellation cleanup. Public `asyncio.TaskGroup` has the bounded subset above; experimental scopes retain
+coroutines directly. Direct `await`, public Tasks and supported task groups use
+the ordinary `asyncio.run` entry without a dialect import or private entry method.
+Ordinary `try/finally` and `async with` participate in protected host cancellation cleanup. Public `asyncio.TaskGroup` has the bounded subset above; experimental scopes retain
 their separate cancel-on-exit semantics.
 General coroutine introspection and `return_exceptions` remain unsupported.
 
 The playground also supplies `sandbox.ask`, `echo`, `random`, `sample`, `decision`,
 `document_create`, `document_read`, `document_edit`, `present_choices`, and
 `display_document`. These platform functions accept one positional request
-dictionary and return a lazy continuation. Their names grant no authority: the
+dictionary and return a lazy native coroutine. Their names grant no authority: the
 host validates the request against its installed contracts before performing any
 operation. Randomness and human replies are supplied and journaled by the host.
 They are not Python standard-library functions.

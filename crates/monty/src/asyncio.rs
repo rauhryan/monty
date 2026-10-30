@@ -140,11 +140,18 @@ impl Coroutine {
 /// Other pending external futures retain the single-waiter restriction.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ExternalFuture {
+    /// Synthetic group __aenter__ result, before the exit handler is established.
+    /// Ordinary settled futures and public Tasks never acquire this protocol role.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub protected_group_entry: bool,
     /// Public task outcome and independent pending join routes.
     #[serde(default)]
     pub public_task: Option<PublicTask>,
     #[serde(default)]
     pub task_group: Option<TaskGroup>,
+    /// Lexical AnyIO scope carrier; no host-settleable registration.
+    #[serde(default)]
+    pub cancel_scope: Option<CancelScope>,
     /// Experimental internal queue token or single-delivery queue operation.
     #[serde(default)]
     pub queue: Option<GuestQueue>,
@@ -186,6 +193,14 @@ pub(crate) enum TaskGroupState {
 /// Public structured group. The owner task roots active groups; groups root outcomes.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct TaskGroup {
+    /// Supplied AnyIO method surface; old asyncio groups keep their API.
+    #[serde(default)]
+    pub anyio: bool,
+    /// New groups own a lexical scope; old active groups retain absent roles.
+    #[serde(default)]
+    pub cancel_scope: Option<HeapId>,
+    #[serde(default)]
+    pub cancel_suppressed: bool,
     pub owner: Option<TaskId>,
     pub state: TaskGroupState,
     pub children: Vec<HeapId>,
@@ -194,6 +209,58 @@ pub(crate) struct TaskGroup {
     pub failure_pending: bool,
     pub externals: Vec<CallId>,
     pub errors: Vec<Value>,
+}
+
+/// Task/run-owned single-use lexical scope. The signal is an owned exact
+/// exception identity, independent of native host cancellation and its latch.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct CancelScope {
+    pub id: u64,
+    pub owner: TaskId,
+    pub run: u64,
+    #[serde(flatten)]
+    pub state: CancelScopeState,
+    pub shield: bool,
+    pub cancel_called: bool,
+    pub cancelled_caught: bool,
+    pub signal: Option<Value>,
+}
+
+/// A scope has one lexical lifetime. The wire adapter retains the exact v35
+/// entered/exited map fields already written by genuine current fixtures.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(from = "CancelScopeStateWire", into = "CancelScopeStateWire")]
+pub(crate) enum CancelScopeState {
+    Created,
+    Active,
+    Exited,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CancelScopeStateWire {
+    entered: bool,
+    exited: bool,
+}
+
+impl From<CancelScopeStateWire> for CancelScopeState {
+    fn from(state: CancelScopeStateWire) -> Self {
+        if state.exited {
+            Self::Exited
+        } else if state.entered {
+            Self::Active
+        } else {
+            Self::Created
+        }
+    }
+}
+
+impl From<CancelScopeState> for CancelScopeStateWire {
+    fn from(state: CancelScopeState) -> Self {
+        Self {
+            entered: state != CancelScopeState::Created,
+            exited: state == CancelScopeState::Exited,
+        }
+    }
 }
 
 /// Bounded FIFO storage. Waiter IDs own references; reserved borrows a waiter.
@@ -228,7 +295,13 @@ impl ExternalFuture {
                 }
             }
         }
+        if let Some(scope) = &mut self.cancel_scope
+            && let Some(signal) = &mut scope.signal
+        {
+            signal.py_dec_ref_ids(stack);
+        }
         if let Some(group) = &mut self.task_group {
+            stack.extend(group.cancel_scope);
             stack.extend(group.children.iter().copied());
             for value in &mut group.errors {
                 value.py_dec_ref_ids(stack);
@@ -262,7 +335,15 @@ impl ExternalFuture {
                 }
             }
         }
+        if let Some(scope) = &self.cancel_scope
+            && let Some(Value::Ref(id)) = &scope.signal
+        {
+            visit(*id);
+        }
         if let Some(group) = &self.task_group {
+            if let Some(id) = group.cancel_scope {
+                visit(id);
+            }
             for value in &group.errors {
                 if let Value::Ref(id) = value {
                     visit(*id);
@@ -327,8 +408,10 @@ impl ExternalFuture {
     pub fn new_pending(call_id: CallId, sleep_result: Option<Value>) -> Self {
         Self {
             call_id,
+            protected_group_entry: false,
             public_task: None,
             task_group: None,
+            cancel_scope: None,
             child: None,
             queue: None,
             queue_op: None,

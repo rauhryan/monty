@@ -1306,7 +1306,7 @@ fn dispatch_dunder(
     // is lossy). The `with` statement still uses the trait hooks via the
     // `BeforeWith`/`WithExit`/`WithExceptStart` opcodes, which perform the
     // CPython type-level (class-only) lookup.
-    if matches!(vm.heap.get(heap_id), HeapData::Instance(_)) {
+    if matches!(vm.heap.get(heap_id), HeapData::Instance(_)) || vm.is_anyio_scope(heap_id) {
         return None;
     }
     Some(match static_str {
