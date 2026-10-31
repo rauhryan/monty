@@ -15,11 +15,12 @@ use monty_types::{
 
 use crate::{
     bytecode::VM,
+    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     expressions::{ExprLoc, Identifier},
-    heap::{ContainsHeap, DropWithContext, Heap},
+    heap::{ContainsHeap, DropGuard, DropWithContext, Heap},
     intern::{Interns, StringId},
-    object_bridge::{CallArgsExt, GraphExporter},
+    object_bridge::{CallArgsExt, ExportError, GraphExporter},
     parse::ParseError,
     types::{Dict, dict::DictIntoIter},
     value::Value,
@@ -228,26 +229,30 @@ impl ArgValues {
 
     /// Exports the arguments into one arena for delivery to an external
     /// function, so an object passed twice crosses once.
-    pub fn into_call_args(self, vm: &mut VM<'_>) -> CallArgs {
-        let mut exporter = GraphExporter::new();
+    pub fn into_call_args(self, vm: &mut VM<'_>) -> Result<CallArgs, ExportError> {
+        let args = self;
+        defer_drop!(args, vm);
+        let mut transaction = DropGuard::new(GraphExporter::new(), vm);
+        let (exporter, vm) = transaction.as_parts_mut();
         let mut call = CallArgs::new();
-        match self {
+        match args {
             Self::Empty => {}
-            Self::One(a) => call.export_arg(&mut exporter, a, vm),
-            Self::Two(a1, a2) => {
-                call.export_arg(&mut exporter, a1, vm);
-                call.export_arg(&mut exporter, a2, vm);
+            Self::One(a) => call.export_arg(exporter, a, vm)?,
+            Self::Two(a, b) => {
+                call.export_arg(exporter, a, vm)?;
+                call.export_arg(exporter, b, vm)?;
             }
-            Self::Kwargs(kwargs) => kwargs.export_into(&mut call, &mut exporter, vm),
+            Self::Kwargs(kwargs) => kwargs.export_into(&mut call, exporter, vm)?,
             Self::ArgsKargs { args, kwargs } => {
                 for arg in args {
-                    call.export_arg(&mut exporter, arg, vm);
+                    call.export_arg(exporter, arg, vm)?;
                 }
-                kwargs.export_into(&mut call, &mut exporter, vm);
+                kwargs.export_into(&mut call, exporter, vm)?;
             }
         }
-        *unstable::call_args_parts_mut(&mut call).0 = exporter.finish(vm);
-        call
+        let (exporter, vm) = transaction.into_parts();
+        *unstable::call_args_parts_mut(&mut call).0 = exporter.finish(vm)?;
+        Ok(call)
     }
 
     /// The first positional argument, if any, without consuming the arguments.
@@ -444,27 +449,33 @@ impl KwargsValues {
     }
 
     /// Exports the keyword arguments into `call`'s arena, for external functions.
-    fn export_into(self, call: &mut CallArgs, exporter: &mut GraphExporter, vm: &mut VM<'_>) {
+    fn export_into(
+        &self,
+        call: &mut CallArgs,
+        exporter: &mut GraphExporter,
+        vm: &mut VM<'_>,
+    ) -> Result<(), ExportError> {
         match self {
             Self::Empty => {}
             Self::Inline(kvs) => {
                 for (k, v) in kvs {
-                    let key = exporter.push_node(MontyNode::String(vm.interns.get_str(k).to_owned()));
-                    let value = exporter.push_owned(v, vm);
+                    let key = exporter.push_node(MontyNode::String(vm.interns.get_str(*k).to_owned()));
+                    let value = exporter.push(v, vm)?;
                     unstable::call_args_parts_mut(call).2.push((key, value));
                 }
             }
             Self::Pairs(kvs) => {
                 for (k, v) in kvs {
-                    call.export_kwarg(exporter, k, v, vm);
+                    call.export_kwarg(exporter, k, v, vm)?;
                 }
             }
             Self::Dict(dict) => {
                 for (k, v) in dict {
-                    call.export_kwarg(exporter, k, v, vm);
+                    call.export_kwarg(exporter, k, v, vm)?;
                 }
             }
         }
+        Ok(())
     }
 }
 

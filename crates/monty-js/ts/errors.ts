@@ -200,6 +200,8 @@ export class MontyTypingError extends MontyError {
  * If a session exists, it is lost; its pool can replace the worker on future checkouts.
  */
 export class MontyCrashedError extends MontyError {
+  /** Preserved component admission failure classification, when available. */
+  readonly code?: 'MONTY_CANCELLATION_CONTRACT_UNSUPPORTED'
   /** True when the worker was killed by a watchdog timeout. */
   readonly timedOut: boolean
   /** Worker exit description (e.g. `signal: 9 (SIGKILL)`), when known. */
@@ -269,6 +271,7 @@ export class ProtocolError extends Error {
 export const PYTHON_EXC_NAMES: ReadonlySet<string> = new Set([
   'Exception',
   'BaseException',
+  'asyncio.CancelledError',
   'SystemExit',
   'KeyboardInterrupt',
   'ArithmeticError',

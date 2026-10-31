@@ -2107,6 +2107,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 }
             }
         }
+        HeapData::Generator(generator) => generator.for_each_child_id(on_child),
+        HeapData::Exception(exception) => exception.for_each_child_id(on_child),
         HeapData::Coroutine(coro) => {
             // Add namespace values that are heap references
             for value in &coro.namespace {
@@ -2127,8 +2129,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             // Walk per-state heap refs: in-flight slot results plus this
             // gather's own awaiter (if `GatherSlot`, it owns an inc_ref on
             // the outer gather), or the cached result list once the gather
-            // has completed successfully. `Pending` and `Failed` carry no
-            // heap refs.
+            // has completed successfully. Failed errors own their exception identity;
+            // Pending carries no heap refs.
             match &gather.state {
                 GatherState::Awaited(awaited) => {
                     if let Awaiter::GatherSlot { gather, .. } = &awaited.awaiter {
@@ -2141,19 +2143,22 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                     }
                 }
                 GatherState::Completed(Value::Ref(id)) => on_child(*id),
-                GatherState::Pending | GatherState::Failed(_) | GatherState::Completed(_) => {}
+                GatherState::Failed(error) => error.for_each_owned_id(on_child),
+                GatherState::Pending | GatherState::Completed(_) => {}
             }
         }
         HeapData::ExternalFuture(fut) => {
+            fut.queue_owned_ids(&mut on_child);
             // `Pending { awaiter: Some(GatherSlot { gather, .. }) }` owns an
-            // inc_ref on `gather`. `Awaiter::Task` / `None` and the `Failed`
-            // state carry no heap refs. `Resolved` owns the cached value, and
+            // inc_ref on `gather`. Failed owns its cached exception identity;
+            // `Resolved` owns the cached value, and
             // a pending sleep owns the `result` it will resolve with.
             if let Some(Value::Ref(id)) = &fut.sleep_result {
                 on_child(*id);
             }
             match &fut.state {
                 ExternalFutureState::Resolved(Value::Ref(id)) => on_child(*id),
+                ExternalFutureState::Failed(error) => error.for_each_owned_id(on_child),
                 ExternalFutureState::Pending {
                     awaiter: Some(Awaiter::GatherSlot { gather, .. }),
                 } => on_child(*gather),
@@ -2258,6 +2263,8 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::Union(union) => union.py_dec_ref_ids(stack),
         HeapData::LruCache(cache) => cache.py_dec_ref_ids(stack),
         HeapData::Module(m) => m.py_dec_ref_ids(stack),
+        HeapData::Generator(generator) => generator.py_dec_ref_ids(stack),
+        HeapData::Exception(exception) => exception.py_dec_ref_ids(stack),
         HeapData::Coroutine(coro) => {
             // Decrement ref count for namespace values that are heap references
             for value in &mut coro.namespace {
@@ -2272,8 +2279,8 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             // Release per-state heap refs: in-flight slot results plus this
             // gather's own awaiter (if `GatherSlot`, it owns an inc_ref on
             // the outer gather), or the cached result list once the gather
-            // has completed successfully. `Pending` and `Failed` carry no
-            // heap refs.
+            // has completed successfully. Failed errors own their exception identity;
+            // Pending carries no heap refs.
             match &mut gather.state {
                 GatherState::Awaited(awaited) => {
                     if let Awaiter::GatherSlot { gather, .. } = &awaited.awaiter {
@@ -2284,10 +2291,12 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
                     }
                 }
                 GatherState::Completed(value) => value.py_dec_ref_ids(stack),
-                GatherState::Pending | GatherState::Failed(_) => {}
+                GatherState::Failed(error) => error.py_dec_ref_ids(stack),
+                GatherState::Pending => {}
             }
         }
         HeapData::ExternalFuture(fut) => {
+            fut.queue_dec_ref_ids(stack);
             // Mirror `for_each_child_id`: a pending sleep's `result` is owned too.
             if let Some(result) = &mut fut.sleep_result {
                 result.py_dec_ref_ids(stack);
@@ -2299,8 +2308,8 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
                 } => stack.push(*gather),
                 ExternalFutureState::Pending {
                     awaiter: None | Some(Awaiter::Task(_)),
-                }
-                | ExternalFutureState::Failed(_) => {}
+                } => {}
+                ExternalFutureState::Failed(error) => error.py_dec_ref_ids(stack),
             }
         }
         HeapData::DateTime(dt) => {

@@ -95,6 +95,7 @@ impl VM<'_> {
         match obj.py_getattr(&attr, this) {
             Ok(result) => Ok(result),
             Err(RunError::Exc(exc)) if exc.exc.exc_type() == ExcType::AttributeError => {
+                exc.drop_with(this);
                 let name_str = this.interns.get_str(name_id);
                 Err(ExcType::cannot_import_name(name_str, this.interns.get_str(module_id)))
             }
@@ -126,6 +127,7 @@ impl VM<'_> {
             }
             Ok(result) => Ok(result),
             Err(RunError::Exc(exc)) if exc.exc.exc_type() == ExcType::AttributeError => {
+                exc.drop_with(this);
                 Err(not_a_submodule(this.interns, path_id, is_builtin))
             }
             Err(e) => Err(e),

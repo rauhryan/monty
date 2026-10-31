@@ -4,6 +4,8 @@
 //! and task identifiers. The host acts as the event loop - external function
 //! calls return `ExternalFuture` objects that can be awaited.
 
+use std::collections::VecDeque;
+
 use ahash::AHashMap;
 use smallvec::SmallVec;
 
@@ -41,7 +43,7 @@ impl CallId {
 /// Sequential integers allocated by the scheduler. Task 0 is always the main task
 /// which uses the VM's stack/frames directly. Spawned tasks (1+) store their own context,
 /// hence `TaskId::default()` is the main task.
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) struct TaskId(u32);
 
 impl TaskId {
@@ -134,10 +136,30 @@ impl Coroutine {
 /// await yields a clone of the cached value or replays the cached exception,
 /// matching CPython's Future semantics. `Pending` futures still support only
 /// a single in-flight awaiter (the `awaiter: Option<Awaiter>` slot);
-/// multi-awaiter on `Pending` is a planned follow-up that needs the same
-/// wake/raise plumbing as multi-waiter gathers.
+/// public Tasks instead keep independent join routes in `public_task`.
+/// Other pending external futures retain the single-waiter restriction.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ExternalFuture {
+    /// Synthetic group __aenter__ result, before the exit handler is established.
+    /// Ordinary settled futures and public Tasks never acquire this protocol role.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub protected_group_entry: bool,
+    /// Public task outcome and independent pending join routes.
+    #[serde(default)]
+    pub public_task: Option<PublicTask>,
+    #[serde(default)]
+    pub task_group: Option<TaskGroup>,
+    /// Lexical AnyIO scope carrier; no host-settleable registration.
+    #[serde(default)]
+    pub cancel_scope: Option<CancelScope>,
+    /// Experimental internal queue token or single-delivery queue operation.
+    #[serde(default)]
+    pub queue: Option<GuestQueue>,
+    #[serde(default)]
+    pub queue_op: Option<QueueOperation>,
+    /// Internal child identity, never registered as a host-settleable call.
+    #[serde(default)]
+    pub child: Option<ChildIdentity>,
     /// Host-side identifier. Used by the scheduler's `CallId -> HeapId`
     /// index so host resolutions can find the heap entry.
     pub call_id: CallId,
@@ -146,7 +168,226 @@ pub(crate) struct ExternalFuture {
     /// `asyncio.sleep(delay, result)`: the value to resolve with in place of
     /// the host's, which is only the wake-up signal. Owned; taken on
     /// resolution and released on failure or when the entry is freed.
+    /// Internal child futures instead own their scope token here; they are
+    /// never registered for host settlement, so it lives as long as the handle.
     pub sleep_result: Option<Value>,
+}
+
+/// A public Task has scheduler-owned lifetime, independent of its creator's scope.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct PublicTask {
+    pub task: Option<TaskId>,
+    pub cancelled: bool,
+    pub waiters: Vec<Awaiter>,
+}
+
+/// Admission and exit are single-use transitions, persisted across cleanup waits.
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum TaskGroupState {
+    Created,
+    Active,
+    Exiting,
+    Finished,
+}
+
+/// Public structured group. The owner task roots active groups; groups root outcomes.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct TaskGroup {
+    /// Supplied AnyIO method surface; old asyncio groups keep their API.
+    #[serde(default)]
+    pub anyio: bool,
+    /// New groups own a lexical scope; old active groups retain absent roles.
+    #[serde(default)]
+    pub cancel_scope: Option<HeapId>,
+    #[serde(default)]
+    pub cancel_suppressed: bool,
+    pub owner: Option<TaskId>,
+    pub state: TaskGroupState,
+    pub children: Vec<HeapId>,
+    pub body_error: Option<Value>,
+    pub interrupt: Option<Value>,
+    pub failure_pending: bool,
+    pub externals: Vec<CallId>,
+    pub errors: Vec<Value>,
+}
+
+/// Task/run-owned single-use lexical scope. The signal is an owned exact
+/// exception identity, independent of native host cancellation and its latch.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct CancelScope {
+    pub id: u64,
+    pub owner: TaskId,
+    pub run: u64,
+    #[serde(flatten)]
+    pub state: CancelScopeState,
+    pub shield: bool,
+    pub cancel_called: bool,
+    pub cancelled_caught: bool,
+    pub signal: Option<Value>,
+}
+
+/// A scope has one lexical lifetime. The wire adapter retains the exact v35
+/// entered/exited map fields already written by genuine current fixtures.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(from = "CancelScopeStateWire", into = "CancelScopeStateWire")]
+pub(crate) enum CancelScopeState {
+    Created,
+    Active,
+    Exited,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CancelScopeStateWire {
+    entered: bool,
+    exited: bool,
+}
+
+impl From<CancelScopeStateWire> for CancelScopeState {
+    fn from(state: CancelScopeStateWire) -> Self {
+        if state.exited {
+            Self::Exited
+        } else if state.entered {
+            Self::Active
+        } else {
+            Self::Created
+        }
+    }
+}
+
+impl From<CancelScopeState> for CancelScopeStateWire {
+    fn from(state: CancelScopeState) -> Self {
+        Self {
+            entered: state != CancelScopeState::Created,
+            exited: state == CancelScopeState::Exited,
+        }
+    }
+}
+
+/// Bounded FIFO storage. Waiter IDs own references; reserved borrows a waiter.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct GuestQueue {
+    pub capacity: usize,
+    /// Public maxsize (including negative unbounded sizes); absent on private/old tokens.
+    #[serde(default)]
+    pub public_maxsize: Option<i64>,
+    pub values: VecDeque<Value>,
+    pub getters: VecDeque<HeapId>,
+    pub putters: VecDeque<HeapId>,
+    pub reserved: Option<HeapId>,
+}
+
+/// An operation owns its queue and optional put value until delivery/cancellation.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct QueueOperation {
+    pub queue: Option<HeapId>,
+    pub put: Option<Value>,
+    pub started: bool,
+    pub task: Option<TaskId>,
+}
+
+impl ExternalFuture {
+    /// Release queue edges and public Task join routes; mark Values consumed.
+    pub(crate) fn queue_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        if let Some(task) = &self.public_task {
+            for waiter in &task.waiters {
+                if let Awaiter::GatherSlot { gather, .. } = waiter {
+                    stack.push(*gather);
+                }
+            }
+        }
+        if let Some(scope) = &mut self.cancel_scope
+            && let Some(signal) = &mut scope.signal
+        {
+            signal.py_dec_ref_ids(stack);
+        }
+        if let Some(group) = &mut self.task_group {
+            stack.extend(group.cancel_scope);
+            stack.extend(group.children.iter().copied());
+            for value in &mut group.errors {
+                value.py_dec_ref_ids(stack);
+            }
+            for value in [&mut group.body_error, &mut group.interrupt].into_iter().flatten() {
+                value.py_dec_ref_ids(stack);
+            }
+        }
+        if let Some(q) = &mut self.queue {
+            for value in &mut q.values {
+                value.py_dec_ref_ids(stack);
+            }
+            stack.extend(q.getters.iter().chain(&q.putters).copied());
+        }
+        if let Some(op) = &mut self.queue_op {
+            if let Some(id) = op.queue {
+                stack.push(id);
+            }
+            if let Some(value) = &mut op.put {
+                value.py_dec_ref_ids(stack);
+            }
+        }
+    }
+
+    /// Enumerate queue edges and public Task join routes for cycle tracing.
+    pub(crate) fn queue_owned_ids(&self, mut visit: impl FnMut(HeapId)) {
+        if let Some(task) = &self.public_task {
+            for waiter in &task.waiters {
+                if let Awaiter::GatherSlot { gather, .. } = waiter {
+                    visit(*gather);
+                }
+            }
+        }
+        if let Some(scope) = &self.cancel_scope
+            && let Some(Value::Ref(id)) = &scope.signal
+        {
+            visit(*id);
+        }
+        if let Some(group) = &self.task_group {
+            if let Some(id) = group.cancel_scope {
+                visit(id);
+            }
+            for value in &group.errors {
+                if let Value::Ref(id) = value {
+                    visit(*id);
+                }
+            }
+            for id in &group.children {
+                visit(*id);
+            }
+            for value in [&group.body_error, &group.interrupt].into_iter().flatten() {
+                if let Value::Ref(id) = value {
+                    visit(*id);
+                }
+            }
+        }
+        if let Some(q) = &self.queue {
+            for value in &q.values {
+                if let Value::Ref(id) = value {
+                    visit(*id);
+                }
+            }
+            for id in q.getters.iter().chain(&q.putters) {
+                visit(*id);
+            }
+        }
+        if let Some(op) = &self.queue_op {
+            if let Some(id) = op.queue {
+                visit(id);
+            }
+            if let Some(Value::Ref(id)) = &op.put {
+                visit(*id);
+            }
+        }
+    }
+}
+
+/// Plain identity metadata; outcomes remain owned by the future state.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ChildIdentity {
+    pub owner: TaskId,
+    /// Borrowed identity; the future owns this token through `sleep_result`.
+    pub scope: HeapId,
+    pub task: Option<TaskId>,
+    pub consumed: bool,
+    pub cancelled: bool,
 }
 
 /// State machine for [`ExternalFuture`].
@@ -167,6 +408,13 @@ impl ExternalFuture {
     pub fn new_pending(call_id: CallId, sleep_result: Option<Value>) -> Self {
         Self {
             call_id,
+            protected_group_entry: false,
+            public_task: None,
+            task_group: None,
+            cancel_scope: None,
+            child: None,
+            queue: None,
+            queue_op: None,
             state: ExternalFutureState::Pending { awaiter: None },
             sleep_result,
         }
@@ -272,8 +520,8 @@ pub(crate) enum GatherState {
     /// value and returns it.
     Completed(Value),
     /// A child task failed (or an external future was rejected). The error
-    /// is cached so subsequent awaits re-raise it. `RunError` implements
-    /// `Clone`; clone the error when transitioning into this state.
+    /// is cached so subsequent awaits re-raise its identity. Clone with heap
+    /// context when transitioning into this state.
     Failed(RunError),
 }
 

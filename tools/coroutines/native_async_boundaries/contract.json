@@ -1,0 +1,1436 @@
+{
+  "cases": {
+    "root-wrapper": {
+      "steps": [
+        [
+          [
+            "control",
+            "body"
+          ],
+          [
+            "body",
+            "control"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "c"
+        },
+        {
+          "child-release": "r"
+        }
+      ],
+      "result": "ok"
+    },
+    "root-wrapper-error": {
+      "steps": [
+        [
+          [
+            "control",
+            "body"
+          ],
+          [
+            "body",
+            "control"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "c"
+        },
+        {
+          "child-release": "r"
+        }
+      ],
+      "result": "caught"
+    },
+    "body-direct-finally": {
+      "steps": [
+        [
+          [
+            "A",
+            "B"
+          ],
+          [
+            "A",
+            "B"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "A": "a"
+        },
+        {
+          "child-release": "r"
+        },
+        {
+          "parent-release": "p"
+        }
+      ],
+      "result": "ok"
+    },
+    "body-context": {
+      "steps": [
+        [
+          [
+            "A",
+            "B"
+          ],
+          [
+            "A",
+            "B"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "A": "a"
+        },
+        {
+          "child-release": "r"
+        },
+        {
+          "parent-release": "p"
+        }
+      ],
+      "result": "ok"
+    },
+    "root-deep": {
+      "steps": [
+        [
+          [
+            "control",
+            "body"
+          ],
+          [
+            "body",
+            "control"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "c"
+        },
+        {
+          "child-release": "r"
+        }
+      ],
+      "result": "ok"
+    },
+    "root-deep-error": {
+      "steps": [
+        [
+          [
+            "control",
+            "body"
+          ],
+          [
+            "body",
+            "control"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "c"
+        },
+        {
+          "child-release": "r"
+        }
+      ],
+      "result": "caught"
+    },
+    "body-helper-transfer": {
+      "steps": [
+        [
+          [
+            "A",
+            "B"
+          ],
+          [
+            "A",
+            "B"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "A": "a"
+        },
+        {
+          "child-release": "r"
+        },
+        {
+          "parent-release": "p"
+        }
+      ],
+      "result": "ok"
+    },
+    "body-recovery": {
+      "steps": [
+        [
+          [
+            "A",
+            "B"
+          ],
+          [
+            "A",
+            "B"
+          ]
+        ],
+        [
+          [
+            "recovery"
+          ],
+          [
+            "B",
+            "recovery"
+          ]
+        ],
+        [
+          [
+            "helper-release"
+          ],
+          [
+            "B",
+            "helper-release"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "A": "a"
+        },
+        {
+          "recovery": "r"
+        },
+        {
+          "helper-release": "h"
+        },
+        {
+          "child-release": "r"
+        },
+        {
+          "parent-release": "p"
+        }
+      ],
+      "result": "ok"
+    },
+    "context-helper-transfer": {
+      "steps": [
+        [
+          [
+            "A",
+            "B"
+          ],
+          [
+            "A",
+            "B"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "A": "a"
+        },
+        {
+          "child-release": "r"
+        },
+        {
+          "parent-release": "p"
+        }
+      ],
+      "result": "ok"
+    },
+    "body-escaping": {
+      "steps": [
+        [
+          [
+            "A",
+            "B"
+          ],
+          [
+            "A",
+            "B"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "A": "a"
+        },
+        {
+          "child-release": "r"
+        },
+        {
+          "parent-release": "p"
+        }
+      ],
+      "result": "ok"
+    },
+    "body-normal": {
+      "steps": [
+        [
+          [
+            "A",
+            "B"
+          ],
+          [
+            "A",
+            "B"
+          ]
+        ],
+        [
+          [],
+          [
+            "B"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "A": "a"
+        },
+        {
+          "B": "b"
+        },
+        {
+          "child-release": "r"
+        },
+        {
+          "parent-release": "p"
+        }
+      ],
+      "result": "ok"
+    },
+    "body-direct-external": {
+      "steps": [
+        [
+          [
+            "B",
+            "A"
+          ],
+          [
+            "A",
+            "B"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "A": "a"
+        },
+        {
+          "parent-release": "p"
+        }
+      ],
+      "result": "ok"
+    },
+    "body-shared-task": {
+      "steps": [
+        [
+          [
+            "B",
+            "A"
+          ],
+          [
+            "A",
+            "B"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "B",
+            "parent-release"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "A": "a"
+        },
+        {
+          "parent-release": "p"
+        },
+        {
+          "child-release": "r"
+        }
+      ],
+      "result": "ok"
+    },
+    "root-host": {
+      "steps": [
+        [
+          [
+            "control",
+            "body"
+          ],
+          [
+            "body",
+            "control"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [],
+          [
+            "child-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "c"
+        },
+        {
+          "$cancel": "FIRST",
+          "body": "late"
+        },
+        {
+          "$cancel": "SECOND"
+        },
+        {
+          "child-release": "r"
+        }
+      ],
+      "result": "ok",
+      "cancelled": "FIRST"
+    },
+    "body-host": {
+      "steps": [
+        [
+          [
+            "A",
+            "B"
+          ],
+          [
+            "A",
+            "B"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "A": "a"
+        },
+        {
+          "$cancel": "FIRST",
+          "B": "late"
+        },
+        {
+          "$cancel": "SECOND"
+        },
+        {
+          "child-release": "r"
+        },
+        {
+          "parent-release": "p"
+        }
+      ],
+      "result": "ok",
+      "cancelled": "FIRST"
+    },
+    "root-cyclic-false": {
+      "steps": [
+        [
+          [
+            "control",
+            "body"
+          ],
+          [
+            "body",
+            "control"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "c"
+        },
+        {
+          "child-release": "r"
+        }
+      ],
+      "result": "ok"
+    },
+    "root-cyclic-true": {
+      "steps": [
+        [
+          [
+            "control",
+            "body"
+          ],
+          [
+            "body",
+            "control"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "c"
+        },
+        {
+          "child-release": "r"
+        }
+      ],
+      "result": "ok"
+    },
+    "root-sequential": {
+      "steps": [
+        [
+          [
+            "control1",
+            "body1"
+          ],
+          [
+            "body1",
+            "control1"
+          ]
+        ],
+        [
+          [
+            "release1"
+          ],
+          [
+            "release1"
+          ]
+        ],
+        [
+          [
+            "control2",
+            "body2"
+          ],
+          [
+            "body2",
+            "control2"
+          ]
+        ],
+        [
+          [
+            "release2"
+          ],
+          [
+            "release2"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control1": "c"
+        },
+        {
+          "release1": "r"
+        },
+        {
+          "control2": "c"
+        },
+        {
+          "release2": "r"
+        }
+      ],
+      "result": "ok"
+    },
+    "root-rejected-nested": {
+      "steps": [
+        [
+          [
+            "control",
+            "body"
+          ],
+          [
+            "body",
+            "control"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "c"
+        },
+        {
+          "child-release": "r"
+        }
+      ],
+      "result": "ok"
+    },
+    "root-child-error": {
+      "steps": [
+        [
+          [
+            "control",
+            "body"
+          ],
+          [
+            "body",
+            "control"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "c"
+        },
+        {
+          "child-release": "r"
+        }
+      ],
+      "result": "ok"
+    },
+    "body-child-error": {
+      "steps": [
+        [
+          [
+            "A",
+            "B"
+          ],
+          [
+            "A",
+            "B"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "A": "a"
+        },
+        {
+          "child-release": "r"
+        },
+        {
+          "parent-release": "p"
+        }
+      ],
+      "result": "ok"
+    },
+    "body-parent-dependency": {
+      "steps": [
+        [
+          [
+            "A",
+            "B"
+          ],
+          [
+            "A",
+            "B"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "A": "a"
+        },
+        {
+          "child-release": "r"
+        },
+        {
+          "parent-release": "p"
+        }
+      ],
+      "result": "ok"
+    },
+    "transferred-body-obligations": {
+      "steps": [
+        [
+          [
+            "A",
+            "B"
+          ],
+          [
+            "A",
+            "B"
+          ]
+        ],
+        [
+          [],
+          [
+            "B"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "A": "a"
+        },
+        {
+          "B": "b"
+        },
+        {
+          "child-release": "r"
+        },
+        {
+          "parent-release": "p"
+        }
+      ],
+      "result": "later-error"
+    },
+    "body-transferred-direct": {
+      "steps": [
+        [
+          [
+            "A",
+            "B"
+          ],
+          [
+            "A",
+            "B"
+          ]
+        ],
+        [
+          [],
+          [
+            "B"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "A": "a"
+        },
+        {
+          "B": "b"
+        },
+        {
+          "child-release": "r"
+        },
+        {
+          "parent-release": "p"
+        }
+      ],
+      "result": "ok"
+    },
+    "body-transferred-host": {
+      "steps": [
+        [
+          [
+            "A",
+            "B"
+          ],
+          [
+            "A",
+            "B"
+          ]
+        ],
+        [
+          [],
+          [
+            "B"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "A": "a"
+        },
+        {
+          "$cancel": "FIRST"
+        },
+        {
+          "$cancel": "SECOND",
+          "B": "late"
+        },
+        {
+          "child-release": "r"
+        },
+        {
+          "parent-release": "p"
+        }
+      ],
+      "cancelled": "FIRST"
+    },
+    "run-in-scheduler-task": {
+      "steps": [
+        [
+          [
+            "control",
+            "outside",
+            "body"
+          ],
+          [
+            "body",
+            "control",
+            "outside"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release",
+            "outside"
+          ]
+        ],
+        [
+          [],
+          [
+            "outside"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "c"
+        },
+        {
+          "child-release": "r"
+        },
+        {
+          "outside": "o"
+        }
+      ],
+      "result": "ok"
+    },
+    "root-error-host": {
+      "steps": [
+        [
+          [
+            "control",
+            "body"
+          ],
+          [
+            "body",
+            "control"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [],
+          [
+            "child-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "c"
+        },
+        {
+          "$cancel": "FIRST",
+          "body": "late"
+        },
+        {
+          "$cancel": "SECOND"
+        },
+        {
+          "child-release": "r"
+        }
+      ],
+      "result": "ok",
+      "cancelled": "FIRST",
+      "interrupted": {
+        "type": "ValueError",
+        "message": "root-error",
+        "message_truncated": false,
+        "representation": "metadata-only"
+      }
+    },
+    "run-in-scheduler-task-owned": {
+      "steps": [
+        [
+          [
+            "control",
+            "outside",
+            "body"
+          ],
+          [
+            "body",
+            "control",
+            "outside"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release",
+            "outside"
+          ]
+        ],
+        [
+          [],
+          [
+            "outside"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "c"
+        },
+        {
+          "child-release": "r"
+        },
+        {
+          "outside": "o"
+        }
+      ],
+      "result": "ok"
+    },
+    "root-unrelated-task": {
+      "steps": [
+        [
+          [
+            "control",
+            "outside",
+            "body"
+          ],
+          [
+            "body",
+            "control",
+            "outside"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release",
+            "outside"
+          ]
+        ],
+        [
+          [
+            "after-run"
+          ],
+          [
+            "after-run",
+            "outside"
+          ]
+        ],
+        [
+          [],
+          [
+            "outside"
+          ]
+        ],
+        [
+          [
+            "outside-release"
+          ],
+          [
+            "outside-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "c"
+        },
+        {
+          "child-release": "r"
+        },
+        {
+          "after-run": "a"
+        },
+        {
+          "outside": "o"
+        },
+        {
+          "outside-release": "r"
+        }
+      ],
+      "result": "ok"
+    },
+    "run-in-task-group": {
+      "steps": [
+        [
+          [
+            "control",
+            "outside",
+            "body"
+          ],
+          [
+            "body",
+            "control",
+            "outside"
+          ]
+        ],
+        [
+          [],
+          [
+            "body",
+            "outside"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release",
+            "outside"
+          ]
+        ],
+        [
+          [],
+          [
+            "outside"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "c"
+        },
+        {
+          "body": "b"
+        },
+        {
+          "child-release": "r"
+        },
+        {
+          "outside": "o"
+        }
+      ],
+      "result": "ok"
+    },
+    "run-in-nested-task-group": {
+      "steps": [
+        [
+          [
+            "outside",
+            "control",
+            "body"
+          ],
+          [
+            "body",
+            "control",
+            "outside"
+          ]
+        ],
+        [
+          [],
+          [
+            "body",
+            "outside"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release",
+            "outside"
+          ]
+        ],
+        [
+          [],
+          [
+            "outside"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "c"
+        },
+        {
+          "body": "b"
+        },
+        {
+          "child-release": "r"
+        },
+        {
+          "outside": "o"
+        }
+      ],
+      "result": "ok"
+    },
+    "run-in-nested-task-group-owned": {
+      "steps": [
+        [
+          [
+            "outside",
+            "control",
+            "body"
+          ],
+          [
+            "body",
+            "control",
+            "outside"
+          ]
+        ],
+        [
+          [],
+          [
+            "body",
+            "outside"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release",
+            "outside"
+          ]
+        ],
+        [
+          [],
+          [
+            "outside"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "c"
+        },
+        {
+          "body": "b"
+        },
+        {
+          "child-release": "r"
+        },
+        {
+          "outside": "o"
+        }
+      ],
+      "result": "ok"
+    }
+  }
+}

@@ -19,7 +19,7 @@ use crate::{
     exception_private::{ExcTypeExt, ExceptionRaise, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapReader},
     intern::{Interns, StringId},
-    object_bridge::MontyObjectExt,
+    object_bridge::{ExportError, MontyObjectExt},
     os_dispatch::{PendingEffect, PostConversionEffect, release_pending_effect},
     run::Executor,
     value::Value,
@@ -480,7 +480,7 @@ impl NameLookup {
                 let vm_result = resume_lookup(&mut vm, answer, effect, &scope, &name);
 
                 // Three-phase: convert while VM alive, snapshot, build progress
-                let converted = convert_frame_exit(vm_result, &mut vm);
+                let converted = convert_frame_exit(vm_result, &mut vm, |_| Some(&*executor.program.code));
                 let vm_state = check_snapshot_from_converted(&converted, vm);
                 (converted, vm_state)
             });
@@ -544,7 +544,8 @@ pub(crate) fn resume_lookup(
     let value = match (answer, effect) {
         (LookupAnswer::Error(err), effect) => {
             effect.drop_with(vm);
-            return vm.resume_with_exception(import_from_error(err, name, vm));
+            let error = import_from_error(err, name, vm);
+            return vm.resume_with_exception(error);
         }
         (LookupAnswer::Value(value), Some(effect)) => effect.apply(Some(value), vm),
         (LookupAnswer::Undefined, Some(effect)) => effect.apply(None, vm),
@@ -569,7 +570,8 @@ pub(crate) fn resume_lookup(
             value
         }
         (LookupAnswer::Undefined, None) => {
-            return vm.resume_with_exception(import_from_error(undefined_lookup_error(scope, name), name, vm));
+            let error = import_from_error(undefined_lookup_error(scope, name), name, vm);
+            return vm.resume_with_exception(error);
         }
     };
     vm.push(value);
@@ -579,7 +581,7 @@ pub(crate) fn resume_lookup(
 /// Converts missing import attributes to `ImportError` for `from` imports or
 /// `ModuleNotFoundError` for dotted modules, matching synchronous loads.
 /// Other errors and non-import lookups pass through unchanged.
-fn import_from_error(err: RunError, name: &str, vm: &VM<'_>) -> RunError {
+fn import_from_error(err: RunError, name: &str, vm: &mut VM<'_>) -> RunError {
     let RunError::Exc(exc) = &err else {
         return err;
     };
@@ -587,8 +589,10 @@ fn import_from_error(err: RunError, name: &str, vm: &VM<'_>) -> RunError {
         return err;
     }
     if let Some(module) = vm.suspended_import_from() {
+        err.drop_with(vm);
         ExcType::cannot_import_name(name, vm.interns.get_str(module))
     } else if let Some(path) = vm.suspended_submodule() {
+        err.drop_with(vm);
         ExcType::module_not_found_error(vm.interns.get_str(path), None)
     } else {
         err
@@ -784,7 +788,7 @@ impl ResolveFutures {
     /// * `print` — Writer for print output.
     ///
     /// # Errors
-    /// Returns [`MontyException`] if any `call_id` in `results` is not in the pending set.
+    /// Returns [`MontyException`] for unknown IDs. Known settled/revoked IDs are ignored.
     pub fn resume(
         self,
         results: Vec<(u32, ExtFunctionResult)>,
@@ -798,10 +802,10 @@ impl ResolveFutures {
             ..
         } = self;
 
-        // Validate that all provided call_ids are in the pending set before restoring VM.
+        // Validate the complete batch against live registrations and issued host IDs before mutation.
         let invalid_call_id = results
             .iter()
-            .find(|(call_id, _)| !pending_call_ids.contains(call_id))
+            .find(|(call_id, _)| !vm_state.knows_host_call(*call_id))
             .map(|(call_id, _)| *call_id);
 
         heap.tracker.on_turn_start();
@@ -826,7 +830,7 @@ impl ResolveFutures {
                 let result = vm.resume_with_resolved_futures(results);
 
                 // Three-phase: convert while VM alive, snapshot, build progress
-                let converted = convert_frame_exit(result, &mut vm);
+                let converted = convert_frame_exit(result, &mut vm, |_| Some(&*executor.program.code));
                 let vm_state = check_snapshot_from_converted(&converted, vm);
                 Ok((converted, vm_state))
             })?;
@@ -891,7 +895,7 @@ impl Snapshot {
                 let vm_result = resume_with_result(&mut vm, ext_result, eager_call_id);
 
                 // Three-phase: convert while VM alive, snapshot, build progress
-                let converted = convert_frame_exit(vm_result, &mut vm);
+                let converted = convert_frame_exit(vm_result, &mut vm, |_| Some(&*executor.program.code));
                 let vm_state = check_snapshot_from_converted(&converted, vm);
                 (converted, vm_state)
             });
@@ -1024,7 +1028,7 @@ fn abort_restored(
                 print.reborrow(),
             );
             let vm_result = vm.abort(exc);
-            let converted = convert_frame_exit(vm_result, &mut vm);
+            let converted = convert_frame_exit(vm_result, &mut vm, |_| Some(&*executor.program.code));
             let vm_state = check_snapshot_from_converted(&converted, vm);
             (converted, vm_state)
         });
@@ -1090,7 +1094,7 @@ pub(crate) enum ConvertedExit {
         position: SourceRange,
     },
     /// Runtime error.
-    Error(RunError),
+    Error(MontyException),
 }
 
 impl ConvertedExit {
@@ -1104,7 +1108,11 @@ impl ConvertedExit {
 ///
 /// All `Value` → `MontyObject` and `StringId` → `String` conversions happen here,
 /// while the VM (and its heap/interns) are still accessible.
-pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) -> ConvertedExit {
+pub(crate) fn convert_frame_exit<'s>(
+    result: RunResult<FrameExit>,
+    vm: &mut VM<'_>,
+    source_for: impl Fn(&str) -> Option<&'s str>,
+) -> ConvertedExit {
     // An effect still armed on arrival belongs to an OS call that was answered
     // without consuming it — an eager `resume_with_resolved_futures` never
     // takes it. It can never apply to whatever suspends next, so release it
@@ -1115,8 +1123,94 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
     vm.pending_lookup_effect.take().drop_with(vm.heap);
     // `instruction_ip` still names the opcode that suspended, so the current
     // position is the suspending expression for every exit but `ResolveFutures`.
+    #[cfg(feature = "cancellation-test-hooks")]
+    let result = if vm.native_cancel_reason().is_some() && matches!(result, Ok(FrameExit::Return(_))) {
+        if let Some(fatal) = crate::cancellation_test_hooks::projection_error() {
+            if let Ok(FrameExit::Return(value)) = result {
+                value.drop_with(vm);
+            }
+            Err(fatal)
+        } else {
+            crate::cancellation_test_hooks::prepare_export(vm);
+            result
+        }
+    } else {
+        result
+    };
+    let cancelled = vm.native_cancel_reason().map(str::to_owned);
+    if let Some(reason) = cancelled {
+        let diagnostic = vm.native_interrupted_error().map_or_else(MontyObject::none, |d| {
+            MontyObject::dict([
+                (MontyObject::string("type"), MontyObject::string(d.exc_type.to_string())),
+                (
+                    MontyObject::string("message"),
+                    d.message.map_or_else(MontyObject::none, MontyObject::string),
+                ),
+                (
+                    MontyObject::string("message_truncated"),
+                    MontyObject::bool(d.message_truncated),
+                ),
+                (
+                    MontyObject::string("representation"),
+                    MontyObject::string("metadata-only"),
+                ),
+            ])
+        });
+        match result {
+            Ok(FrameExit::Return(value)) => {
+                return match MontyObject::export(value, vm) {
+                    Ok(value) => ConvertedExit::Complete(native_cancel_outcome(
+                        reason,
+                        value,
+                        MontyObject::none(),
+                        diagnostic,
+                        MontyObject::none(),
+                    )),
+                    Err(error @ (ExportError::UnsupportedExceptionArgs | ExportError::DepthLimit)) => {
+                        let code = match error {
+                            ExportError::DepthLimit => "export-depth-limit",
+                            _ => "unsupported-value",
+                        };
+                        ConvertedExit::Complete(native_cancel_outcome(
+                            reason,
+                            MontyObject::none(),
+                            MontyObject::none(),
+                            diagnostic,
+                            MontyObject::string(code),
+                        ))
+                    }
+                    Err(error) => ConvertedExit::Error(
+                        error
+                            .into_run_error(vm)
+                            .into_python_exception(vm.interns, source_for, vm.heap),
+                    ),
+                };
+            }
+            Err(error @ (RunError::UncatchableExc(_) | RunError::Internal(_))) => {
+                return ConvertedExit::Error(error.into_python_exception(vm.interns, source_for, vm.heap));
+            }
+            Err(error) => {
+                let error = error.into_python_exception(vm.interns, source_for, vm.heap);
+                return ConvertedExit::Complete(native_cancel_outcome(
+                    reason,
+                    MontyObject::none(),
+                    MontyObject::string(error.to_string()),
+                    diagnostic,
+                    MontyObject::none(),
+                ));
+            }
+            _ => {}
+        }
+    }
     match result {
-        Ok(FrameExit::Return(value)) => ConvertedExit::Complete(MontyObject::export(value, vm)),
+        Ok(FrameExit::Return(value)) => match MontyObject::export(value, vm) {
+            Ok(value) => ConvertedExit::Complete(value),
+            Err(error) => ConvertedExit::Error(
+                error
+                    .into_run_error(vm)
+                    .into_python_exception(vm.interns, source_for, vm.heap),
+            ),
+        },
         Ok(FrameExit::ExternalCall {
             function_name,
             args,
@@ -1125,7 +1219,16 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
         }) => {
             let position = vm.suspension_position();
             let name = function_name.into_string(vm.interns);
-            let args = args.into_call_args(vm);
+            let args = match args.into_call_args(vm) {
+                Ok(args) => args,
+                Err(error) => {
+                    return ConvertedExit::Error(
+                        error
+                            .into_run_error(vm)
+                            .into_python_exception(vm.interns, source_for, vm.heap),
+                    );
+                }
+            };
             ConvertedExit::FunctionCall {
                 function_name: name,
                 args,
@@ -1161,7 +1264,16 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
         }) => {
             let position = vm.suspension_position();
             let name = method_name.into_string(vm.interns);
-            let args = args.into_call_args(vm);
+            let args = match args.into_call_args(vm) {
+                Ok(args) => args,
+                Err(error) => {
+                    return ConvertedExit::Error(
+                        error
+                            .into_run_error(vm)
+                            .into_python_exception(vm.interns, source_for, vm.heap),
+                    );
+                }
+            };
             ConvertedExit::FunctionCall {
                 function_name: name,
                 args,
@@ -1212,8 +1324,26 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
                 position,
             }
         }
-        Err(err) => ConvertedExit::Error(err),
+        Err(err) => ConvertedExit::Error(err.into_python_exception(vm.interns, source_for, vm.heap)),
     }
+}
+
+/// Experimental terminal envelope; ordinary guest failures remain separate from cause.
+fn native_cancel_outcome(
+    reason: String,
+    value: MontyObject,
+    error: MontyObject,
+    diagnostic: MontyObject,
+    export_error: MontyObject,
+) -> MontyObject {
+    MontyObject::dict([
+        (MontyObject::string("status"), MontyObject::string("cancelled")),
+        (MontyObject::string("reason"), MontyObject::string(reason)),
+        (MontyObject::string("value"), value),
+        (MontyObject::string("error"), error),
+        (MontyObject::string("interrupted_error"), diagnostic),
+        (MontyObject::string("value_export_error"), export_error),
+    ])
 }
 
 /// Decides whether to snapshot or clean up the VM based on the converted exit.
@@ -1294,8 +1424,6 @@ pub(crate) fn build_run_progress(
             scope,
             new_snapshot!(),
         ))),
-        ConvertedExit::Error(err) => {
-            Err(err.into_python_exception(&executor.tables.interns, |_| Some(&*executor.program.code)))
-        }
+        ConvertedExit::Error(err) => Err(err),
     }
 }

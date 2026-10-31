@@ -2,6 +2,9 @@ package pydantic:monty;
 
 /// Drives one persistent Monty child through semantic component calls.
 interface worker {
+    /// Pure semantic admission capability, independent of transport versions.
+    cancellation-contract: func() -> u32;
+
     /// Whether the component can accept another request after this turn.
     enum status {
         /// The child remains ready for another turn.
@@ -369,6 +372,8 @@ interface worker {
 
     /// Settled external futures and the one arena their values index.
     record futures-request {
+        /// Experimental single native task host cancellation; absent leaves ordinary awaits unchanged.
+        native-cancel: option<string>,
         results: list<future-result>,
         values: arena,
     }

@@ -59,13 +59,33 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// Older builds then reject the new dumps instead of misexecuting them, and this
 /// build rejects dumps below [`MIN_SUPPORTED_DUMP_VERSION`].
 ///
-/// Before bumping, check there's already been a bump since the last release - multiple bumps
-/// between releases is unnecessary and can lead to confusion.
-pub const DUMP_VERSION: u16 = 14;
+/// Unreleased bumps may be coalesced only when no captured supported state needs
+/// the intervening distinction. Preserve a new version when an older reader would
+/// accept the header but misinterpret the stored semantics.
+// Version 20 persists cleanup-exit cancellation continuation points.
+// Older readers must not silently ignore prompt delivery at these boundaries.
+// Version 21 distinguishes prospective except dispatch for native cancellation.
+// Version 22 adds active matching ownership; 23 persists policy7 code/latch markers and diagnostics.
+// Version 24 adds Rust-owned child outcomes and delivery/drain roots.
+// Version 25 reserves the monotonic ID space for host calls, allowing bounded late-reply recognition.
+// Version 26 separates owned gather lifetimes from result delivery.
+// Version 27 adds traced guest queues and activation-time queue reservations.
+// Version 28 persists a protected gather's first error while its children drain.
+// Version 29 adds public Task lifetimes and multiple pending join routes.
+// Version 30 adds durable public TaskGroup ownership and exit barriers.
+// Version 31 records unresolved exceptional-cleanup roles on saved exceptions.
+// Version 32 records explicit run ownership and admitting-frame cleanup barriers.
+// Version 33 adds public Queue metadata and zero-capacity unbounded storage.
+// Version 34 distinguishes AnyIO TaskGroup surfaces and named helper identities.
+// A v33 reader ignores the defaulted flag and would expose create_task instead.
+// Version 35 persists task/run-owned lexical cancellation origins and ancestry.
+// Version 36 changes cancellation from ValueError to asyncio.CancelledError.
+// Older captured handlers cannot be silently reinterpreted under this contract.
+pub const DUMP_VERSION: u16 = 36;
 
 /// The oldest dump version this build loads. `Dump::load` runs `dump_upgrade`
 /// over an older dump, rebuilding what the newer versions changed.
-pub const MIN_SUPPORTED_DUMP_VERSION: u16 = 13;
+pub const MIN_SUPPORTED_DUMP_VERSION: u16 = 36;
 
 // The supported range must be non-empty, and must exclude zero
 const _: () = assert!(MIN_SUPPORTED_DUMP_VERSION >= 1);
@@ -372,7 +392,7 @@ mod tests {
     fn serialized_components_match_dump_version() {
         assert_eq!(
             opcode_fingerprint(),
-            0xa78a_9e6c_3fab_abed,
+            0x581f_151a_05d0_c340,
             "opcodes changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(opcode_fingerprint())
         );

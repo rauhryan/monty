@@ -598,6 +598,12 @@ pub enum Opcode {
     /// becomes `[v, a, b, c]`. Operand: u8 n. The inverse of `LiftToTop`; the
     /// pattern compiler uses it to park a capture under the pattern's temporaries.
     SinkTop = 129,
+    /// Suspend the active generator. Mode 0: yield; mode 1: yield from.
+    /// The sent value replaces TOS when execution resumes.
+    Yield = 130,
+    /// Host context call: 0 enter, 1 normal exit, 2 exceptional exit.
+    /// Returns a generator, awaited by a subsequent delegated Yield.
+    HostContext = 131,
 }
 
 /// `LoadName` flag: the load is in call position, so an unresolved name under
@@ -705,7 +711,9 @@ impl Opcode {
             | Self::WithExit
             | Self::WithExceptStart
             | Self::BuildCell => OperandShape::None,
-            Self::LoadLocal
+            Self::HostContext
+            | Self::Yield
+            | Self::LoadLocal
             | Self::StoreLocal
             | Self::DeleteLocal
             | Self::FormatValue
@@ -970,6 +978,7 @@ impl Opcode {
             (LoadSmallInt, Operand::I8(_)) => 1,
 
             // === Fixed-effect, U8 operand ===
+            (Yield, Operand::U8(_)) => 0,
             (LoadLocal, Operand::U8(_)) => 1,
             (StoreLocal, Operand::U8(_)) => -1,
             (DeleteLocal, Operand::U8(_)) => 0,
@@ -999,6 +1008,7 @@ impl Opcode {
             // === Fixed-effect, no operand (context managers) ===
             // `BeforeWith` pushes the `__enter__` result on top of the existing ctx.
             (BeforeWith, Operand::None) => 1,
+            (HostContext, Operand::U8(mode)) => i32::from(mode != 1),
             // `WithExit` pops ctx and pushes the `__exit__` return value; compiler
             // emits a trailing `Pop` to discard.
             (WithExit, Operand::None) => 0,

@@ -35,7 +35,8 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `match` statements with every PEP 634 pattern kind and guards, see [match.md](match.md)
 - f-strings (including the `=` debug form), `str.format()` and `format()`, with `!r` / `!s` / `!a` conversions,
     format specs and nested replacement fields
-- `async` / `await`, and `asyncio.run` / `asyncio.gather` / `asyncio.sleep`
+- `async` / `await`, and `asyncio.run` / `asyncio.gather` / `asyncio.sleep` / `asyncio.create_task`,
+    `asyncio.TaskGroup` and `asyncio.Queue`
 - `import x`, `import x.y`, `from x import y, z as w`; a module the sandbox does not have is requested from the host,
     see [modules.md](modules.md#host-modules)
 - Starred unpacking everywhere CPython allows it
@@ -45,26 +46,32 @@ They exist for development and for agents debugging code that runs on Monty; mos
 
 - Class inheritance and metaclasses (`class Foo(Bar):`)
 - Decorators on methods — so no `@classmethod`, `@staticmethod`, `@property`
-- `yield` / `yield from` — there are no generator functions.
-    Generator *expressions* parse, but currently materialise to a `list`
 - `del`, both `del x` and `del d[k]`
 - `try*` / `except*` exception groups
 - PEP 695 `type` aliases
-- `async with`, `async for` and async comprehensions
+- `async for` and async comprehensions
 - Wildcard imports (`from m import *`)
 - t-strings
 
 **Missing in other ways:**
 
+- Generator functions support direct `next`, `send`, `throw` and delegation to
+    generators, but lack general iteration and `close`. Generator expressions
+    still materialise to a list; see [language.md](language.md#generator-functions).
+
 - User-defined exception classes.
     The built-in exception types are a fixed set, and without inheritance you cannot add to it.
+
 - Function attributes.
     `fn.__name__`, `fn.__doc__` and friends raise `AttributeError`, and new attributes cannot be set — so
     `functools.wraps`-style metadata copying and registries keyed on `fn.__name__` have no equivalent.
+
 - `compile`, `globals`, `__import__` and `super` — all raise `NameError`.
     `eval` and `exec` exist (source text only), and so does `locals()`; see [eval_exec.md](eval_exec.md).
+
 - Third-party packages.
     There is no `sys.path` and no site-packages.
+    A supplied [AnyIO subset](anyio.md) provides task groups, lexical cancellation scopes and shielding with explicit platform restrictions.
 
 ## Standard library
 
@@ -131,10 +138,12 @@ Each links to the page that owns it, which is where the full account lives:
     (`@=` is rejected at compile time).
     `__bool__` and the `__getattr__` family are ignored silently, so an instance is always truthy
     ([classes.md](classes.md)).
-- **There is no event loop inside the sandbox.** `async` / `await` work, and `asyncio` exposes exactly three functions:
-    `run`, `gather`, which runs host calls concurrently, and `sleep`, which asks the host to wait.
-    `create_task` and everything else do not exist
-    ([asyncio.md](asyncio.md)).
+- **There is no event loop inside the sandbox.** `async` / `await` work, and `asyncio` exposes
+    `run`, `gather`, `sleep`, `create_task` with awaitable Task handles, and TaskGroup.
+    Queue, TaskGroup, Task cancellation and inspection have bounded
+    [supported subsets](asyncio.md#public-queue-subset).
+    Host cancellation supports concurrent coroutine cleanup with protected host replies
+    ([asyncio.md](asyncio.md#host-cancellation-and-experimental-native-entry)).
 - **Only UTF-8, ASCII, UTF-16 and UTF-32 codecs exist.** `latin-1` and friends raise `LookupError`
     ([encoding.md](encoding.md)).
 
@@ -145,3 +154,7 @@ The pages are the `limitations/` directory of the [repository](https://github.co
 verbatim.
 If you hit something that is neither in the subset nor on these pages, [open an
 issue](https://github.com/pydantic/monty/issues).
+
+The experimental platform also supplies a host-mediated `sandbox.read_file`
+capability and direct variadic gathering of durable host continuations; see
+[asyncio.md](asyncio.md#supplied-host-read-capability).

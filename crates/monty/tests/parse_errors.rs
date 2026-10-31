@@ -11,10 +11,14 @@ fn get_parse_err(code: impl Into<String>) -> MontyException {
 }
 
 #[test]
-fn yield_expressions_return_not_implemented_error() {
-    let err = get_parse_err("def foo():\n    yield 1");
-    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
-    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support yield expressions");
+fn yield_expressions_compile() {
+    MontyRun::new(
+        "def foo():\n    yield 1".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
 }
 
 #[test]

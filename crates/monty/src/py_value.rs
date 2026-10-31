@@ -23,7 +23,7 @@ use crate::{
     intern::{FunctionId, StaticStrings},
     modules::{ModuleFunctions, collections::defaultdict::defaultdict_missing},
     types::{
-        BuiltinType, GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, Union, allocate_string,
+        BuiltinType, GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, Union,
         bytes::PyBytes,
         long_int::{PyInt, arithmetic::float_binary},
         numeric::{round_digits, round_float},
@@ -192,7 +192,7 @@ impl<'h> PyValue<'h> {
             Self::Marker(value) => Ok(value.py_repr_fmt(f)?),
             Self::Property(value) => Ok(write!(f, "<property {value:?}>")?),
             Self::Cell(cell) => Ok(write!(f, "<cell: {} object>", cell.get(vm.heap).0.py_type_name(vm))?),
-            Self::Exception(e) => Ok(e.get(vm.heap).py_repr_fmt(f)?),
+            Self::Exception(e) => e.exception_repr(f, vm, heap_ids),
             Self::Module(m) => Ok(write!(f, "<module '{}'>", m.get(vm.heap).name_str(vm.interns))?),
             Self::Coroutine(coro) => {
                 let func = vm.interns.get_function(coro.get(vm.heap).func_id);
@@ -254,8 +254,9 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
                     Self::Dict(_) => "{...}",
                     _ => "...",
                 })?)
-            } else if matches!(self, Self::Instance(_)) {
-                // Dataclass reprs track cycles; user __repr__ recurses until the VM's guard raises.
+            } else if matches!(self, Self::Instance(_) | Self::Exception(_)) {
+                // Containers/dataclasses track cycles. Exceptions retain their
+                // type wrapper; direct exception recursion uses the VM budget.
                 self.repr_inner(f, vm, heap_ids)
             } else {
                 heap_ids.insert(id);
@@ -270,7 +271,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
 
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         forward_py_value!(self, |value| value.py_str(vm), {
-            Self::Exception(value) => Ok(allocate_string(value.get(vm.heap).py_str(), vm.heap)),
+            Self::Exception(value) => value.exception_str(vm),
             _ => self.py_repr(vm),
         })
     }
@@ -531,6 +532,10 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
             Self::Module(value) => value.py_call_attr(vm, attr, args),
+            Self::ExternalFuture(value) if value.get(vm.heap).queue.as_ref().is_some_and(|q| q.public_maxsize.is_some()) => vm.call_public_queue(value.id(), attr, args),
+            Self::ExternalFuture(value) if value.get(vm.heap).cancel_scope.is_some() => vm.call_anyio_scope(value.id(), attr, args),
+            Self::ExternalFuture(value) if value.get(vm.heap).task_group.is_some() => vm.call_task_group(value.id(), attr, args),
+            Self::ExternalFuture(value) if value.get(vm.heap).public_task.is_some() => vm.call_public_task(value.id(), attr, args),
             Self::Builtin(Builtins::Type(ty)) if let EitherStr::Interned(id) = attr => Type::from(*ty).call_class_method(*id, args, vm),
             _ => {
                 args.drop_with(vm);

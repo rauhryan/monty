@@ -607,6 +607,39 @@ pub enum StaticStrings {
     Astimezone,
     /// Module name for `import asyncio`.
     Asyncio,
+    /// Supplied AnyIO feasibility surface.
+    Anyio,
+    #[strum(serialize = "create_task_group")]
+    CreateTaskGroup,
+    #[strum(serialize = "CancelScope")]
+    CancelScope,
+    /// AnyIO lexical shield constructor keyword.
+    Shield,
+    /// Supplied cancellation exception class mapping.
+    #[strum(serialize = "get_cancelled_exc_class")]
+    GetCancelledExcClass,
+    /// Supplied host capability module.
+    Sandbox,
+    /// Async host read capability.
+    #[strum(serialize = "read_file")]
+    SandboxReadFile,
+    #[strum(serialize = "ask")]
+    SandboxAsk,
+    #[strum(serialize = "echo")]
+    SandboxEcho,
+    #[strum(serialize = "decision")]
+    SandboxDecision,
+    #[strum(serialize = "document_create")]
+    SandboxDocumentCreate,
+    #[strum(serialize = "document_read")]
+    SandboxDocumentRead,
+    #[strum(serialize = "document_edit")]
+    SandboxDocumentEdit,
+    #[strum(serialize = "present_choices")]
+    SandboxPresentChoices,
+    #[strum(serialize = "display_document")]
+    SandboxDisplayDocument,
+
     /// `math.atan()` function.
     Atan,
     /// `math.atan2()` function.
@@ -1252,6 +1285,27 @@ pub enum StaticStrings {
     Gammavariate,
     /// `asyncio.gather()` function.
     Gather,
+    #[strum(serialize = "create_task")]
+    CreateTask,
+    #[strum(serialize = "TaskGroup")]
+    TaskGroup,
+    #[strum(serialize = "Queue")]
+    AsyncioQueue,
+    Item,
+    #[strum(serialize = "_spawn")]
+    NativeSpawn,
+    #[strum(serialize = "_scope")]
+    NativeScope,
+    #[strum(serialize = "_cancel")]
+    NativeCancel,
+    #[strum(serialize = "_drain")]
+    NativeDrain,
+    #[strum(serialize = "_queue")]
+    NativeQueue,
+    #[strum(serialize = "_queue_put")]
+    NativeQueuePut,
+    #[strum(serialize = "_queue_get")]
+    NativeQueueGet,
     /// `random.gauss()` function.
     Gauss,
     /// Module name for `import gc`.
@@ -2572,6 +2626,9 @@ pub enum StaticStrings {
     Zfill,
     /// `itertools.zip_longest()` function.
     ZipLongest,
+    /// Public cancellation exception.
+    #[strum(serialize = "CancelledError")]
+    CancelledError,
 }
 
 /// One immutable interned string with directly accessible dispatch metadata.

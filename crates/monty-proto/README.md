@@ -45,7 +45,13 @@ for the schema and the protocol rules documented alongside it.
   negotiation, so a child rejecting a version reports its range in the
   `FatalError` for the parent to downgrade to, then exits non-zero.
   Version `0` is always rejected; `monty_version` is diagnostic metadata, not a compatibility check.
+  Version 7 adds `ResumeFutures.native_cancel`. Cancellation-capable parents must
+  declare version 7 or later and must not downgrade to version 6 or below: those
+  workers ignore the field, even when its reason is empty. Current Rust callers
+  use `PROTOCOL_VERSION`. The minimum remains 5 for old clients omitting cancellation.
   Snapshot compatibility is checked separately using the dump-format version.
+  WIT components require matching bindings separately; their internal Configure
+  conversion uses the current version and does not negotiate protobuf capabilities.
 - `python` (cargo feature, off by default) — the `python` module: PyO3-based
   conversions between live Python objects and `MontyObject`/`MontyException`,
   used by the `pydantic-monty-client` extension module. The feature pulls in `pyo3` (but never its
@@ -128,3 +134,8 @@ Older workers omit the flag, which defaults to false, so newer parents retain th
 - [`monty-type-checking`](https://crates.io/crates/monty-type-checking) — type checking of sandboxed code, powered by [ty](https://docs.astral.sh/ty/).
 - [`monty-typeshed`](https://crates.io/crates/monty-typeshed) — the trimmed typeshed stubs describing the stdlib subset Monty implements.
 - [`monty-macros`](https://crates.io/crates/monty-macros) — the proc macros behind `monty`'s argument parsing.
+
+The optional experimental `ResumeFutures.native_cancel` string requests native single-task cancellation before processing the same batch's results.
+Absent preserves ordinary semantics; empty is a present first cause.
+It is accepted only at ResolveFutures for a single native main task directly blocked on one external future.
+The WIT `futures-request.native-cancel` field carries the same input.

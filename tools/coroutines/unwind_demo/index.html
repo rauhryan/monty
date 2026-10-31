@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monty · Cleanup on unwind</title>
+<style>
+:root { color-scheme: dark; font: 16px/1.6 system-ui; background:#10151c; color:#dae3ef }
+body { max-width:1100px; margin:40px auto; padding:0 24px } h1 { font-size:34px; margin-bottom:8px }
+small,.muted { color:#99aabe } .grid { display:grid; grid-template-columns:1fr 1fr; gap:20px }
+section { border:1px solid #334353; border-radius:12px; padding:20px; margin:20px 0; background:#18212c }
+button { background:#283c4e; color:#fff; border:1px solid #56718a; border-radius:7px; padding:10px 16px; margin:4px; cursor:pointer }
+button:disabled { opacity:.35; cursor:default } button[data-action=cancel] { border-color:#f0b271 }
+pre { white-space:pre-wrap; overflow-wrap:anywhere; font:13px/1.65 ui-monospace,monospace }
+#status { color:#83e1c0; font-size:24px } #error { color:#ffb3a5 } li { margin-bottom:12px }
+@media(max-width:750px) { .grid { grid-template-columns:1fr } }
+</style>
+<small>EXECUTION LAB / MONTY WASM</small>
+<h1>Cleanup can pause, too.</h1>
+<p>Reserve a cart, wait for work, then cancel. Python unwinds through <code>async with</code> and asks the host to audit and release the hold.</p>
+<p class="muted">Native cancellation · actual Wasm execution · every step resumes a saved continuation in a fresh instance.</p>
+<div id="buttons">
+<button data-action="start">Start cart</button><button data-action="cancel">Cancel / repeat cancel</button>
+<button data-action="complete">Complete operation</button><button data-action="fail">Fail operation</button>
+<button data-action="restore">Restore checkpoint check</button><button data-action="dispose">Discard without cleanup</button>
+</div>
+<p id="error" role="alert"></p>
+<section aria-live="polite"><div id="status">Ready</div><p id="pending">Start a cart to reserve its hold.</p><p id="cancellation"></p><small id="snapshot"></small></section>
+<section><details id="snapshot-viewer"><summary>Inspect snapshot data</summary>
+<p>The checkpoint is binary: an 8-byte Monty header followed by CBOR-encoded interpreter state. The ASCII column reveals embedded text; it is not a decoded stack or heap.</p>
+<p id="snapshot-metadata"></p><a id="snapshot-download" href="/snapshot.bin" download="monty-snapshot.bin">Download full snapshot</a>
+<pre id="snapshot-hex" style="overflow-x:auto;white-space:pre"></pre>
+<p class="muted">The guest state below is the last reported observation, not a decoded snapshot. Completing or discarding the run removes its checkpoint.</p>
+</details></section>
+<div class="grid"><section><h2>Host / guest exchanges</h2><ol id="events"></ol></section>
+<section><h2>Guest state</h2><pre id="state"></pre><details><summary>Guest-authored Python</summary><pre id="source"></pre></details><details><summary>Platform-supplied bindings</summary><pre id="bindings"></pre></details></section></div>
+<p class="muted">Cancel injects an exception and lets authored cleanup run. Discard only drops the snapshot; it does not release the simulated resource. This is a single-task example, without child tasks, a real alarm, or a persistent host journal.</p>
+<script>
+let view, busy = false;
+const el = id => document.getElementById(id);
+function render() {
+  const s = view.state;
+  el('status').textContent = view.disposed ? 'Discarded · cleanup did not run' : s?.terminal ? s.terminal.kind : s ? `Paused · ${s.phase}` : 'Ready';
+  el('pending').textContent = s?.pending && !view.disposed ? `Host operation: ${`${s.pending[0]} · ${JSON.stringify(s.pending[1])}`}` : 'No pending operation';
+  el('snapshot').textContent = `${view.activations} fresh Wasm instances · ${view.snapshot.bytes.toLocaleString()} snapshot bytes` + (view.snapshot.sha256 ? ` · SHA256 ${view.snapshot.sha256.slice(0,16)}…` : '');
+  el('cancellation').textContent = s?.cancellation ? `Cancellation requested: ${s.cancellation}. ${s.terminal ? 'Final outcome remains cancelled even when Python catches the signal.' : 'Cleanup replies remain enabled; repeating cancel will not interrupt cleanup.'}` : '';
+  const snap = view.snapshot;
+  el('snapshot-metadata').textContent = snap.bytes ? `${snap.format} · version ${snap.version} · showing ${snap.preview_bytes.toLocaleString()} of ${snap.bytes.toLocaleString()} bytes · SHA256 ${snap.sha256}` : 'No checkpoint. Start a run to inspect its suspended state.';
+  el('snapshot-hex').textContent = snap.hex;
+  el('snapshot-download').hidden = !snap.bytes;
+  el('state').textContent = JSON.stringify(s, null, 2);
+  el('source').textContent = view.source;
+  el('bindings').textContent = view.bindings;
+  el('events').replaceChildren();
+  for (const entry of view.trace) {
+    const li = document.createElement('li');
+    const cmd = entry.command;
+    li.textContent = `${cmd.kind}${cmd.outcome ? ` (${cmd.outcome})` : ''} → ${entry.state.terminal?.kind ?? (entry.state.pending ? JSON.stringify(entry.state.pending) : null) ?? entry.state.status}`;
+    el('events').append(li);
+  }
+  document.querySelectorAll('button').forEach(button => {
+    const active = s && s.terminal === null && !view.disposed;
+    button.disabled = busy || (button.dataset.action === 'start' ? active : !active);
+  });
+}
+async function command(action) {
+  busy = true; render(); el('error').textContent = '';
+  try {
+    const response = await fetch('/api', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action, revision:view.revision})});
+    const result = await response.json();
+    if (!response.ok) { throw Error(result.error); }
+    view = result;
+  } catch (error) { el('error').textContent = error.message; }
+  finally { busy = false; render(); }
+}
+el('buttons').addEventListener('click', event => { if (event.target.dataset.action) { command(event.target.dataset.action); } });
+fetch('/api').then(r => r.json()).then(result => { view = result; render(); }).catch(error => { el('error').textContent = error.message; });
+</script>
+</html>

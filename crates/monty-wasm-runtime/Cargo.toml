@@ -23,5 +23,13 @@ monty-proto = { workspace = true, features = ["worker"] }
 monty-types = { workspace = true, features = ["tzdb-bundled"] }
 wit-bindgen = "0.46"
 
+[features]
+# Deliberately instrumented component, never a production artifact.
+cancellation-test-hooks = ["dep:monty", "monty/cancellation-test-hooks"]
+
+[dependencies.monty]
+workspace = true
+optional = true
+
 [lints]
 workspace = true

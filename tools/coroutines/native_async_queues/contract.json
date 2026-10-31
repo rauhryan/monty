@@ -1,0 +1,774 @@
+{
+  "cases": {
+    "inspection-lazy": {
+      "steps": [
+        [
+          [
+            "before-0"
+          ],
+          [
+            "before-0"
+          ]
+        ],
+        [
+          [
+            "before--2"
+          ],
+          [
+            "before--2"
+          ]
+        ],
+        [
+          [
+            "before-True"
+          ],
+          [
+            "before-True"
+          ]
+        ],
+        [
+          [
+            "before-False"
+          ],
+          [
+            "before-False"
+          ]
+        ],
+        [
+          [
+            "before-1"
+          ],
+          [
+            "before-1"
+          ]
+        ],
+        [
+          [
+            "before-3"
+          ],
+          [
+            "before-3"
+          ]
+        ],
+        [
+          [
+            "before-4294967295"
+          ],
+          [
+            "before-4294967295"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "before-0": "r"
+        },
+        {
+          "before--2": "r"
+        },
+        {
+          "before-True": "r"
+        },
+        {
+          "before-False": "r"
+        },
+        {
+          "before-1": "r"
+        },
+        {
+          "before-3": "r"
+        },
+        {
+          "before-4294967295": "r"
+        }
+      ],
+      "result": "ok"
+    },
+    "unbounded": {
+      "steps": [
+        [
+          [
+            "stored"
+          ],
+          [
+            "stored"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "stored": "s"
+        }
+      ],
+      "result": "ok"
+    },
+    "bounded-fifo": {
+      "steps": [
+        [
+          [
+            "full"
+          ],
+          [
+            "full"
+          ]
+        ],
+        [
+          [
+            "empty"
+          ],
+          [
+            "empty"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "full": "f"
+        },
+        {
+          "empty": "e"
+        }
+      ],
+      "result": "ok"
+    },
+    "getters-fifo": {
+      "steps": [
+        [
+          [
+            "empty"
+          ],
+          [
+            "empty"
+          ]
+        ],
+        [
+          [
+            "done"
+          ],
+          [
+            "done"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "empty": "e"
+        },
+        {
+          "done": "d"
+        }
+      ],
+      "result": "ok"
+    },
+    "cancel-get": {
+      "steps": [
+        [
+          [
+            "blocked"
+          ],
+          [
+            "blocked"
+          ]
+        ],
+        [
+          [
+            "done"
+          ],
+          [
+            "done"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "blocked": "b"
+        },
+        {
+          "done": "d"
+        }
+      ],
+      "result": "ok"
+    },
+    "cancel-put": {
+      "steps": [
+        [
+          [
+            "blocked"
+          ],
+          [
+            "blocked"
+          ]
+        ],
+        [
+          [
+            "done"
+          ],
+          [
+            "done"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "blocked": "b"
+        },
+        {
+          "done": "d"
+        }
+      ],
+      "result": "ok"
+    },
+    "delivered-cancel": {
+      "steps": [
+        [
+          [
+            "control",
+            "delivered"
+          ],
+          [
+            "control",
+            "delivered"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "c"
+        }
+      ],
+      "result": "ok"
+    },
+    "group-failure": {
+      "steps": [
+        [
+          [
+            "fail"
+          ],
+          [
+            "fail"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "fail": "f"
+        },
+        {
+          "child-release": "r"
+        },
+        {
+          "parent-release": "p"
+        }
+      ],
+      "result": "ok"
+    },
+    "ordinary-cleanup": {
+      "steps": [
+        [
+          [
+            "fail"
+          ],
+          [
+            "fail"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "fail": "f"
+        },
+        {
+          "child-release": "r"
+        },
+        {
+          "parent-release": "p"
+        }
+      ],
+      "result": "ok"
+    },
+    "run-shutdown": {
+      "steps": [
+        [
+          [
+            "control"
+          ],
+          [
+            "control"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "c"
+        },
+        {
+          "child-release": "r"
+        }
+      ],
+      "result": "ok"
+    },
+    "protected-cleanup": {
+      "steps": [
+        [
+          [
+            "body"
+          ],
+          [
+            "body"
+          ]
+        ],
+        [
+          [
+            "release"
+          ],
+          [
+            "release"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "body": "b"
+        },
+        {
+          "release": "r"
+        },
+        {
+          "parent-release": "p"
+        }
+      ],
+      "result": "ok"
+    },
+    "host-cleanup": {
+      "steps": [
+        [
+          [
+            "body"
+          ],
+          [
+            "body"
+          ]
+        ],
+        [
+          [
+            "release"
+          ],
+          [
+            "release"
+          ]
+        ],
+        [
+          [],
+          [
+            "release"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "$cancel": "FIRST"
+        },
+        {
+          "$cancel": "SECOND"
+        },
+        {
+          "release": "r"
+        },
+        {
+          "parent-release": "p"
+        }
+      ],
+      "cancelled": "FIRST"
+    },
+    "host-group": {
+      "steps": [
+        [
+          [
+            "body"
+          ],
+          [
+            "body"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "$cancel": "FIRST"
+        },
+        {
+          "$cancel": "SECOND"
+        },
+        {
+          "child-release": "r"
+        },
+        {
+          "parent-release": "p"
+        }
+      ],
+      "cancelled": "FIRST"
+    },
+    "misuse-reawait": {
+      "steps": [
+        [
+          [
+            "checked"
+          ],
+          [
+            "checked"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "checked": "c"
+        }
+      ],
+      "result": "ok"
+    },
+    "reservations": {
+      "steps": [
+        [
+          [
+            "put-reserved"
+          ],
+          [
+            "put-reserved"
+          ]
+        ],
+        [
+          [
+            "get-reserved"
+          ],
+          [
+            "get-reserved"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "put-reserved": "p"
+        },
+        {
+          "get-reserved": "g"
+        }
+      ],
+      "result": "ok"
+    },
+    "cyclic-blocked-put": {
+      "steps": [
+        [
+          [
+            "blocked"
+          ],
+          [
+            "blocked"
+          ]
+        ],
+        [
+          [
+            "delivered"
+          ],
+          [
+            "delivered"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "blocked": "b"
+        },
+        {
+          "delivered": "d"
+        }
+      ],
+      "result": "ok"
+    },
+    "sequential-runs": {
+      "steps": [
+        [
+          [
+            "first"
+          ],
+          [
+            "first"
+          ]
+        ],
+        [
+          [
+            "second"
+          ],
+          [
+            "second"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "first": "f"
+        },
+        {
+          "second": "s"
+        }
+      ],
+      "result": "ok"
+    },
+    "unrelated-run": {
+      "steps": [
+        [
+          [
+            "control"
+          ],
+          [
+            "control"
+          ]
+        ],
+        [
+          [
+            "after-run"
+          ],
+          [
+            "after-run"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "c"
+        },
+        {
+          "after-run": "a"
+        }
+      ],
+      "result": "ok"
+    },
+    "reserved-get-cancel": {
+      "steps": [
+        [
+          [
+            "control",
+            "cancelled-reservation"
+          ],
+          [
+            "cancelled-reservation",
+            "control"
+          ]
+        ],
+        [
+          [
+            "verified"
+          ],
+          [
+            "verified"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "c",
+          "cancelled-reservation": "r"
+        },
+        {
+          "verified": "v"
+        }
+      ],
+      "result": "ok"
+    },
+    "reserved-put-cancel": {
+      "steps": [
+        [
+          [
+            "control",
+            "cancelled-reservation"
+          ],
+          [
+            "cancelled-reservation",
+            "control"
+          ]
+        ],
+        [
+          [
+            "verified"
+          ],
+          [
+            "verified"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "c",
+          "cancelled-reservation": "r"
+        },
+        {
+          "verified": "v"
+        }
+      ],
+      "result": "ok"
+    },
+    "guest-cleanup": {
+      "steps": [
+        [
+          [
+            "control1",
+            "body"
+          ],
+          [
+            "body",
+            "control1"
+          ]
+        ],
+        [
+          [
+            "release"
+          ],
+          [
+            "control1",
+            "release"
+          ]
+        ],
+        [
+          [
+            "control2"
+          ],
+          [
+            "control2",
+            "release"
+          ]
+        ],
+        [
+          [],
+          [
+            "release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "body": "b"
+        },
+        {
+          "control1": "c"
+        },
+        {
+          "control2": "c"
+        },
+        {
+          "release": "r"
+        }
+      ],
+      "result": "ok"
+    },
+    "internal-wait-cancel": {
+      "steps": [
+        [
+          [],
+          []
+        ],
+        [
+          [
+            "release"
+          ],
+          [
+            "release"
+          ]
+        ],
+        [
+          [],
+          [
+            "release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "$cancel": "FIRST"
+        },
+        {
+          "$cancel": "SECOND"
+        },
+        {
+          "release": "r"
+        }
+      ],
+      "cancelled": "FIRST"
+    }
+  }
+}

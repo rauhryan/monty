@@ -1,0 +1,132 @@
+{
+  "migrated/anyio_scopes/cases/inherited-shield-exit.py": {
+    "original": "tools/coroutines/anyio_scopes/cases/inherited-shield-exit.py",
+    "originalSha256": "b8bae8d5c03fdbb89b313a10da3eb5aa9f93bfa7998c47975c4dadac1639cf84",
+    "candidateSha256": "78661c499951db1e49401b8b28fae9162335a792d3cada3e5d19763af16f8be5"
+  },
+  "migrated/anyio_scopes_repair2/cases/alias-shield-group.py": {
+    "original": "tools/coroutines/anyio_scopes_repair2/cases/alias-shield-group.py",
+    "originalSha256": "e7d8f4187a38bb7c4838176177fa2dd59fc993393fc680a9e0d5ff1bb07065ba",
+    "candidateSha256": "b10cdd1e2b49727cbe6e33093f331d22f030fe42c9730b5a099f6f429f471a18"
+  },
+  "migrated/anyio_scopes_repair2/cases/alias-shield-native-group.py": {
+    "original": "tools/coroutines/anyio_scopes_repair2/cases/alias-shield-native-group.py",
+    "originalSha256": "bb4e88d96dac2ea67eb2a9f679e1183b6290ba037d403b8c78a1dd4f1a05cbdd",
+    "candidateSha256": "1f657eed01b13f9cab5e9ef8e1c37a7ef2d994394f753aae8a037e4a6fa69c5a"
+  },
+  "migrated/catchable_cancellation10/ownership.py": {
+    "original": "tools/coroutines/catchable_cancellation10/ownership.py",
+    "originalSha256": "3d56c9d49b90a857f0512307030a6a4ad19ee1ef763a5065be05f43fa1e33569",
+    "candidateSha256": "2639569d33c6335c0fa20d3a966aadd7a4b040d896856367a90ce86bafd031f3"
+  },
+  "migrated/concurrent_io/children_cancel.py": {
+    "original": "tools/coroutines/concurrent_io/children_cancel.py",
+    "originalSha256": "97a96b11972a7fe9f8e153e12cea16087749b3a3fd08d62ba4149ddefaa212da",
+    "candidateSha256": "87439edbe87931127c877cb65a0c1069517d5c66c5ea137ff4db5c28bd9f18f5"
+  },
+  "migrated/concurrent_io/children_drain.py": {
+    "original": "tools/coroutines/concurrent_io/children_drain.py",
+    "originalSha256": "3949b2fca4e968e3c9dabf4bfea12189e45f440e12b486173525d1fe9dfdf25b",
+    "candidateSha256": "78039376fb3710b493440aec303e51577223195a1e4abb28a82daf9b0bab88d2"
+  },
+  "migrated/concurrent_io/deferred_cleanup.py": {
+    "original": "tools/coroutines/concurrent_io/deferred_cleanup.py",
+    "originalSha256": "05732d3907cddd1d002abcec63328e58b41ad9c3893d340c4c90afffd5d7f1f1",
+    "candidateSha256": "989c06e3123995f2896791cb95da3e0082bbdc1749a60439eff87958708e0ea0"
+  },
+  "migrated/concurrent_io/gather_host.py": {
+    "original": "tools/coroutines/concurrent_io/gather_host.py",
+    "originalSha256": "2236f8195a8ba1820b5b66f5d735bc87f5767a9dba97ef025b9b4dc68dbb33f6",
+    "candidateSha256": "8bc45693cf4cd9b92b0275c9cd413d324b1d4ad6be2afbf800fbcc1861b7927a"
+  },
+  "migrated/concurrent_io/host_cancel.py": {
+    "original": "tools/coroutines/concurrent_io/host_cancel.py",
+    "originalSha256": "c1ee417d9dc2253321cad3b693ed7753ed57303bee7d2f75ba1fb0c0d2d767a3",
+    "candidateSha256": "3b2c2d7a2d5643927f6531e1c3589c3f8be9d530dde3f1fb79e647de12f93750"
+  },
+  "migrated/native1/cancellation_ownership.py": {
+    "original": "tools/coroutines/native1/cancellation_ownership.py",
+    "originalSha256": "3328868115321e0143bd1b2c1f6937be12143955cbecc25a2ba4cf71ac311a88",
+    "candidateSha256": "150a1ae76c6b6216c0d784e47b2e918d65500053925959abb2d0b632ef9d7aaa"
+  },
+  "migrated/native1/cleanup_exit_ownership.py": {
+    "original": "tools/coroutines/native1/cleanup_exit_ownership.py",
+    "originalSha256": "ca006517baeaa195ff9086466e824fc76585229676aaadf7f523f3c2df164c2a",
+    "candidateSha256": "c3e19ce74e72f8a4e66a76b2ac0c7c454531f34339a3ae91aea616948395e825"
+  },
+  "migrated/native_async_groups/cases/cancel.py": {
+    "original": "tools/coroutines/native_async_groups/cases/cancel.py",
+    "originalSha256": "0ec6fa4975ef60b9813ee90005e24b8066307329618324f8dd9d01f9280b57dd",
+    "candidateSha256": "5c547290f2ed518b7e22ceade66d88a1d59697807509c0e110d66a21a696f7a6"
+  },
+  "migrated/native_async_groups/cases/nested-guest-repeat.py": {
+    "original": "tools/coroutines/native_async_groups/cases/nested-guest-repeat.py",
+    "originalSha256": "2582174da081911078cd68fe0cf2f3d5825edef21f9408eda801907ce1538c1f",
+    "candidateSha256": "22b8c08517f1c362754daebe567066d35fccb212f393d731370ebcef9626115e"
+  },
+  "migrated/native_async_groups/cases/repair7-caught.py": {
+    "original": "tools/coroutines/native_async_groups/cases/repair7-caught.py",
+    "originalSha256": "175b6fb2e9702fae747c8d314c638ffdf9d4b8babf9a3b53d624430037d34f90",
+    "candidateSha256": "072b9052e7e80f1ebc0066ed79dc6989857631a37b050a0f9d34eb6b4b2073fd"
+  },
+  "migrated/native_async_groups/cases/repair7-final-return.py": {
+    "original": "tools/coroutines/native_async_groups/cases/repair7-final-return.py",
+    "originalSha256": "cbe171d4031d2c513dee79b1cbe4a527070e642c5a6168664c9cdde5cb359040",
+    "candidateSha256": "595550491e1efe5425646e3a8a7e50a9c17ac7df12d1d1c93b6cc527d4a0dd8c"
+  },
+  "migrated/native_async_groups/cases/repair7-return.py": {
+    "original": "tools/coroutines/native_async_groups/cases/repair7-return.py",
+    "originalSha256": "c536ec989d79eb2ed03bdea037a3cd0c4fccd5ef8603df298d7822dcb2ad6aff",
+    "candidateSha256": "f950332fdc12ff1bc78036c88e853c35db6b0fa109856c44e91209899423c95a"
+  },
+  "migrated/native_async_groups/cases/repair7-suppress.py": {
+    "original": "tools/coroutines/native_async_groups/cases/repair7-suppress.py",
+    "originalSha256": "2fbd0c1354e63d046d4f32916c73652d534c93db3a3aeb47104bc1cc2a3ed17c",
+    "candidateSha256": "0d85663617b480383fb7558a620b6eb7582f0e9280eee912fc1b58632adba58e"
+  },
+  "migrated/native_async_queues/cases/cancel-get.py": {
+    "original": "tools/coroutines/native_async_queues/cases/cancel-get.py",
+    "originalSha256": "66bf804be81cb1a28ba8b4143c96d689da9a00052b2369562f61274f3618a221",
+    "candidateSha256": "7f0b4fe1a74519a74b211c1f3d1a1000f06a891e203aac96af0ecb05a067d21f"
+  },
+  "migrated/native_async_queues/cases/cancel-put.py": {
+    "original": "tools/coroutines/native_async_queues/cases/cancel-put.py",
+    "originalSha256": "b046e3362e3ee8cadefd35a18c1093f47444d9a5084de526b07f01c2c9f385cd",
+    "candidateSha256": "02511a33a79d56e1666bdde190aebb1cace3d88979f25325533836c941fcb3db"
+  },
+  "migrated/native_async_queues/cases/cyclic-blocked-put.py": {
+    "original": "tools/coroutines/native_async_queues/cases/cyclic-blocked-put.py",
+    "originalSha256": "bc5050a50f12217600e0a1df733b6d0a4638462b1e613feff1bfa1ddd27817d0",
+    "candidateSha256": "d53a7f14eb53720e2755ee97f12846d99b72fd29639a581d95da0357b84c3e63"
+  },
+  "migrated/native_async_queues/cases/delivered-cancel.py": {
+    "original": "tools/coroutines/native_async_queues/cases/delivered-cancel.py",
+    "originalSha256": "de71592f650c735098fabe11700de1ad3871fad207b4334ac6cba93ca5b24f72",
+    "candidateSha256": "e60b8a0dde2e55ca8eec143b3edaa47aac921a533b58dd3df83ec76568ae61cb"
+  },
+  "migrated/native_async_queues/cases/reserved-get-cancel.py": {
+    "original": "tools/coroutines/native_async_queues/cases/reserved-get-cancel.py",
+    "originalSha256": "abf369e7f548ed554627f0e3cb22a2a6bc757e5a7a05f1688be015f0711e5560",
+    "candidateSha256": "25c80e9c8ac864a94d820d15a89401241649ecfc016bac7d9b49466fcacced5a"
+  },
+  "migrated/native_async_queues/cases/reserved-put-cancel.py": {
+    "original": "tools/coroutines/native_async_queues/cases/reserved-put-cancel.py",
+    "originalSha256": "2eb3740ff83182d86e8917cd4ebc3279069936f0f9cc05be9b57329bcca55260",
+    "candidateSha256": "10b466fc1789504734b93186a94f549f205c92b1ed9b6f890b5916b0350dbed5"
+  },
+  "migrated/native_async_tasks/cases/cancel-gather-wrapped.py": {
+    "original": "tools/coroutines/native_async_tasks/cases/cancel-gather-wrapped.py",
+    "originalSha256": "103fac7af17e0c0b9b93017408f3e6ce1ca1657ff4659fbdf9ae101e8195d78e",
+    "candidateSha256": "872a1592e34ea95534c3216accc0b7e5fdc59c19d7afa92cf631cbb40e3d3c82"
+  },
+  "migrated/native_async_tasks/cases/cancel-gather.py": {
+    "original": "tools/coroutines/native_async_tasks/cases/cancel-gather.py",
+    "originalSha256": "12ad6313d6cdb2ee462d4f9ecbf31391e4fcd894aff91bef9e02aecd13932b90",
+    "candidateSha256": "2c87df7fc474920cd5a67f53594a86c6113feb315fbb93f771ae4aea73a36c03"
+  },
+  "migrated/native_async_tasks/cases/cancel.py": {
+    "original": "tools/coroutines/native_async_tasks/cases/cancel.py",
+    "originalSha256": "b9969dee51cad5cd515e888f5be6263b5363ba3813b8e87e5fed3dc31c18e9b3",
+    "candidateSha256": "9c266eac0a70ac59545039d844d44016dd6e9c622dfed7b541a4ae315a8279d2"
+  }
+}

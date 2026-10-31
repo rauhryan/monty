@@ -5,8 +5,13 @@
 //! - `gather(*awaitables)`: Collects coroutines for concurrent execution
 //! - `sleep(delay, result=None)`: An awaitable governed by the session's `SleepMode`
 //!
-//! Other asyncio functions (`create_task`, `wait`, etc.) are not implemented.
+//! - `create_task(coro)`: Schedules a coroutine and returns a persistent Task handle
+//!
+//! Queue provides bounded/unbounded FIFO coroutine operations.
+//! TaskGroup provides structured waiting and failure drain; other functions (`wait`, etc.) are not implemented.
 //! The host acts as the event loop - Monty yields control when tasks are blocked.
+
+use std::mem;
 
 use monty_types::{OsFunctionCall, sleep_duration_saturating};
 use num_traits::ToPrimitive;
@@ -14,9 +19,11 @@ use num_traits::ToPrimitive;
 use crate::{
     args::{ArgValues, FromArgs},
     asyncio::GatherFuture,
+    builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
+    frozen::FrozenFunction,
     heap::{Heap, HeapData, HeapId},
     heap_traits::DropGuard,
     intern::StaticStrings,
@@ -26,7 +33,7 @@ use crate::{
     },
     os_dispatch::PostConversionEffect,
     types::Module,
-    value::Value,
+    value::{EitherStr, Value},
 };
 
 /// Async Functions.
@@ -36,14 +43,40 @@ pub(crate) enum AsyncioFunctions {
     Gather,
     Run,
     Sleep,
+    CreateTask,
+    TaskGroup,
+    GroupCreateTask,
+    TaskDone,
+    TaskCancelled,
+    TaskCancel,
+    TaskResult,
+    TaskException,
+    NativeSpawn,
+    NativeScope,
+    NativeCancel,
+    NativeDrain,
+    NativeQueue,
+    NativeQueuePut,
+    NativeQueueGet,
+    Queue,
+    QueuePut,
+    QueueGet,
+    QueueSize,
+    QueueEmpty,
+    QueueFull,
 }
 
 /// Creates the `asyncio` module and allocates it on the heap.
 ///
-/// The module contains only the `run`, `gather` and `sleep` functions. Other asyncio
-/// functions are not implemented as they would require additional VM/scheduler features.
+/// Public asyncio support includes Tasks, TaskGroup and Queue; private native child-scope
+/// primitives are experimental authoring bindings, not additional asyncio parity.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Asyncio, vm.interns);
+    module.set_attr(
+        StaticStrings::CancelledError,
+        Value::Builtin(Builtins::ExcType(ExcType::CancelledError)),
+        vm,
+    );
 
     module.set_attr(
         StaticStrings::Gather,
@@ -61,13 +94,158 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         vm,
     );
 
+    module.set_attr(
+        StaticStrings::CreateTask,
+        Value::ModuleFunction(ModuleFunctions::Asyncio(AsyncioFunctions::CreateTask)),
+        vm,
+    );
+
+    module.set_attr(
+        StaticStrings::TaskGroup,
+        Value::ModuleFunction(ModuleFunctions::Asyncio(AsyncioFunctions::TaskGroup)),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::AsyncioQueue,
+        Value::ModuleFunction(ModuleFunctions::Asyncio(AsyncioFunctions::Queue)),
+        vm,
+    );
+    for (name, function) in [
+        (StaticStrings::NativeScope, AsyncioFunctions::NativeScope),
+        (StaticStrings::NativeSpawn, AsyncioFunctions::NativeSpawn),
+        (StaticStrings::NativeCancel, AsyncioFunctions::NativeCancel),
+        (StaticStrings::NativeDrain, AsyncioFunctions::NativeDrain),
+        (StaticStrings::NativeQueue, AsyncioFunctions::NativeQueue),
+        (StaticStrings::NativeQueuePut, AsyncioFunctions::NativeQueuePut),
+        (StaticStrings::NativeQueueGet, AsyncioFunctions::NativeQueueGet),
+    ] {
+        module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Asyncio(function)), vm);
+    }
     vm.heap.allocate(HeapData::Module(Box::new(module)))
 }
-pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues) -> RunResult<CallResult> {
+pub(crate) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues) -> RunResult<CallResult> {
     match functions {
+        AsyncioFunctions::Queue => {
+            let QueueArgs { maxsize } = QueueArgs::from_args(args, vm)?;
+            defer_drop!(maxsize, vm);
+            vm.new_public_queue(maxsize).map(CallResult::Value)
+        }
+        AsyncioFunctions::QueuePut => {
+            let QueuePutArgs { queue, item } = QueuePutArgs::from_args(args, vm)?;
+            defer_drop!(queue, vm);
+            defer_drop!(item, vm);
+            let operation = vm.new_queue_operation(queue, Some(item))?;
+            vm.frozen_awaitable(FrozenFunction::QueueOperation, vec![operation], false)
+                .map(CallResult::Value)
+        }
+        AsyncioFunctions::QueueGet => {
+            let queue = args.get_one_arg("get", vm.heap)?;
+            defer_drop!(queue, vm);
+            let operation = vm.new_queue_operation(queue, None)?;
+            vm.frozen_awaitable(FrozenFunction::QueueOperation, vec![operation], false)
+                .map(CallResult::Value)
+        }
+        AsyncioFunctions::QueueSize | AsyncioFunctions::QueueEmpty | AsyncioFunctions::QueueFull => {
+            let queue = args.get_one_arg("Queue inspection", vm.heap)?;
+            defer_drop!(queue, vm);
+            let Value::Ref(id) = queue else {
+                return Err(ExcType::type_error("Queue receiver required"));
+            };
+            let HeapData::ExternalFuture(future) = vm.heap.get(*id) else {
+                return Err(ExcType::type_error("Queue receiver required"));
+            };
+            let queue = future
+                .queue
+                .as_ref()
+                .ok_or_else(|| ExcType::type_error("Queue receiver required"))?;
+            Ok(CallResult::Value(match functions {
+                AsyncioFunctions::QueueSize => {
+                    Value::Int(i64::try_from(queue.values.len()).expect("queue length fits i64"))
+                }
+                AsyncioFunctions::QueueEmpty => Value::Bool(queue.values.is_empty()),
+                _ => Value::Bool(queue.capacity > 0 && queue.values.len() >= queue.capacity),
+            }))
+        }
+
+        AsyncioFunctions::TaskGroup => {
+            args.check_zero_args("TaskGroup", vm.heap)?;
+            Ok(CallResult::Value(vm.new_task_group()))
+        }
+        AsyncioFunctions::GroupCreateTask => {
+            let (group, coro) = args.get_two_args("create_task", vm.heap)?;
+            defer_drop!(group, vm);
+            defer_drop!(coro, vm);
+            let Value::Ref(id) = group else {
+                return Err(ExcType::type_error("TaskGroup receiver required"));
+            };
+            vm.group_create_task(*id, coro).map(CallResult::Value)
+        }
+
+        AsyncioFunctions::TaskDone
+        | AsyncioFunctions::TaskCancelled
+        | AsyncioFunctions::TaskCancel
+        | AsyncioFunctions::TaskResult
+        | AsyncioFunctions::TaskException => {
+            let value = args.get_one_arg("Task method", vm.heap)?;
+            defer_drop!(value, vm);
+            let Value::Ref(id) = value else {
+                return Err(ExcType::type_error("Task method requires a Task receiver"));
+            };
+            if !matches!(vm.heap.get(*id), HeapData::ExternalFuture(future) if future.public_task.is_some()) {
+                return Err(ExcType::type_error("Task method requires a Task receiver"));
+            }
+            let name = match functions {
+                AsyncioFunctions::TaskDone => "done",
+                AsyncioFunctions::TaskCancelled => "cancelled",
+                AsyncioFunctions::TaskCancel => "cancel",
+                AsyncioFunctions::TaskResult => "result",
+                _ => "exception",
+            };
+            vm.call_public_task(*id, &EitherStr::Heap(name.to_owned()), ArgValues::Empty)
+        }
+        AsyncioFunctions::CreateTask => {
+            let value = args.get_one_arg("create_task", vm.heap)?;
+            defer_drop!(value, vm);
+            vm.spawn_public_task(value).map(CallResult::Value)
+        }
         AsyncioFunctions::Gather => gather(vm, args).map(CallResult::Value),
         AsyncioFunctions::Run => run(vm.heap, args),
         AsyncioFunctions::Sleep => sleep(vm, args),
+        AsyncioFunctions::NativeQueue => {
+            let capacity = args.get_one_arg("_queue", vm.heap)?;
+            defer_drop!(capacity, vm);
+            vm.new_guest_queue(capacity).map(CallResult::Value)
+        }
+        AsyncioFunctions::NativeQueueGet => {
+            let queue = args.get_one_arg("_queue_get", vm.heap)?;
+            defer_drop!(queue, vm);
+            vm.new_queue_operation(queue, None).map(CallResult::Value)
+        }
+        AsyncioFunctions::NativeQueuePut => {
+            let (queue, value) = args.get_two_args("_queue_put", vm.heap)?;
+            defer_drop!(queue, vm);
+            defer_drop!(value, vm);
+            vm.new_queue_operation(queue, Some(value)).map(CallResult::Value)
+        }
+        AsyncioFunctions::NativeScope => {
+            args.check_zero_args("_scope", vm.heap)?;
+            vm.open_child_scope().map(|()| CallResult::Value(Value::None))
+        }
+        AsyncioFunctions::NativeSpawn => {
+            let value = args.get_one_arg("_spawn", vm.heap)?;
+            defer_drop!(value, vm);
+            vm.spawn_owned_child(value).map(CallResult::Value)
+        }
+        AsyncioFunctions::NativeCancel => {
+            let value = args.get_one_arg("_cancel", vm.heap)?;
+            defer_drop!(value, vm);
+            vm.cancel_owned_child(value, "guest")
+                .map(|()| CallResult::Value(Value::None))
+        }
+        AsyncioFunctions::NativeDrain => {
+            args.check_zero_args("_drain", vm.heap)?;
+            vm.drain_owned_children().map(CallResult::Value)
+        }
     }
 }
 
@@ -132,7 +310,7 @@ fn delay_seconds(delay: &Value, vm: &VM<'_>) -> RunResult<f64> {
 
 /// Implementation of `asyncio.run(coro)`.
 ///
-/// Runs a single coroutine to completion, equivalent to `await coro` at the top level.
+/// Runs a single coroutine to completion with an explicit VM-owned shutdown boundary.
 /// Accepts exactly one positional argument (the coroutine) and no keyword arguments.
 ///
 /// Returns `CallResult::AwaitValue` so the VM executes `exec_get_awaitable` on
@@ -178,12 +356,21 @@ pub(crate) fn gather(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             Value::Ref(id)
                 if matches!(
                     vm.heap.get(*id),
-                    HeapData::Coroutine(_) | HeapData::ExternalFuture(_) | HeapData::GatherFuture(_)
+                    HeapData::Coroutine(_) | HeapData::ExternalFuture(_) | HeapData::GatherFuture(_) | HeapData::Generator(_)
                 )
         ) {
             return Err(ExcType::type_error(
                 "An asyncio.Future, a coroutine or an awaitable is required",
             ));
+        }
+    }
+
+    // Keep the vector guarded through every fallible bridge compilation. Each
+    // replacement transfers exactly one owned reference into a VM coroutine.
+    for arg in awaitables.iter_mut() {
+        if matches!(arg, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Generator(_))) {
+            let continuation = mem::replace(arg, Value::None);
+            *arg = vm.host_continuation_coroutine(continuation)?;
         }
     }
 
@@ -208,4 +395,20 @@ pub(crate) fn gather(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 struct GatherArgs {
     #[from_args(varargs)]
     awaitables: Vec<Value>,
+}
+
+/// Public constructor supports the ordinary positional/keyword maxsize binding.
+#[derive(FromArgs)]
+#[from_args(name = "Queue", style = def)]
+struct QueueArgs {
+    #[from_args(static_string = "Maxsize", default = Value::Int(0))]
+    maxsize: Value,
+}
+
+#[derive(FromArgs)]
+#[from_args(name = "put", style = def)]
+struct QueuePutArgs {
+    #[from_args(pos_only)]
+    queue: Value,
+    item: Value,
 }

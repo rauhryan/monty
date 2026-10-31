@@ -14,7 +14,7 @@ use crate::{
     asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcTypeExt, RunResult, SimpleException},
+    exception_private::{ExcTypeExt, RunResult},
     expressions::CmpOperator,
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
@@ -76,7 +76,7 @@ macro_rules! heap_payloads {
             Slice(inline $crate::types::Slice),
             /// An exception instance such as `ValueError('message')`.
             #[serde(rename = "X")]
-            Exception(inline $crate::exception_private::SimpleException),
+            Exception(boxed $crate::exception_private::ExceptionObject),
             /// A host-backed class instance (the heap form of the wire `ClassInstance`).
             HostClass(boxed $crate::types::HostClass),
             /// The lightweight type object `type(x)` materializes for a `HostClass`
@@ -132,6 +132,8 @@ macro_rules! heap_payloads {
             /// A coroutine object from an async function call.
             #[serde(rename = "O")]
             Coroutine(inline $crate::asyncio::Coroutine),
+            /// Synchronous resumable function; boxed to preserve both target layouts.
+            Generator(boxed $crate::bytecode::Generator),
             /// An `asyncio.gather()` result tracking multiple coroutines or tasks.
             GatherFuture(boxed $crate::asyncio::GatherFuture),
             /// An external future driven by the host.
@@ -224,7 +226,7 @@ impl HeapData {
     /// Returns whether this heap data type can participate in reference cycles.
     ///
     /// Only container types that can hold references to other heap objects need to be
-    /// tracked for GC purposes. Leaf types like Str, Bytes, Range, and Exception cannot
+    /// tracked for GC purposes. Leaf types like Str, Bytes, and Range cannot
     /// form cycles and should not count toward the GC allocation threshold.
     ///
     /// This optimization allows programs that allocate many leaf objects (like strings)
@@ -267,6 +269,8 @@ impl HeapData {
             | Self::CallableIterator(_)
             | Self::Module(_)
             | Self::Coroutine(_)
+            | Self::Generator(_)
+            | Self::Exception(_)
             | Self::GatherFuture(_)
             | Self::ExternalFuture(_)
             | Self::Partial(_)
@@ -280,7 +284,6 @@ impl HeapData {
             | Self::Bytes(_)
             | Self::Range(_)
             | Self::Slice(_)
-            | Self::Exception(_)
             | Self::DataclassParams(_)
             | Self::StringIterator(_)
             | Self::BytesIterator(_)
@@ -373,6 +376,7 @@ impl HeapData {
             Self::LongInt(_) => Type::Int,
             Self::Complex(_) => Type::Complex,
             Self::Module(_) => Type::Module,
+            Self::Generator(_) => Type::WalkGenerator,
             Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,
             Self::Path(_) => Type::Path,
             Self::OpenFile(file) => file.file_type(),
@@ -604,12 +608,6 @@ fn hash_func_id(func_id: FunctionId) -> HashValue {
     HashValue::new(hasher.finish())
 }
 
-impl HeapItem for SimpleException {
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
-        // Exceptions don't contain heap references
-    }
-}
-
 impl HeapItem for LongInt {
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // LongInt doesn't contain heap references
@@ -634,7 +632,7 @@ impl HeapItem for GatherFuture {
         // Release per-state heap refs: in-flight slot results plus this
         // gather's own awaiter (if `GatherSlot`, it owns an inc_ref on the
         // outer gather), or the cached result list once the gather has
-        // completed successfully. `Pending` and `Failed` carry no heap refs.
+        // completed successfully, or the cached failed exception identity.
         match &mut self.state {
             GatherState::Awaited(awaited) => {
                 if let Awaiter::GatherSlot { gather, .. } = &awaited.awaiter {
@@ -645,17 +643,19 @@ impl HeapItem for GatherFuture {
                 }
             }
             GatherState::Completed(Value::Ref(id)) => stack.push(*id),
-            GatherState::Pending | GatherState::Failed(_) | GatherState::Completed(_) => {}
+            GatherState::Failed(error) => error.py_dec_ref_ids(stack),
+            GatherState::Pending | GatherState::Completed(_) => {}
         }
     }
 }
 
 impl HeapItem for ExternalFuture {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        self.queue_dec_ref_ids(stack);
         // `Pending { awaiter: Some(Awaiter::GatherSlot { gather, .. }) }`
         // owns an inc_ref on `gather` — release it when this entry is
         // freed. `Awaiter::Task` and `None` own nothing. `Resolved` owns
-        // the cached value; `Failed` carries no heap refs. A pending sleep
+        // the cached value; `Failed` owns its exception identity. A pending sleep
         // result is owned until resolution takes it.
         if let Some(result) = &mut self.sleep_result {
             result.py_dec_ref_ids(stack);
@@ -667,8 +667,8 @@ impl HeapItem for ExternalFuture {
             } => stack.push(*gather),
             ExternalFutureState::Pending {
                 awaiter: None | Some(Awaiter::Task(_)),
-            }
-            | ExternalFutureState::Failed(_) => {}
+            } => {}
+            ExternalFutureState::Failed(error) => error.py_dec_ref_ids(stack),
         }
     }
 }
@@ -690,6 +690,7 @@ macro_rules! heap_read_output_py_trait_forward {
     };
     ($self:expr, |$value:ident| $body:expr, {$($custom:tt)*}) => {
         match $self {
+            Self::Generator($value) => $body,
             Self::Str($value) => $body,
             Self::Bytes($value) => $body,
             Self::List($value) => $body,
@@ -944,6 +945,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 match self {
                     Self::Module(m) => Ok(m.py_getattr(attr, vm)),
                     Self::Exception(e) => Ok(e.py_getattr(attr, vm)),
+                    Self::ExternalFuture(future) => Ok(vm.public_task_method(future.id(), attr)),
                     _ => Ok(None),
                 }
             }
@@ -968,6 +970,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::SetIterator(value) => value.py_iter(vm),
             Self::CallableIterator(value) => value.py_iter(vm),
             Self::Itertools(value) => value.py_iter(vm),
+            Self::Generator(value) => value.py_iter(vm),
             Self::DirScan(value) => value.py_iter(vm),
             Self::Csv(value) => value.py_iter(vm),
             Self::Tuple(value) => value.py_iter(vm),

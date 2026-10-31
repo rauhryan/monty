@@ -1,0 +1,23 @@
+[package]
+name = "coroutine-baseline"
+version = "0.0.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+monty = { path = "../../../crates/monty" }
+monty-types = { path = "../../../crates/monty-types" }
+serde_json = "1"
+
+[[bin]]
+name = "native1"
+path = "../../../tools/coroutines/native1/native.rs"
+
+[[bin]]
+name = "concurrent_io"
+path = "../../../tools/coroutines/concurrent_io/native.rs"
+
+[[bin]]
+name = "native_async"
+path = "../../../tools/coroutines/native_async/native.rs"

@@ -119,6 +119,7 @@ pub fn future_results_to_proto(results: Vec<(u32, ExtFunctionResult)>) -> pb::Re
         })
         .collect();
     pb::ResumeFutures {
+        native_cancel: None,
         results,
         values: Some(WireArena::new(values)),
     }

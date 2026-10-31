@@ -1,0 +1,13 @@
+{
+  "CONTRACT.md": "1c422e0e26ba1c50fb25fe5b9c80b9f971a7687b1467a23ce7cb4cf3f7b4f423",
+  "contract.json": "555776a88f116ed5a63d7c845cb6d46813f7c46ddcad77334261f3d034e825e4",
+  "reference-requirements.txt": "b11d6fcda3942acdcb29e30faa923275b61ede9438d5217da81434ec697dca2b",
+  "cases/coalesced-seam.py": "1e660e2bacee640fab535d28c80a0c705152f2f259de8499bf0aef07ef2429a1",
+  "cases/failure-drain.py": "57a343c29492adfd6f7a6737fdaaf76b58fd79eee50c9a928750d6f505d278c3",
+  "cases/failure.py": "fcf8c6c9568c618f9d219c28b7edb2a38a912061c89f5c4b77373abff6ea7f26",
+  "cases/host-cancel.py": "aa78dbc8c49d944e1e1e3f8779ce968a24e740f069687b19d22859b45df99f28",
+  "cases/level.py": "4f85e25e7805e011ddb6e92c0667c751235ec7c25a99472379e5524f99275b97",
+  "cases/nested.py": "fa557ae91944903005ef40388a04640c3d3686daf978c714a955481800ad1edc",
+  "cases/normal.py": "b42cd605b61c9dd60d4e9ebd5be04cd31b3a6c36d35f48f481e964085c62185c",
+  "cases/scope.py": "1be3d0b318006873b78f4a3ce93d71f3c880068757b14fb3c0cd2ec85353bc91"
+}

@@ -901,6 +901,12 @@ pub struct ResumeFutures {
     /// The arena every `return_value` indexes.
     #[prost(message, optional, tag = "2")]
     pub values: ::core::option::Option<Arena>,
+    /// Experimental opt-in single native task cancellation; absent preserves ordinary semantics.
+    /// Requires Configure.protocol_version >= 8 for catchable policy7 diagnostics; no downgrade.
+    /// Cancellation-capable parents must not downgrade to a worker serving only version 6 or below.
+    /// Presence matters: an empty string is a cancellation reason, not absence.
+    #[prost(string, optional, tag = "3")]
+    pub native_cancel: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// Requests an opaque serialized snapshot of the current session state
 /// (idle or suspended). The session stays usable afterwards. The byte payload

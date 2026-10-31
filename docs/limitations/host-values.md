@@ -42,8 +42,19 @@ Cyclic host inputs are rejected: Python raises [`MontyRuntimeError`][pydantic_mo
 wrapping `ValueError('Circular reference detected')`; JavaScript throws `TypeError`.
 
 Exporting sandbox values counts against `max_recursion_depth` (1000 by default, shared with the call stack).
-Values below the remaining depth become the string `<deeply nested>` (`Repr` nodes in Rust).
-The turn completes and the session remains usable; the wire format itself has no nesting limit.
+Exceeding the remaining depth fails export with `RecursionError`;
+no partial result or host call is published. The wire format itself has no nesting limit.
+
+Exceptions constructed with non-string arguments, `StopIteration(...)` constructors,
+and generator completion exceptions cannot cross as graph payloads, even inside a container.
+Export fails with `TypeError: cannot export exception with owned args to the host`.
+These export errors terminate the feed before a host call is published.
+Legacy message-only exceptions retain their existing representation. Guest snapshots
+preserve exception arguments, aliases and cycles.
+
+An uncaught runtime exception crosses as a diagnostic containing its type, available
+message metadata and traceback. Its guest identity and argument tuple do not cross;
+producing this diagnostic does not call guest `str` or `repr`.
 
 ## Host-function proxies
 

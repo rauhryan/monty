@@ -42,6 +42,15 @@ pub(crate) enum CallResult {
     /// A defined function became the VM's current frame.
     /// Propagate or require synchronous completion; dropping this result does not pop the frame.
     FramePushed,
+    /// Owned request handled by the outer VM loop, never evaluate_function.
+    ResumeGenerator {
+        generator: Value,
+        input: Value,
+        throwing: bool,
+        default: Option<Value>,
+    },
+    /// Experimental native entry: yields in this generator/delegates await futures.
+    NativeGenerator(Value),
     /// External function call requested - VM should pause and return to caller.
     /// The `EitherStr` is the name of the external function (interned or heap-owned).
     External(EitherStr, ArgValues),
@@ -161,13 +170,23 @@ impl CallResult {
 impl<C: ContainsHeap> DropWithContext<C> for CallResult {
     fn drop_with(self, heap: &mut C) {
         match self {
-            Self::Value(value) | Self::AwaitValue(value) => value.drop_with(heap),
+            Self::Value(value) | Self::AwaitValue(value) | Self::NativeGenerator(value) => value.drop_with(heap),
             Self::External(_, args) | Self::MethodCall { args, .. } => {
                 args.drop_with(heap);
             }
             Self::OsCall(call) => call.drop_with(heap),
             Self::AttrLookup { effect, .. } => effect.drop_with(heap),
             Self::FramePushed => {}
+            Self::ResumeGenerator {
+                generator,
+                input,
+                default,
+                ..
+            } => {
+                generator.drop_with(heap);
+                input.drop_with(heap);
+                default.drop_with(heap);
+            }
             Self::OsCallWithEffect { call, effect } => {
                 call.drop_with(heap);
                 // Discarded before it ever became a `FrameExit`.
@@ -477,6 +496,9 @@ impl<'h> VM<'h> {
                 };
                 result.drop_with(self);
                 return error;
+            }
+            CallResult::ResumeGenerator { .. } | CallResult::NativeGenerator(_) => {
+                ExcType::not_implemented("cannot resume generator in a synchronous Rust callback")
             }
             CallResult::AwaitValue(_) => ExcType::not_implemented("cannot await a value in this synchronous context"),
             CallResult::Value(_) | CallResult::FramePushed => unreachable!("completed calls are handled above"),
@@ -791,6 +813,7 @@ impl<'h> VM<'h> {
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
         let code = &func.code;
+        self.admit_native_code(code)?;
 
         let callable = self.stack.remove(callable_index);
         debug_assert_exact_callable(&callable, func_id);
@@ -825,6 +848,39 @@ impl<'h> VM<'h> {
         CallResult::Value(Value::Ref(coroutine_id))
     }
 
+    /// Build a snapshot-owned scheduler coroutine for a durable continuation.
+    /// Compilation is fallible; the argument remains guarded until publication.
+    pub(crate) fn host_continuation_coroutine(&mut self, continuation: Value) -> RunResult<Value> {
+        self.frozen_awaitable(FrozenFunction::HostContinuation, vec![continuation], false)
+    }
+
+    /// Frozen awaitables retain all arguments in the serialized heap.
+    pub(crate) fn frozen_awaitable(
+        &mut self,
+        function: FrozenFunction,
+        args: Vec<Value>,
+        generator: bool,
+    ) -> RunResult<Value> {
+        let mut guard = DropGuard::new(args, self);
+        let (_, vm) = guard.as_parts_mut();
+        let interns = vm.interns;
+        let id = if let Some(id) = interns.frozen_function(function) {
+            id
+        } else {
+            let (id, overlay) = function.compile(interns)?;
+            overlay.commit();
+            interns.set_frozen_function(function, id);
+            id
+        };
+        let (args, vm) = guard.into_parts();
+        let data = if generator {
+            HeapData::Generator(Box::new(super::Generator::new(id, args, None)))
+        } else {
+            HeapData::Coroutine(Coroutine::new(id, args, None))
+        };
+        Ok(Value::Ref(vm.heap.allocate(data)))
+    }
+
     /// Calls an internal function, compiling it on first use.
     /// Arguments transfer into ordinary frame locals; implementation frames do not charge recursion depth.
     pub(crate) fn call_frozen_exact<const N: usize>(
@@ -836,9 +892,11 @@ impl<'h> VM<'h> {
         let (_, vm) = args_guard.as_parts_mut();
         let interns = vm.interns;
         let (function_id, overlay) = if let Some(id) = interns.frozen_function(function) {
+            vm.admit_native_code(&interns.get_function(id).code)?;
             (id, None)
         } else {
             let (id, overlay) = function.compile(interns)?;
+            vm.admit_native_code(&overlay.get_function(id).code)?;
             (id, Some(overlay))
         };
         // No fallible operation or Python execution may intervene between publication and frame installation.
@@ -888,7 +946,7 @@ impl<'h> VM<'h> {
     ) -> Result<CallResult, RunError> {
         let func = self.interns.get_function(func_id);
 
-        if func.is_async {
+        if func.is_async || func.is_generator {
             self.create_coroutine(func_id, func, cells, defaults, globals, args)
         } else {
             self.call_sync_function(func_id, func, cells, defaults, globals, args)
@@ -922,6 +980,11 @@ impl<'h> VM<'h> {
         let (namespace, this) = namespace_guard.into_parts();
         if let Some(globals) = globals {
             this.heap.inc_ref(globals);
+        }
+        if func.is_generator {
+            let generator = super::Generator::new(func_id, namespace, globals);
+            let id = this.heap.allocate(HeapData::Generator(Box::new(generator)));
+            return Ok(CallResult::Value(Value::Ref(id)));
         }
         let coroutine = Coroutine::new(func_id, namespace, globals);
         let coroutine_id = this.heap.allocate(HeapData::Coroutine(coroutine));
@@ -1002,6 +1065,8 @@ impl<'h> VM<'h> {
 
             bind_result?;
         }
+
+        this.admit_native_code(&func.code)?;
 
         // 3. Install owned cells and captured free-var cells at their slots.
         this.install_closure_cells(func, cells, namespace);
@@ -1162,10 +1227,19 @@ impl<'h> VM<'h> {
     /// to decide whether `__init__` can run as a suspendable initializer frame.
     fn is_plain_sync_function(&self, value: &Value) -> bool {
         match value {
-            Value::DefFunction(func_id) => !self.interns.get_function(*func_id).is_async,
+            Value::DefFunction(func_id) => {
+                let f = self.interns.get_function(*func_id);
+                !f.is_async && !f.is_generator
+            }
             Value::Ref(id) => match self.heap.get(*id) {
-                HeapData::Closure(closure) => !self.interns.get_function(closure.func_id).is_async,
-                HeapData::FunctionDefaults(fd) => !self.interns.get_function(fd.func_id).is_async,
+                HeapData::Closure(closure) => {
+                    let f = self.interns.get_function(closure.func_id);
+                    !f.is_async && !f.is_generator
+                }
+                HeapData::FunctionDefaults(fd) => {
+                    let f = self.interns.get_function(fd.func_id);
+                    !f.is_async && !f.is_generator
+                }
                 // Bound methods never wrap another bound method, so this
                 // recursion is at most one level deep.
                 HeapData::BoundMethod(bm) => self.is_plain_sync_function(&bm.func),
@@ -1232,7 +1306,7 @@ fn dispatch_dunder(
     // is lossy). The `with` statement still uses the trait hooks via the
     // `BeforeWith`/`WithExit`/`WithExceptStart` opcodes, which perform the
     // CPython type-level (class-only) lookup.
-    if matches!(vm.heap.get(heap_id), HeapData::Instance(_)) {
+    if matches!(vm.heap.get(heap_id), HeapData::Instance(_)) || vm.is_anyio_scope(heap_id) {
         return None;
     }
     Some(match static_str {

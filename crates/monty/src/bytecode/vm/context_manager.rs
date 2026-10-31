@@ -11,11 +11,38 @@ use super::{CallResult, VM};
 use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    heap::{HeapData, HeapReadOutput},
     types::PyTrait,
     value::Value,
 };
 
 impl VM<'_> {
+    /// Class-only async protocol calls shared by native and generator continuations.
+    pub(super) fn exec_host_context(&mut self, mode: u8) -> RunResult<CallResult> {
+        let this = self;
+        let index = this.stack.len() - if mode == 2 { 2 } else { 1 };
+        let Value::Ref(ctx_id) = this.stack[index] else {
+            return Err(ExcType::type_error("async context requires a user instance"));
+        };
+        let exc = if mode == 2 {
+            let Value::Ref(id) = this.stack[index + 1] else {
+                unreachable!("exception")
+            };
+            Some(id)
+        } else {
+            None
+        };
+        let owned = if mode == 1 { Some(this.pop()) } else { None };
+        defer_drop!(owned, this);
+        if matches!(this.heap.get(ctx_id), HeapData::ExternalFuture(f) if f.task_group.is_some()) {
+            return this.task_group_context(ctx_id, mode, exc);
+        }
+        let HeapReadOutput::Instance(ctx) = this.heap.read(ctx_id) else {
+            return Err(ExcType::type_error("async context requires a user instance"));
+        };
+        ctx.call_host_context(this, mode == 0, exc)
+    }
+
     /// `BeforeWith`: peek the context manager at TOS, call `__enter__`, and push
     /// the result. The context manager stays on the stack across the body so the
     /// matching `WithExit` / `WithExceptStart` can find it.
@@ -31,6 +58,9 @@ impl VM<'_> {
         let Value::Ref(ctx_id) = *self.peek() else {
             return Err(not_a_context_manager(self));
         };
+        if self.is_anyio_scope(ctx_id) {
+            return self.anyio_scope_context(ctx_id, None, true);
+        }
         let mut ctx = self.heap.read(ctx_id);
         if ctx.py_is_context_manager(self) {
             ctx.py_enter(self)
@@ -53,6 +83,9 @@ impl VM<'_> {
         // py_exit returns a value, yields, or errors. This matches the ref-count
         // balance from BeforeWith's push.
         defer_drop!(ctx, this);
+        if this.is_anyio_scope(ctx_id) {
+            return this.anyio_scope_context(ctx_id, None, false);
+        }
         this.heap.read(ctx_id).py_exit(this, None)
     }
 
@@ -70,6 +103,9 @@ impl VM<'_> {
         let Value::Ref(ctx_id) = self.stack[len - 2] else {
             unreachable!("WithExceptStart: expected context-manager ref on stack");
         };
+        if self.is_anyio_scope(ctx_id) {
+            return self.anyio_scope_context(ctx_id, Some(exc_id), false);
+        }
         self.heap.read(ctx_id).py_exit(self, Some(exc_id))
     }
 }

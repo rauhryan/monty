@@ -33,7 +33,11 @@ pub mod worker;
 /// serving relay and its client act on them, children ignore them, and a
 /// child that drops them loses nothing. Version 6 added the `import` and
 /// `import_stubs` OS calls, which version 5 parents cannot answer.
-pub const PROTOCOL_VERSION: u32 = 6;
+/// Version 7 adds `ResumeFutures.native_cancel`, which older workers silently
+/// ignore. Version 8 requires policy7 catchable delivery and bounded interrupted
+/// diagnostics. Cancellation-aware parents declare version 8 without downgrade.
+// Version 9 requires the dedicated asyncio.CancelledError wire type.
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
 ///
@@ -49,7 +53,8 @@ pub const PROTOCOL_VERSION: u32 = 6;
 /// send a budget nothing enforces, and a version 4 child would accept the new
 /// budgets and ignore them. Neither side can be told apart from a working one,
 /// so both are refused.
-pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 5;
+// Older peers cannot represent the new cancellation exception contract.
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 9;
 
 /// How long the child holds buffered `print()` output before emitting it as a
 /// `Print` event, when [`pb::Configure::print_flush_interval_ms`] says nothing.

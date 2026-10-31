@@ -853,6 +853,9 @@ impl Child {
         let SessionState::Suspended(progress) = &self.state else {
             return protocol_violation("ResumeFutures without suspended futures");
         };
+        if resume.native_cancel.is_some() && !matches!(progress.as_ref(), ReplProgress::ResolveFutures(_)) {
+            return protocol_violation("native cancellation requires suspended futures");
+        }
         let reply = match progress.as_ref() {
             ReplProgress::FunctionCall(call) if call.allow_eager_await => match eager_result(results, call.call_id) {
                 Ok(result) => FuturesReply::Eager(result),
@@ -862,7 +865,12 @@ impl Child {
                 Ok(result) => FuturesReply::Eager(result),
                 Err(message) => return protocol_violation(message),
             },
-            ReplProgress::ResolveFutures(_) => FuturesReply::Batch(results),
+            ReplProgress::ResolveFutures(state) => {
+                if let Err(error) = state.validate_results(&results) {
+                    return protocol_violation(&error.to_string());
+                }
+                FuturesReply::Batch(results)
+            }
             _ => return protocol_violation("ResumeFutures without suspended futures"),
         };
         let SessionState::Suspended(progress) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
@@ -877,7 +885,7 @@ impl Child {
                 call.resume_eager(result, PrintWriter::Callback(&mut print))
             }
             (ReplProgress::ResolveFutures(state), FuturesReply::Batch(results)) => {
-                state.resume(results, PrintWriter::Callback(&mut print))
+                state.resume_native(results, resume.native_cancel, PrintWriter::Callback(&mut print))
             }
             _ => unreachable!("reply shaped by the suspension above"),
         };

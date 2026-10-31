@@ -1,0 +1,708 @@
+{
+  "reference": {
+    "python": "3.14.5",
+    "anyio": "4.11.0",
+    "backend": "asyncio"
+  },
+  "scope_targets": {
+    "scope": {
+      "steps": [
+        [
+          [
+            "cleanup"
+          ],
+          [
+            "cleanup"
+          ]
+        ],
+        [
+          [
+            "after"
+          ],
+          [
+            "after"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "cleanup": "released"
+        },
+        {
+          "after": "ok"
+        }
+      ],
+      "result": "ok"
+    },
+    "nested": {
+      "steps": [
+        [
+          [
+            "shielded"
+          ],
+          [
+            "shielded"
+          ]
+        ],
+        [
+          [
+            "after"
+          ],
+          [
+            "after"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "shielded": "protected"
+        },
+        {
+          "after": "ok"
+        }
+      ],
+      "result": "ok"
+    },
+    "level": {
+      "steps": [
+        [
+          [
+            "shielded"
+          ],
+          [
+            "shielded"
+          ]
+        ],
+        [
+          [
+            "after"
+          ],
+          [
+            "after"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "shielded": "protected"
+        },
+        {
+          "after": "ok"
+        }
+      ],
+      "result": "ok"
+    }
+  },
+  "additional": {
+    "identity": {
+      "steps": [
+        [
+          [
+            "after"
+          ],
+          [
+            "after"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "after": "ok"
+        }
+      ],
+      "result": "ok",
+      "platform": true
+    },
+    "before-after": {
+      "steps": [
+        [
+          [
+            "after"
+          ],
+          [
+            "after"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "after": "ok"
+        }
+      ],
+      "result": "ok",
+      "platform": true,
+      "reference_divergence": "Pinned AnyIO 4.11 permits re-entry after exit; this subset intentionally rejects all reuse."
+    },
+    "ancestor-self": {
+      "steps": [
+        [
+          [
+            "protected"
+          ],
+          [
+            "protected"
+          ]
+        ],
+        [
+          [
+            "after"
+          ],
+          [
+            "after"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "protected": "ok"
+        },
+        {
+          "after": "ok"
+        }
+      ],
+      "result": "ok"
+    },
+    "group-cancel": {
+      "steps": [
+        [
+          [
+            "control",
+            "child"
+          ],
+          [
+            "child",
+            "control"
+          ]
+        ],
+        [
+          [
+            "child-release"
+          ],
+          [
+            "child-release"
+          ]
+        ],
+        [
+          [
+            "after"
+          ],
+          [
+            "after"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "ok"
+        },
+        {
+          "child-release": "ok"
+        },
+        {
+          "after": "ok"
+        }
+      ],
+      "result": "ok",
+      "platform": true
+    },
+    "queue-cancel": {
+      "steps": [
+        [
+          [
+            "control"
+          ],
+          [
+            "control"
+          ]
+        ],
+        [
+          [
+            "release"
+          ],
+          [
+            "release"
+          ]
+        ],
+        [
+          [
+            "after"
+          ],
+          [
+            "after"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "ok"
+        },
+        {
+          "release": "ok"
+        },
+        {
+          "after": "ok"
+        }
+      ],
+      "result": "ok",
+      "platform": true
+    },
+    "host-shield": {
+      "steps": [
+        [
+          [
+            "body"
+          ],
+          [
+            "body"
+          ]
+        ],
+        [
+          [
+            "release"
+          ],
+          [
+            "release"
+          ]
+        ],
+        [
+          [],
+          [
+            "release"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "$cancel": "FIRST"
+        },
+        {
+          "$cancel": "SECOND"
+        },
+        {
+          "release": "ok"
+        }
+      ],
+      "platform": true,
+      "cancelled": "FIRST"
+    },
+    "misuse": {
+      "steps": [
+        [
+          [
+            "after"
+          ],
+          [
+            "after"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "after": "ok"
+        }
+      ],
+      "result": "ok",
+      "platform": true
+    },
+    "nested-group": {
+      "steps": [
+        [
+          [
+            "control",
+            "leaf"
+          ],
+          [
+            "control",
+            "leaf"
+          ]
+        ],
+        [
+          [
+            "leaf-release"
+          ],
+          [
+            "leaf-release"
+          ]
+        ],
+        [
+          [
+            "parent-release"
+          ],
+          [
+            "parent-release"
+          ]
+        ],
+        [
+          [
+            "after"
+          ],
+          [
+            "after"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "ok"
+        },
+        {
+          "leaf-release": "ok"
+        },
+        {
+          "parent-release": "ok"
+        },
+        {
+          "after": "ok"
+        }
+      ],
+      "result": "ok",
+      "platform": true
+    },
+    "cleanup-error": {
+      "steps": [
+        [
+          [
+            "control",
+            "child"
+          ],
+          [
+            "child",
+            "control"
+          ]
+        ],
+        [
+          [
+            "release"
+          ],
+          [
+            "release"
+          ]
+        ],
+        [
+          [
+            "after"
+          ],
+          [
+            "after"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "ok"
+        },
+        {
+          "release": "ok"
+        },
+        {
+          "after": "ok"
+        }
+      ],
+      "result": "ok",
+      "platform": true
+    },
+    "cancelled-entry": {
+      "steps": [
+        [
+          [
+            "after"
+          ],
+          [
+            "after"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "after": "ok"
+        }
+      ],
+      "result": "ok",
+      "platform": true
+    },
+    "ordinary-message": {
+      "steps": [
+        [
+          [
+            "after"
+          ],
+          [
+            "after"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "after": "ok"
+        }
+      ],
+      "result": "ok",
+      "platform": true
+    },
+    "gather-late": {
+      "steps": [
+        [
+          [
+            "A",
+            "B",
+            "control"
+          ],
+          [
+            "A",
+            "B",
+            "control"
+          ]
+        ],
+        [
+          [
+            "after"
+          ],
+          [
+            "after"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "ok"
+        },
+        {
+          "A": "late",
+          "B": "late",
+          "after": "ok"
+        }
+      ],
+      "result": "ok",
+      "platform": true
+    },
+    "run-isolation": {
+      "steps": [
+        [
+          [
+            "after"
+          ],
+          [
+            "after"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "after": "ok"
+        }
+      ],
+      "result": "ok",
+      "platform": true
+    },
+    "group-misuse": {
+      "steps": [
+        [
+          [
+            "after"
+          ],
+          [
+            "after"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "after": "ok"
+        }
+      ],
+      "result": "ok",
+      "platform": true
+    },
+    "group-owner-isolation": {
+      "steps": [
+        [
+          [
+            "control",
+            "child"
+          ],
+          [
+            "child",
+            "control"
+          ]
+        ],
+        [
+          [
+            "owner-after"
+          ],
+          [
+            "child",
+            "owner-after"
+          ]
+        ],
+        [
+          [],
+          [
+            "owner-after"
+          ]
+        ],
+        [
+          [
+            "after"
+          ],
+          [
+            "after"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "ok"
+        },
+        {
+          "child": "ok"
+        },
+        {
+          "owner-after": "ok"
+        },
+        {
+          "after": "ok"
+        }
+      ],
+      "result": "ok",
+      "platform": true
+    },
+    "group-ancestor-shield": {
+      "steps": [
+        [
+          [
+            "control",
+            "child"
+          ],
+          [
+            "child",
+            "control"
+          ]
+        ],
+        [
+          [
+            "owner-protected",
+            "child-release"
+          ],
+          [
+            "child-release",
+            "owner-protected"
+          ]
+        ],
+        [
+          [],
+          [
+            "owner-protected"
+          ]
+        ],
+        [
+          [
+            "after"
+          ],
+          [
+            "after"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "ok"
+        },
+        {
+          "child-release": "ok"
+        },
+        {
+          "owner-protected": "ok"
+        },
+        {
+          "after": "ok"
+        }
+      ],
+      "result": "ok",
+      "platform": true
+    },
+    "inherited-shield-exit": {
+      "steps": [
+        [
+          [
+            "control",
+            "child"
+          ],
+          [
+            "child",
+            "control"
+          ]
+        ],
+        [
+          [
+            "release"
+          ],
+          [
+            "release"
+          ]
+        ],
+        [
+          [
+            "after"
+          ],
+          [
+            "after"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "control": "ok"
+        },
+        {
+          "release": "ok"
+        },
+        {
+          "child": "late",
+          "after": "ok"
+        }
+      ],
+      "result": "ok",
+      "platform": true
+    },
+    "host-then-guest": {
+      "steps": [
+        [
+          [
+            "body"
+          ],
+          [
+            "body"
+          ]
+        ],
+        [
+          [
+            "cleanup"
+          ],
+          [
+            "cleanup"
+          ]
+        ],
+        [
+          [],
+          [
+            "cleanup"
+          ]
+        ]
+      ],
+      "batches": [
+        {
+          "$cancel": "FIRST"
+        },
+        {
+          "$cancel": "SECOND"
+        },
+        {
+          "cleanup": "ok"
+        }
+      ],
+      "cancelled": "FIRST",
+      "platform": true
+    }
+  },
+  "supersedes": "anyio_feasibility scope_capability_result refusal only"
+}
