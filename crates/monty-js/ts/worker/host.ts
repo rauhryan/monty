@@ -70,7 +70,7 @@ export function admitCancellationContract(worker: { cancellationContract?: unkno
   try {
     if (typeof worker.cancellationContract !== 'function') throw new Error('missing capability export')
     const revision: unknown = worker.cancellationContract()
-    if (typeof revision !== 'number' || !Number.isInteger(revision) || revision !== 7) {
+    if (typeof revision !== 'number' || !Number.isInteger(revision) || revision !== 8) {
       throw new Error('unsupported capability revision')
     }
   } catch (cause) {

@@ -2626,6 +2626,9 @@ pub enum StaticStrings {
     Zfill,
     /// `itertools.zip_longest()` function.
     ZipLongest,
+    /// Public cancellation exception.
+    #[strum(serialize = "CancelledError")]
+    CancelledError,
 }
 
 /// One immutable interned string with directly accessible dispatch metadata.

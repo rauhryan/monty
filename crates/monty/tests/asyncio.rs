@@ -2115,14 +2115,14 @@ async def main():
     try:
         await task
         assert False
-    except ValueError:
+    except asyncio.CancelledError:
         pass
     assert task.done() and task.cancelled() and not task.cancel()
     for method in [task.result, task.exception]:
         try:
             method()
             assert False
-        except ValueError:
+        except asyncio.CancelledError:
             pass
     global target
     target = asyncio.create_task(self_join())

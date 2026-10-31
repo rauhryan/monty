@@ -237,7 +237,7 @@ impl VM<'_> {
         if self.scope(id).cancel_called {
             return Ok(());
         }
-        let mut signal = ExcType::value_error("cancelled by AnyIO CancelScope");
+        let mut signal = ExcType::cancelled_error("cancelled by AnyIO CancelScope");
         signal.materialize_object(self.heap);
         let RunError::Exc(mut signal) = signal else {
             unreachable!()

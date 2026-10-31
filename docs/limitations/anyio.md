@@ -42,8 +42,8 @@ Native automatic finally protection does not mask guest level cancellation; yiel
 explicitly enter a shield. Group exits still drain admitted children before releasing their owner.
 Host function calls are checkpoints even when called synchronously; arbitrary synchronous code is not preempted.
 
-`get_cancelled_exc_class()` explicitly returns `ValueError`, not `asyncio.CancelledError`.
-This broad class mapping does not make ordinary ValueErrors into scope cancellation signals.
+`get_cancelled_exc_class()` returns `asyncio.CancelledError`.
+Scopes suppress only their own cancellation signal identity, not arbitrary user-raised instances of that class.
 Shields do not mask the initial native host cancellation delivery, clear host cancellation, reopen host-cancelled
 admission, or advance execution without host input. Native automatic cleanup protection still applies to host cancellation.
 Physical disposal abandons execution without running authored cleanup.

@@ -1065,6 +1065,11 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// Creates a cancellation signal distinct from ordinary validation failures.
+    fn cancelled_error(msg: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(ExcType::CancelledError, msg).into()
+    }
+
     /// Creates a generic `ValueError` with a custom message.
     fn value_error(msg: impl fmt::Display) -> RunError {
         SimpleException::new_msg(ExcType::ValueError, msg).into()

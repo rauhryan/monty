@@ -318,20 +318,13 @@ g = leaf(token)
     }
 }
 
-/// Version 14 omitted generator fields; resume the real old host-cut fixture.
+/// The cancellation-type migration rejects the genuine v14 fixture.
 #[test]
-fn previous_snapshot_resumes() {
-    let Session::Suspended(progress) = Dump::load(include_bytes!("fixtures/dump_v14.bin")).unwrap().state else {
-        panic!("legacy cut")
-    };
-    let (_, value) = progress
-        .into_function_call()
-        .unwrap()
-        .resume(MontyObject::int(41), PrintWriter::Stdout)
-        .unwrap()
-        .into_complete()
-        .unwrap();
-    assert_eq!(value, MontyObject::int(42));
+fn previous_snapshot_requires_old_runtime() {
+    assert!(matches!(
+        Dump::load(include_bytes!("fixtures/dump_v14.bin")),
+        Err(monty::DumpError::VersionTooOld { .. })
+    ));
 }
 
 /// Host errors unwind into yielding finally and remain pending across a dump.
@@ -2297,7 +2290,7 @@ fn native1_composes_with_existing_gather_tasks() {
 fn native2_cancelled_cleanup_live_ownership() {
     let mut repl = new_repl();
     repl.feed_run(
-        include_str!("../../../tools/coroutines/native1/cancellation_ownership.py"),
+        include_str!("../../../tools/coroutines/cancelled_error/migrated/native1/cancellation_ownership.py"),
         vec![("exchange".into(), MontyObject::function("exchange", None))],
         PrintWriter::Stdout,
     )
@@ -2423,7 +2416,7 @@ fn native4_cleanup_exit_pending_owner_census() {
     for mode in ["return", "error", "cleanup_error"] {
         let mut repl = new_repl();
         repl.feed_run(
-            include_str!("../../../tools/coroutines/native1/cleanup_exit_ownership.py"),
+            include_str!("../../../tools/coroutines/cancelled_error/migrated/native1/cleanup_exit_ownership.py"),
             vec![("exchange".into(), MontyObject::function("exchange", None))],
             PrintWriter::Stdout,
         )
@@ -2757,6 +2750,7 @@ fn native7_catchable_diagnostic_live_census() {
             let mut repl = new_repl();
             repl.feed_run(
                 r"from __monty_host__ import host_coroutines
+import asyncio
 TRACE = []
 def operation(name):
     return (yield exchange(name))
@@ -2772,7 +2766,7 @@ async def policy7(mode):
             assert original is alias
             await operation('cleanup')
             assert original is alias
-    except ValueError as signal:
+    except asyncio.CancelledError as signal:
         assert str(signal) == ''
         await operation('recovery')
         if mode == 'unsupported':
@@ -2852,112 +2846,13 @@ async def policy7(mode):
     }
 }
 
-/// Genuine old code is ordinary-loadable; activation, not object creation, is refused while pending.
+/// Genuine old code must remain on its original cancellation-contract runtime.
 #[test]
 fn native7_genuine_legacy_activation_and_delivered_recovery() {
-    for expression in [
-        "make_adder(1)",
-        "add5(1)",
-        "next(new_generator)",
-        "dormant_generator.send(cycle)",
-        "delegated_generator.send(cycle)",
-        "mixed_generator.send(cycle)",
-    ] {
-        for delivered in [false, true] {
-            let Session::Suspended(old) = Dump::load(include_bytes!("fixtures/dump_v22.bin")).unwrap().state else {
-                panic!("historical suspension");
-            };
-            let mut repl = old.into_repl();
-            repl.feed_run(
-                r"from __monty_host__ import host_coroutines
-MARKERS = []
-def operation(name):
-    return (yield exchange(name))
-def mixed():
-    yield from generator(cycle)
-mixed_generator = mixed()
-assert next(mixed_generator) is cycle
-",
-                vec![("exchange".into(), MontyObject::function("exchange", None))],
-                PrintWriter::Stdout,
-            )
-            .unwrap();
-            let body = if delivered {
-                format!(
-                    "async def current():\n    try:\n        await operation('body')\n    except ValueError:\n        await operation('recovery')\n        {expression}\n        MARKERS.append('ran')\n    return 'ok'\ncurrent()._native1()"
-                )
-            } else {
-                format!(
-                    "async def current():\n    try:\n        pass\n    finally:\n        await operation('cleanup')\n        {expression}\n        MARKERS.append('ran')\n    return 'ok'\ncurrent()._native1()"
-                )
-            };
-            let body = format!("from __monty_host__ import host_coroutines\n{body}");
-            let progress = repl
-                .feed_start(&body, vec![], PrintWriter::Stdout)
-                .unwrap()
-                .into_function_call()
-                .unwrap()
-                .resume_pending(PrintWriter::Stdout)
-                .unwrap();
-            let bytes = dump("mixed-policy.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
-            drop(progress.into_repl());
-            let Session::Suspended(progress) = Dump::load(&bytes).unwrap().state else {
-                panic!("current suspension");
-            };
-            let pending = progress.into_resolve_futures().unwrap();
-            let id = pending.pending_call_ids()[0];
-            let result = pending.resume_native(
-                vec![(id, ExtFunctionResult::Return(MontyObject::none()))],
-                Some("FIRST".into()),
-                PrintWriter::Stdout,
-            );
-            if delivered {
-                let pending = result
-                    .unwrap()
-                    .into_function_call()
-                    .unwrap()
-                    .resume_pending(PrintWriter::Stdout)
-                    .unwrap()
-                    .into_resolve_futures()
-                    .unwrap();
-                let id = pending.pending_call_ids()[0];
-                let complete = pending
-                    .resume_native(
-                        vec![(id, ExtFunctionResult::Return(MontyObject::none()))],
-                        Some("REPEAT".into()),
-                        PrintWriter::Stdout,
-                    )
-                    .unwrap();
-                let (mut repl, outcome) = complete.into_complete().unwrap();
-                assert!(
-                    outcome
-                        .as_ref()
-                        .pairs()
-                        .unwrap()
-                        .iter()
-                        .any(|(k, v)| k.as_str() == Some("status") && v.as_str() == Some("cancelled"))
-                );
-                repl.feed_run("assert MARKERS == ['ran']", vec![], PrintWriter::Stdout)
-                    .unwrap();
-            } else {
-                let mut failure = result.unwrap_err();
-                assert_eq!(failure.error.exc_type(), ExcType::RuntimeError);
-                assert_eq!(
-                    failure.error.message(),
-                    Some("native cancellation requires catchable cancellation policy 7")
-                );
-                // Refusal precedes every old frame/state move: the same operation remains usable ordinarily.
-                failure
-                    .repl
-                    .feed_run(
-                        &format!("assert MARKERS == []\n{expression}\nNone"),
-                        vec![],
-                        PrintWriter::Stdout,
-                    )
-                    .unwrap();
-            }
-        }
-    }
+    assert!(matches!(
+        Dump::load(include_bytes!("fixtures/dump_v22.bin")),
+        Err(monty::DumpError::VersionTooOld { .. })
+    ));
 }
 
 /// Separately authored policy7 counterpart; historical assertions above stay frozen.
@@ -2965,7 +2860,7 @@ assert next(mixed_generator) is cycle
 fn native7_policy2_owner_census() {
     let mut repl = new_repl();
     repl.feed_run(
-        include_str!("../../../tools/coroutines/native1/cancellation_ownership.py"),
+        include_str!("../../../tools/coroutines/cancelled_error/migrated/native1/cancellation_ownership.py"),
         vec![("exchange".into(), MontyObject::function("exchange", None))],
         PrintWriter::Stdout,
     )
@@ -3050,7 +2945,7 @@ fn native7_policy4_owner_census() {
     for mode in ["return", "error", "cleanup_error"] {
         let mut repl = new_repl();
         repl.feed_run(
-            include_str!("../../../tools/coroutines/native1/cleanup_exit_ownership.py"),
+            include_str!("../../../tools/coroutines/cancelled_error/migrated/native1/cleanup_exit_ownership.py"),
             vec![("exchange".into(), MontyObject::function("exchange", None))],
             PrintWriter::Stdout,
         )
@@ -3265,6 +3160,7 @@ fn native7_policy6_owner_census() {
         repl.feed_run(
             r"from __monty_host__ import host_coroutines
 import json
+import asyncio
 TRACE = []
 def operation(name):
     return json.loads((yield exchange(json.dumps({'phase': name}))))
@@ -3291,7 +3187,7 @@ async def cleanup_exit_entry(mode):
     finally:
         try:
             raise
-        except ValueError as active:
+        except asyncio.CancelledError as active:
             assert str(active) == ''
         assert aliases[0] is token and aliases[1] is token
         assert aliases[2] is failure and aliases[3] is failure
@@ -3401,7 +3297,7 @@ fn repair10_census(mode: &str) {
     for restoring in [false, true] {
         let mut repl = new_repl();
         repl.feed_run(
-            include_str!("../../../tools/coroutines/catchable_cancellation10/ownership.py"),
+            include_str!("../../../tools/coroutines/cancelled_error/migrated/catchable_cancellation10/ownership.py"),
             vec![("exchange".into(), MontyObject::function("exchange", None))],
             PrintWriter::Stdout,
         )
@@ -3477,7 +3373,7 @@ fn repair10_census(mode: &str) {
                 "REPAIR10_EXPORT_TERMINAL"
             };
             assert!(message.contains(marker), "{message}");
-            assert!(!message.contains("ValueError: FIRST"));
+            assert!(!message.contains("asyncio.CancelledError: FIRST"));
             failure.repl
         } else {
             assert!(
@@ -3501,7 +3397,7 @@ fn repair10_census(mode: &str) {
                 assert_eq!(
                     field("error").as_str().unwrap().lines().last(),
                     Some(if mode == "uncaught" {
-                        "ValueError: FIRST"
+                        "asyncio.CancelledError: FIRST"
                     } else {
                         "TypeError: LATER"
                     })
@@ -3540,134 +3436,10 @@ fn repair10_census(mode: &str) {
 /// Rebuilt genuine Dump17 frozen cache and coroutine/generator code, never patched metadata.
 #[test]
 fn native7_compatibility11_historical_activation() {
-    let source = include_str!("../../../tools/coroutines/catchable_cancellation11/activation.py");
-    for route in ["frozen", "new", "dormant", "mixed"] {
-        for mode in ["ordinary", "pending", "delivered"] {
-            for restored in [false, true] {
-                let Session::Idle(mut repl) = Dump::load(include_bytes!("fixtures/compatibility11_frozen_v17.bin"))
-                    .unwrap()
-                    .state
-                else {
-                    panic!("historical idle fixture");
-                };
-                repl.feed_run(
-                    source,
-                    vec![("exchange".into(), MontyObject::function("exchange", None))],
-                    PrintWriter::Stdout,
-                )
-                .unwrap();
-                let baseline = repl.heap_entry_count();
-                let progress = repl
-                    .feed_start(
-                        &format!("from __monty_host__ import host_coroutines\ncurrent('{mode}', '{route}')._native1()"),
-                        vec![],
-                        PrintWriter::Stdout,
-                    )
-                    .unwrap()
-                    .into_function_call()
-                    .unwrap()
-                    .resume_pending(PrintWriter::Stdout)
-                    .unwrap();
-                let progress = if restored {
-                    let bytes = dump("compatibility11.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
-                    drop(progress.into_repl());
-                    let Session::Suspended(progress) = Dump::load(&bytes).unwrap().state else {
-                        panic!("suspended")
-                    };
-                    *progress
-                } else {
-                    progress
-                };
-                let pending = progress.into_resolve_futures().unwrap();
-                let id = pending.pending_call_ids()[0];
-                let result = pending.resume_native(
-                    vec![(id, ExtFunctionResult::Return(MontyObject::none()))],
-                    (mode != "ordinary").then(|| "FIRST".into()),
-                    PrintWriter::Stdout,
-                );
-                if mode == "pending" {
-                    let mut failure = result.unwrap_err();
-                    assert_eq!(failure.error.exc_type(), ExcType::RuntimeError);
-                    assert_eq!(
-                        failure.error.message(),
-                        Some("native cancellation requires catchable cancellation policy 7")
-                    );
-                    assert_eq!(
-                        failure.repl.heap_entry_count(),
-                        baseline,
-                        "refusal must retire transient owners before teardown"
-                    );
-                    failure
-                        .repl
-                        .feed_run("assert MARKERS == []", vec![], PrintWriter::Stdout)
-                        .unwrap();
-                    // Reuse the SAME objects after refusal. In particular a refused
-                    // new/saved delegate must not become Running/Exhausted or advance.
-                    let check = match route {
-                        "frozen" => {
-                            "assert functools.reduce(fold, [TOKEN, TOKEN]) is TOKEN\nassert MARKERS == ['fold']"
-                        }
-                        "coroutine" => {
-                            "from __monty_host__ import host_coroutines\nassert legacy_coroutine(TOKEN)._native1() == 'legacy-ok'\nassert MARKERS == ['legacy-coroutine']"
-                        }
-                        "new" => "assert next(legacy_new) is TOKEN\nassert MARKERS == ['legacy-generator']",
-                        "dormant" => "assert legacy_dormant.send(TOKEN) is TOKEN\nassert MARKERS == ['legacy-resumed']",
-                        "mixed" => "assert mixed_generator.send(TOKEN) is TOKEN\nassert MARKERS == ['legacy-resumed']",
-                        _ => unreachable!(),
-                    };
-                    failure.repl.feed_run(check, vec![], PrintWriter::Stdout).unwrap();
-                } else {
-                    let mut progress = result.unwrap();
-                    if mode == "delivered" {
-                        let pending = progress
-                            .into_function_call()
-                            .unwrap()
-                            .resume_pending(PrintWriter::Stdout)
-                            .unwrap()
-                            .into_resolve_futures()
-                            .unwrap();
-                        let id = pending.pending_call_ids()[0];
-                        progress = pending
-                            .resume_native(
-                                vec![(id, ExtFunctionResult::Return(MontyObject::none()))],
-                                Some("REPEAT".into()),
-                                PrintWriter::Stdout,
-                            )
-                            .unwrap();
-                    }
-                    let (mut repl, value) = progress.into_complete().unwrap();
-                    if mode == "ordinary" {
-                        assert_eq!(value.as_ref().as_str(), Some("ok"));
-                    } else {
-                        let pairs = value.as_ref().pairs().unwrap();
-                        assert!(
-                            pairs
-                                .iter()
-                                .any(|(k, v)| k.as_str() == Some("reason") && v.as_str() == Some("FIRST"))
-                        );
-                        assert!(
-                            pairs
-                                .iter()
-                                .any(|(k, v)| k.as_str() == Some("status") && v.as_str() == Some("cancelled"))
-                        );
-                    }
-                    let marker = match route {
-                        "frozen" => "fold",
-                        "coroutine" => "legacy-coroutine",
-                        "new" => "legacy-generator",
-                        _ => "legacy-resumed",
-                    };
-                    repl.feed_run(
-                        &format!("assert MARKERS == ['{marker}', 'ran']"),
-                        vec![],
-                        PrintWriter::Stdout,
-                    )
-                    .unwrap();
-                }
-                eprintln!("compatibility11/{route}/{mode}/restored={restored}: passed");
-            }
-        }
-    }
+    assert!(matches!(
+        Dump::load(include_bytes!("fixtures/compatibility11_frozen_v17.bin")),
+        Err(monty::DumpError::VersionTooOld { .. })
+    ));
 }
 
 /// The concurrent-I/O slice uses one host-mode parent and two Rust-owned child
@@ -3763,12 +3535,12 @@ fn concurrent_io_live_ownership() {
 #[test]
 fn concurrent_io_child_scope_ownership() {
     for fixture in [
-        include_str!("../../../tools/coroutines/concurrent_io/children_drain.py"),
+        include_str!("../../../tools/coroutines/cancelled_error/migrated/concurrent_io/children_drain.py"),
         include_str!("../../../tools/coroutines/concurrent_io/children_errors.py"),
-        include_str!("../../../tools/coroutines/concurrent_io/children_cancel.py"),
-        include_str!("../../../tools/coroutines/concurrent_io/host_cancel.py"),
-        include_str!("../../../tools/coroutines/concurrent_io/deferred_cleanup.py"),
-        include_str!("../../../tools/coroutines/concurrent_io/gather_host.py"),
+        include_str!("../../../tools/coroutines/cancelled_error/migrated/concurrent_io/children_cancel.py"),
+        include_str!("../../../tools/coroutines/cancelled_error/migrated/concurrent_io/host_cancel.py"),
+        include_str!("../../../tools/coroutines/cancelled_error/migrated/concurrent_io/deferred_cleanup.py"),
+        include_str!("../../../tools/coroutines/cancelled_error/migrated/concurrent_io/gather_host.py"),
         include_str!("../../../tools/coroutines/concurrent_io/gather_first_error.py"),
     ] {
         let mut repl = new_repl();
@@ -4184,7 +3956,7 @@ fn native_async_cancel_drains_concurrent_and_preserves_original() {
 fn native_async_cancel_caught_is_terminal() {
     let repl = new_repl();
     let progress = repl.feed_start(
-        "import asyncio\nasync def main():\n    try:\n        await exchange()\n    except ValueError:\n        try:\n            await asyncio.gather()\n        except ValueError as e:\n            assert str(e) == 'child admission is closed'\n        return 'caught'\nasyncio.run(main())",
+        "import asyncio\nasync def main():\n    try:\n        await exchange()\n    except asyncio.CancelledError:\n        try:\n            await asyncio.gather()\n        except ValueError as e:\n            assert str(e) == 'child admission is closed'\n        return 'caught'\nasyncio.run(main())",
         vec![("exchange".into(), MontyObject::function("exchange", None))],
         PrintWriter::Stdout,
     ).unwrap().into_function_call().unwrap().resume_pending(PrintWriter::Stdout).unwrap();
@@ -4510,15 +4282,19 @@ async def main():
 fn native_async_public_task_cancel_snapshot_ownership() {
     for (program, replies) in [
         (
-            include_str!("../../../tools/coroutines/native_async_tasks/cases/cancel.py"),
+            include_str!("../../../tools/coroutines/cancelled_error/migrated/native_async_tasks/cases/cancel.py"),
             vec!["control", "again", "release", "waiter-release"],
         ),
         (
-            include_str!("../../../tools/coroutines/native_async_tasks/cases/cancel-gather.py"),
+            include_str!(
+                "../../../tools/coroutines/cancelled_error/migrated/native_async_tasks/cases/cancel-gather.py"
+            ),
             vec!["control", "A-release", "B-release", "owner-release"],
         ),
         (
-            include_str!("../../../tools/coroutines/native_async_tasks/cases/cancel-gather-wrapped.py"),
+            include_str!(
+                "../../../tools/coroutines/cancelled_error/migrated/native_async_tasks/cases/cancel-gather-wrapped.py"
+            ),
             vec!["control", "A-release", "B-release", "owner-release"],
         ),
     ] {
@@ -4597,7 +4373,9 @@ fn native_async_public_groups_snapshot_ownership() {
     for (name, source, replies, host_cancelled) in [
         (
             "repair7-final-return",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/repair7-final-return.py"),
+            include_str!(
+                "../../../tools/coroutines/cancelled_error/migrated/native_async_groups/cases/repair7-final-return.py"
+            ),
             vec!["control", "repeat", "release", "parent-release"],
             false,
         ),
@@ -4609,13 +4387,17 @@ fn native_async_public_groups_snapshot_ownership() {
         ),
         (
             "repair7-return",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/repair7-return.py"),
+            include_str!(
+                "../../../tools/coroutines/cancelled_error/migrated/native_async_groups/cases/repair7-return.py"
+            ),
             vec!["control", "repeat", "release", "parent-release"],
             false,
         ),
         (
             "repair7-caught",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/repair7-caught.py"),
+            include_str!(
+                "../../../tools/coroutines/cancelled_error/migrated/native_async_groups/cases/repair7-caught.py"
+            ),
             vec!["control", "repeat", "release", "parent-release"],
             false,
         ),
@@ -4723,7 +4505,9 @@ fn native_async_public_groups_snapshot_ownership() {
         ),
         (
             "repair7-suppress",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/repair7-suppress.py"),
+            include_str!(
+                "../../../tools/coroutines/cancelled_error/migrated/native_async_groups/cases/repair7-suppress.py"
+            ),
             vec!["control", "repeat", "release", "parent-release"],
             false,
         ),
@@ -4777,7 +4561,9 @@ fn native_async_public_groups_snapshot_ownership() {
         ),
         (
             "nested-guest-repeat",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/nested-guest-repeat.py"),
+            include_str!(
+                "../../../tools/coroutines/cancelled_error/migrated/native_async_groups/cases/nested-guest-repeat.py"
+            ),
             vec!["control", "repeat", "B-release", "owner-release"],
             false,
         ),
@@ -4807,7 +4593,7 @@ fn native_async_public_groups_snapshot_ownership() {
         ),
         (
             "guest-cancel",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/cancel.py"),
+            include_str!("../../../tools/coroutines/cancelled_error/migrated/native_async_groups/cases/cancel.py"),
             vec!["control", "repeat", "A-release", "B-release", "owner-release"],
             false,
         ),
@@ -5093,12 +4879,16 @@ fn native_async_public_queue_snapshot_ownership() {
     for (name, source, replies) in [
         (
             "reserved-get-cancel",
-            include_str!("../../../tools/coroutines/native_async_queues/cases/reserved-get-cancel.py"),
+            include_str!(
+                "../../../tools/coroutines/cancelled_error/migrated/native_async_queues/cases/reserved-get-cancel.py"
+            ),
             vec!["control", "verified"],
         ),
         (
             "reserved-put-cancel",
-            include_str!("../../../tools/coroutines/native_async_queues/cases/reserved-put-cancel.py"),
+            include_str!(
+                "../../../tools/coroutines/cancelled_error/migrated/native_async_queues/cases/reserved-put-cancel.py"
+            ),
             vec!["control", "verified"],
         ),
         (
@@ -5131,17 +4921,19 @@ fn native_async_public_queue_snapshot_ownership() {
         ),
         (
             "cancel-get",
-            include_str!("../../../tools/coroutines/native_async_queues/cases/cancel-get.py"),
+            include_str!("../../../tools/coroutines/cancelled_error/migrated/native_async_queues/cases/cancel-get.py"),
             vec!["blocked", "done"],
         ),
         (
             "cancel-put",
-            include_str!("../../../tools/coroutines/native_async_queues/cases/cancel-put.py"),
+            include_str!("../../../tools/coroutines/cancelled_error/migrated/native_async_queues/cases/cancel-put.py"),
             vec!["blocked", "done"],
         ),
         (
             "delivered-cancel",
-            include_str!("../../../tools/coroutines/native_async_queues/cases/delivered-cancel.py"),
+            include_str!(
+                "../../../tools/coroutines/cancelled_error/migrated/native_async_queues/cases/delivered-cancel.py"
+            ),
             vec!["control"],
         ),
         (
@@ -5186,7 +4978,9 @@ fn native_async_public_queue_snapshot_ownership() {
         ),
         (
             "cyclic-blocked-put",
-            include_str!("../../../tools/coroutines/native_async_queues/cases/cyclic-blocked-put.py"),
+            include_str!(
+                "../../../tools/coroutines/cancelled_error/migrated/native_async_queues/cases/cyclic-blocked-put.py"
+            ),
             vec!["blocked", "delivered"],
         ),
     ] {
@@ -5422,7 +5216,7 @@ async def main():
                 try:
                     await checkpoint()
                     assert False
-                except ValueError as signal:
+                except asyncio.CancelledError as signal:
                     token.append(scope)
                     token.append(signal)
             with anyio.CancelScope(shield=True):
@@ -5456,7 +5250,7 @@ async def main():
             scope.cancel()
             try:
                 await exchange('forbidden')
-            except ValueError as signal:
+            except asyncio.CancelledError as signal:
                 token.append(signal)
                 token.append(scope)
             with anyio.CancelScope(shield=True):
@@ -5478,7 +5272,7 @@ async def main():
         cuts += 1;
         assert!(cuts <= 8);
         let bytes = dump("scope.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
-        assert_eq!(&bytes[..8], b"MONTY\0\x23\x00");
+        assert_eq!(&bytes[..8], b"MONTY\0\x24\x00");
         for _ in 0..2 {
             let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
                 panic!("suspended")
@@ -5533,7 +5327,7 @@ fn native_async_anyio_group_scope_snapshot_ownership() {
         include_str!("../../../tools/coroutines/anyio_scopes/cases/group-misuse.py"),
         include_str!("../../../tools/coroutines/anyio_scopes/cases/group-owner-isolation.py"),
         include_str!("../../../tools/coroutines/anyio_scopes/cases/group-ancestor-shield.py"),
-        include_str!("../../../tools/coroutines/anyio_scopes/cases/inherited-shield-exit.py"),
+        include_str!("../../../tools/coroutines/cancelled_error/migrated/anyio_scopes/cases/inherited-shield-exit.py"),
     ] {
         let definitions = source.strip_suffix("asyncio.run(main())\n").expect("frozen entry");
         let mut repl = new_repl();
@@ -5644,9 +5438,13 @@ fn native_async_anyio_group_entry_role_snapshot_ownership() {
         include_str!("../../../tools/coroutines/anyio_scopes_repair2/cases/native-group.py"),
         include_str!("../../../tools/coroutines/anyio_scopes_repair2/cases/list.py"),
         include_str!("../../../tools/coroutines/anyio_scopes_repair2/cases/scope.py"),
-        include_str!("../../../tools/coroutines/anyio_scopes_repair2/cases/alias-shield-group.py"),
+        include_str!(
+            "../../../tools/coroutines/cancelled_error/migrated/anyio_scopes_repair2/cases/alias-shield-group.py"
+        ),
         include_str!("../../../tools/coroutines/anyio_scopes_repair2/cases/pending-group.py"),
-        include_str!("../../../tools/coroutines/anyio_scopes_repair2/cases/alias-shield-native-group.py"),
+        include_str!(
+            "../../../tools/coroutines/cancelled_error/migrated/anyio_scopes_repair2/cases/alias-shield-native-group.py"
+        ),
         include_str!("../../../tools/coroutines/anyio_scopes_repair2/cases/pending-native-group.py"),
     ] {
         let definitions = source.strip_suffix("asyncio.run(main())\n").expect("frozen entry");
@@ -5770,4 +5568,47 @@ fn public_sandbox_coroutines_restore_without_dialect() {
                 .unwrap();
         }
     }
+}
+
+#[test]
+fn public_cancelled_error_class_and_guest_scopes() {
+    let mut repl = new_repl();
+    let output = repl
+        .feed_run(
+            r"
+import asyncio
+import anyio
+assert anyio.get_cancelled_exc_class() is asyncio.CancelledError
+assert isinstance(asyncio.CancelledError('stop'), BaseException)
+assert not isinstance(asyncio.CancelledError('stop'), Exception)
+assert not isinstance(asyncio.CancelledError('stop'), ValueError)
+async def main():
+    seen = []
+    with anyio.CancelScope() as scope:
+        scope.cancel()
+        try:
+            await asyncio.gather()
+        except ValueError:
+            seen.append('wrong-value')
+        except Exception:
+            seen.append('wrong-exception')
+        except asyncio.CancelledError:
+            seen.append('cancel')
+    try:
+        raise ValueError('ordinary')
+    except asyncio.CancelledError:
+        seen.append('wrong-cancel')
+    except ValueError:
+        seen.append('value')
+    return seen
+asyncio.run(main())
+",
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+    assert_eq!(
+        output,
+        MontyObject::list(vec![MontyObject::string("cancel"), MontyObject::string("value")])
+    );
 }

@@ -29,6 +29,16 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
         ExcType::Exception => exceptions::PyException::new_err(msg),
         ExcType::BaseException => exceptions::PyBaseException::new_err(msg),
         ExcType::SystemExit => exceptions::PySystemExit::new_err(msg),
+        ExcType::CancelledError => {
+            match py
+                .import("asyncio")
+                .and_then(|m| m.getattr("CancelledError"))
+                .and_then(|cls| cls.call1((&msg,)))
+            {
+                Ok(value) => PyErr::from_value(value),
+                Err(error) => error,
+            }
+        }
         ExcType::KeyboardInterrupt => exceptions::PyKeyboardInterrupt::new_err(msg),
         ExcType::ArithmeticError => exceptions::PyArithmeticError::new_err(msg),
         ExcType::OverflowError => exceptions::PyOverflowError::new_err(msg),
@@ -351,6 +361,11 @@ pub fn exc_to_monty_node(exc: &Bound<'_, exceptions::PyBaseException>) -> MontyN
 /// NOTE: order matters here as some exceptions are subclasses of others!
 /// In general we group exceptions by their type hierarchy to improve performance.
 fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
+    if let Ok(class) = exc.py().import("asyncio").and_then(|m| m.getattr("CancelledError"))
+        && exc.is_instance(&class).unwrap_or(false)
+    {
+        return ExcType::CancelledError;
+    }
     // Exception hierarchy
     if exceptions::PyException::type_check(exc) {
         // `decimal` signals first: `FloatOperation` is also a `TypeError` and

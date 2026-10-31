@@ -68,7 +68,7 @@ struct Component;
 
 impl Guest for Component {
     fn cancellation_contract() -> u32 {
-        7
+        8
     }
 
     fn dispatch(request: Request) -> DispatchResult {

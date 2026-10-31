@@ -19,6 +19,7 @@ use num_traits::ToPrimitive;
 use crate::{
     args::{ArgValues, FromArgs},
     asyncio::GatherFuture,
+    builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -71,6 +72,11 @@ pub(crate) enum AsyncioFunctions {
 /// primitives are experimental authoring bindings, not additional asyncio parity.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Asyncio, vm.interns);
+    module.set_attr(
+        StaticStrings::CancelledError,
+        Value::Builtin(Builtins::ExcType(ExcType::CancelledError)),
+        vm,
+    );
 
     module.set_attr(
         StaticStrings::Gather,

@@ -128,7 +128,7 @@ impl VM<'_> {
                 // Revocation is logical settlement, not task disposal. There is
                 // no authored continuation in a direct external gather item.
                 self.scheduler.gather_externals.remove(&call);
-                self.fail_future(call.raw(), ExcType::value_error(reason));
+                self.fail_future(call.raw(), ExcType::cancelled_error(reason));
             }
         }
     }
@@ -184,7 +184,7 @@ impl VM<'_> {
                 .as_ref()
                 .expect("cancel latch")
                 .reason;
-            let error = ExcType::value_error(reason);
+            let error = ExcType::cancelled_error(reason);
             let awaiter = gather.fail(self.heap, &error);
             drop(gather);
             error.drop_with(self);
@@ -211,7 +211,7 @@ impl VM<'_> {
         if external {
             cancel.revoked = Some(call_id);
         }
-        let mut signal = ExcType::value_error(&cancel.reason);
+        let mut signal = ExcType::cancelled_error(&cancel.reason);
         signal.materialize_object(self.heap);
         if let RunError::Exc(error) = &signal {
             self.scheduler.get_task_mut(id).child_cancel_signal =
@@ -310,7 +310,7 @@ impl VM<'_> {
             .collect();
         for call in calls {
             self.scheduler.gather_externals.remove(&call);
-            self.fail_future(call.raw(), ExcType::value_error("scope-exit"));
+            self.fail_future(call.raw(), ExcType::cancelled_error("scope-exit"));
         }
         self.heap.inc_ref(id);
         self.finish_child_drain(owner);
@@ -334,7 +334,7 @@ impl VM<'_> {
             && let Ok(value) = result
         {
             value.drop_with(self.heap);
-            result = Err(ExcType::value_error(&cancel.reason));
+            result = Err(ExcType::cancelled_error(&cancel.reason));
         }
         let HeapReadOutput::ExternalFuture(future) = self.heap.read(id) else {
             unreachable!()

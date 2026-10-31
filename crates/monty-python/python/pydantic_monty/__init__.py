@@ -251,6 +251,7 @@ class ExternalException(TypedDict):
 ExcType = Literal[
     'Exception',
     'BaseException',
+    'asyncio.CancelledError',
     'SystemExit',
     'KeyboardInterrupt',
     'ArithmeticError',

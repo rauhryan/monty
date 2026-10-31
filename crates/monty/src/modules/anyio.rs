@@ -147,7 +147,7 @@ pub(crate) fn call(vm: &mut VM<'_>, function: AnyioFunctions, args: ArgValues) -
         AnyioFunctions::GetCancelledExcClass => {
             args.check_zero_args("get_cancelled_exc_class", vm.heap)?;
             Ok(CallResult::Value(Value::Builtin(Builtins::ExcType(
-                ExcType::ValueError,
+                ExcType::CancelledError,
             ))))
         }
     }

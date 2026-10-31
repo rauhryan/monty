@@ -42,7 +42,7 @@ Unobserved failures are retained while handles exist but do not produce asyncio'
 "Task exception was never retrieved" warning when the last handle is dropped.
 
 Guest `Task.cancel()` currently accepts no message argument and raises catchable
-`ValueError('guest')` rather than `CancelledError`.
+`asyncio.CancelledError('guest')`.
 It requests logical cancellation; cleanup can suspend on host calls.
 A pending Task join forwards the request and waits for that task's outcome before
 resuming the waiting task. A caught cancellation can return a successful result.
@@ -102,7 +102,7 @@ retained failure's type/message summary; it cannot export the guest tuple or
 exception identity through the terminal exception API. KeyboardInterrupt/SystemExit special handling,
 exception-group splitting/subgroup/derive and cancellation counters are unsupported.
 The internal wake-up interruption is excluded from aggregation; guest cancellation
-still uses the ValueError subset described above.
+uses the cancellation policy described above.
 
 Public group and root-shutdown snapshots require dump version 30 or later.
 Saved unresolved cleanup roles require dump version 31 or later.
@@ -305,7 +305,8 @@ Those protected operations retain their host replies across repeated cancellatio
 This differs from CPython's immediate first-error delivery. Public TaskGroup uses
 its separate failure aggregation policy above. Protected drain snapshots require dump version 28 or later.
 Module-level `await` without an active coroutine also remains unsupported.
-Cancellation delivers a catchable `ValueError`, rather than an asyncio `CancelledError`.
+Cancellation delivers `asyncio.CancelledError`, a direct `BaseException` subclass.
+`except Exception` and `except ValueError` do not catch it.
 Catching it does not clear the native terminal cancelled outcome, and the first host reason wins even when empty.
 Compiler-marked plain `finally` bodies and async context exit delegation protect their external waits from host cancellation; ordinary operation errors remain catchable and are not masked.
 A first cancellation during cleanup preserves its reply and is delivered when outermost protection ends, before ordinary body work or another request.
@@ -317,7 +318,7 @@ A selector return is not suppression of its caller’s error.
 Handlers inside active cleanup retain normal behavior; handlers after cancellation delivery may perform authored recovery.
 Required synchronous and async context exit calls finish their suppression bookkeeping before delivery: a false result retains the error, a true result suppresses it, and a raised exit error replaces it.
 This bookkeeping guarantee does not provide preemption of blocking synchronous I/O or nonterminating exit code.
-This does not implement CancelledError parity or automatic exception-group typing.
+This does not implement cancellation counters, uncancel, or automatic exception-group typing.
 
 ### Experimental owned children
 
@@ -330,7 +331,7 @@ Sibling failures do not cancel other children.
 `_drain()` closes admission, cancels unfinished children, and waits for their cleanup before returning.
 An authoring context manager must await this drain in `__aexit__` before resource cleanup.
 Cancelling a completed owned handle is a no-op.
-Guest child cancellation raises one catchable `ValueError('guest')`; returning after catching it still makes joining raise that cancellation.
+Guest child cancellation raises one catchable `asyncio.CancelledError('guest')`; returning after catching it still makes joining raise that cancellation.
 An ordinary failure during child cleanup remains visible as an error.
 Host cancellation fans out through the owned child tree, including owners parked on child joins.
 A cancelled join detaches its waiter without consuming the child outcome; scope exit still drains the child before parent cleanup.
@@ -365,8 +366,8 @@ Waking reserves permission; inspection still reports committed contents until
 activation commits delivery. Cancellation before delivery revokes the reservation:
 a get leaves its item stored and a put keeps its item outside storage. Cancellation
 after delivery does not undo the transfer. Cancellation uses the platform's
-ValueError contract described above, including protected cleanup and sticky host
-cancellation, rather than CancelledError.
+cancellation contract described above, including protected cleanup and sticky host
+cancellation.
 
 `put_nowait`, `get_nowait`, `task_done`, `join`, `shutdown`, QueueEmpty and QueueFull
 are not supplied. Method signatures/error wording and the object's reported type
@@ -417,3 +418,5 @@ dictionary and return a lazy native coroutine. Their names grant no authority: t
 host validates the request against its installed contracts before performing any
 operation. Randomness and human replies are supplied and journaled by the host.
 They are not Python standard-library functions.
+
+Cancellation exception snapshots require dump version 36; earlier dumps are rejected because captured ValueError handlers have different semantics.

@@ -13,7 +13,7 @@ try {
   const capability = component.worker.cancellationContract
   if (typeof capability !== 'function') throw new Error('missing export')
   const revision = capability()
-  if (typeof revision !== 'number' || !Number.isInteger(revision) || revision !== 7) throw new Error('wrong revision')
+  if (typeof revision !== 'number' || !Number.isInteger(revision) || revision !== 8) throw new Error('wrong revision')
 } catch (cause) {
   throw Object.assign(new Error('MONTY_CANCELLATION_CONTRACT_UNSUPPORTED', {cause}), {code:'MONTY_CANCELLATION_CONTRACT_UNSUPPORTED'})
 }

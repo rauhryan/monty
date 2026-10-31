@@ -49,7 +49,7 @@ impl VM<'_> {
             }
         }
         for call in self.scheduler.run_externals(owner) {
-            self.fail_future(call.raw(), ExcType::value_error("guest"));
+            self.fail_future(call.raw(), ExcType::cancelled_error("guest"));
         }
         self.finish_root_shutdown(owner);
         Some(self.switch_or_yield())
@@ -521,7 +521,7 @@ impl VM<'_> {
             let group = future.get(self.heap).task_group.as_ref().expect("group");
             if group.failure_pending && group.state == TaskGroupState::Active && group.interrupt.is_none() {
                 let mut error: RunError =
-                    SimpleException::new_msg(ExcType::ValueError, "TaskGroup child failed").into();
+                    SimpleException::new_msg(ExcType::CancelledError, "TaskGroup child failed").into();
                 error.materialize_object(self.heap);
                 if let RunError::Exc(error) = &error {
                     let signal = error.object.as_ref().map(|v| v.clone_with_heap(self.heap));
@@ -586,7 +586,7 @@ impl VM<'_> {
             }
             // A real body cancellation is re-raised by async-with when no child
             // fails. With failures it is retained as well; cancellation typing
-            // remains the VM's documented ValueError subset.
+            // uses the public asyncio.CancelledError type.
             errors.extend(body);
             if let Some(scope) = scope {
                 let exc = if suppressed {

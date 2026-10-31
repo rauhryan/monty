@@ -1460,7 +1460,7 @@ impl<'h> VM<'h> {
         debug_assert!(!cancel.delivered);
         cancel.interrupted_error = diagnostic;
         cancel.delivered = true;
-        let mut signal: RunError = MontyException::new(ExcType::ValueError, Some(cancel.reason.clone())).into();
+        let mut signal: RunError = MontyException::new(ExcType::CancelledError, Some(cancel.reason.clone())).into();
         // Root groups also need the exact cancellation identity to exclude
         // their own delivery from ordinary body failure aggregation.
         signal.materialize_object(self.heap);

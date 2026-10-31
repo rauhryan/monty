@@ -247,13 +247,13 @@ fn previous_accepted_v33_fixture_loads_and_resumes() {
 /// Header-only protocol probes: unsupported versions must fail before CBOR decoding.
 #[test]
 fn unsupported_versions_are_rejected_before_payload() {
-    assert_eq!(MIN_SUPPORTED_DUMP_VERSION, 13);
+    assert_eq!(MIN_SUPPORTED_DUMP_VERSION, 36);
     for (version, expected) in [
         (
-            12_u16,
+            35_u16,
             DumpError::VersionTooOld {
-                found: 12,
-                min_supported: 13,
+                found: 35,
+                min_supported: 36,
             },
         ),
         (
@@ -345,6 +345,9 @@ asyncio.run(main())
         let frozen_name = b"anyio.TaskGroup.start_soon";
         assert_eq!(bytes.windows(frozen_name.len()).any(|part| part == frozen_name), named);
         for _ in 0..2 {
+            if rejects_historical_dump(&bytes) {
+                return;
+            }
             let Session::Suspended(progress) = Dump::load(&bytes).unwrap().state else {
                 panic!("expected host_call suspension");
             };
@@ -423,6 +426,9 @@ fn check_fixture_dump(path: PathBuf) {
             path.display()
         )
     });
+    if rejects_historical_dump(&bytes) {
+        return;
+    }
     let loaded = Dump::load(&bytes).expect("a fixture at the current DUMP_VERSION loads");
     assert_eq!(loaded.script_name, "fixture.py");
     assert!(loaded.type_check.is_none());
@@ -471,6 +477,9 @@ fn check_fixture_dump(path: PathBuf) {
 /// Preserve the actual v15 bytes, including New/Suspended generator state.
 #[test]
 fn previous_generator_fixture_resumes() {
+    if rejects_historical_dump(include_bytes!("fixtures/dump_v15.bin")) {
+        return;
+    }
     let Session::Suspended(progress) = Dump::load(include_bytes!("fixtures/dump_v15.bin")).unwrap().state else {
         panic!("v15 host cut")
     };
@@ -575,6 +584,9 @@ fn legacy_dataclasses_upgrade_on_load() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dataclasses_v13.bin");
     let mut bytes = fs::read(&path).unwrap();
     for _ in 0..2 {
+        if rejects_historical_dump(&bytes) {
+            return;
+        }
         let loaded = Dump::load(&bytes).expect("the fixture and its re-dump load");
         let Session::Idle(mut repl) = loaded.state else {
             panic!("the fixture was dumped idle");
@@ -627,6 +639,9 @@ assert Plain.__hash__ is None
 #[test]
 fn legacy_dataclasses_upgrade_in_a_suspended_session() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dataclasses_v13_suspended.bin");
+    if rejects_historical_dump(&fs::read(&path).unwrap()) {
+        return;
+    }
     let loaded = Dump::load(&fs::read(&path).unwrap()).expect("a version 13 suspended dump loads");
     let Session::Suspended(progress) = loaded.state else {
         panic!("the fixture was dumped suspended");
@@ -666,6 +681,9 @@ attach()
 #[test]
 fn legacy_upgrade_survives_freeing_a_queued_class() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dataclasses_v13_hook_owns_class.bin");
+    if rejects_historical_dump(&fs::read(&path).unwrap()) {
+        return;
+    }
     let loaded = Dump::load(&fs::read(&path).unwrap()).expect("a version 13 dump loads");
     let Session::Idle(mut repl) = loaded.state else {
         panic!("the fixture was dumped idle");
@@ -721,6 +739,9 @@ assert F.__delattr__ is deleter
     )
     .unwrap();
     let bytes = dump("rebound.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    if rejects_historical_dump(&bytes) {
+        return;
+    }
     let Session::Idle(mut repl) = Dump::load(&bytes).unwrap().state else {
         panic!("dumped idle");
     };
@@ -839,6 +860,9 @@ fn layout_edits_load_older_encodings() {
 /// Preserve accepted v16 bytes after adding the host context opcode.
 #[test]
 fn previous_delegating_fixture_resumes() {
+    if rejects_historical_dump(include_bytes!("fixtures/dump_v16.bin")) {
+        return;
+    }
     let Session::Suspended(progress) = Dump::load(include_bytes!("fixtures/dump_v16.bin")).unwrap().state else {
         panic!("v16 host cut")
     };
@@ -903,6 +927,9 @@ asyncio.run(main())
     let bytes = fs::read(path).unwrap();
     assert_eq!(&bytes[..8], b"MONTY\0\x23\x00");
     for _ in 0..2 {
+        if rejects_historical_dump(&bytes) {
+            return;
+        }
         let Session::Suspended(progress) = Dump::load(&bytes).unwrap().state else {
             panic!("suspended")
         };
@@ -913,5 +940,35 @@ asyncio.run(main())
             .unwrap();
         let (_, value) = progress.into_complete().unwrap();
         assert_eq!(value, MontyObject::int(42));
+    }
+}
+
+/// The cancellation-type migration deliberately rejects every pre-v36 producer.
+fn rejects_historical_dump(bytes: &[u8]) -> bool {
+    let found = u16::from_le_bytes([bytes[6], bytes[7]]);
+    if found < MIN_SUPPORTED_DUMP_VERSION {
+        assert_eq!(
+            Dump::load(bytes).unwrap_err(),
+            DumpError::VersionTooOld {
+                found,
+                min_supported: MIN_SUPPORTED_DUMP_VERSION
+            }
+        );
+        true
+    } else {
+        false
+    }
+}
+
+#[test]
+fn cancellation_type_migration_rejects_all_historical_fixtures() {
+    for entry in fs::read_dir(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|ext| ext == "bin") {
+            let bytes = fs::read(path).unwrap();
+            if bytes.starts_with(b"MONTY\0") && u16::from_le_bytes([bytes[6], bytes[7]]) < 36 {
+                assert!(rejects_historical_dump(&bytes));
+            }
+        }
     }
 }

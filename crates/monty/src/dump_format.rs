@@ -79,11 +79,13 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 // Version 34 distinguishes AnyIO TaskGroup surfaces and named helper identities.
 // A v33 reader ignores the defaulted flag and would expose create_task instead.
 // Version 35 persists task/run-owned lexical cancellation origins and ancestry.
-pub const DUMP_VERSION: u16 = 35;
+// Version 36 changes cancellation from ValueError to asyncio.CancelledError.
+// Older captured handlers cannot be silently reinterpreted under this contract.
+pub const DUMP_VERSION: u16 = 36;
 
 /// The oldest dump version this build loads. `Dump::load` runs `dump_upgrade`
 /// over an older dump, rebuilding what the newer versions changed.
-pub const MIN_SUPPORTED_DUMP_VERSION: u16 = 13;
+pub const MIN_SUPPORTED_DUMP_VERSION: u16 = 36;
 
 // The supported range must be non-empty, and must exclude zero
 const _: () = assert!(MIN_SUPPORTED_DUMP_VERSION >= 1);

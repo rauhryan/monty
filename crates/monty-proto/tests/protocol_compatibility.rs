@@ -25,12 +25,12 @@ fn cancellation_parent_is_refused_by_v6_worker_check() {
 }
 
 #[test]
-fn ordinary_old_clients_retain_their_migration_window() {
+fn old_clients_are_rejected_at_cancellation_type_boundary() {
     for version in [5, 6] {
         assert!(protocol_v6::check_protocol_version(version).is_ok());
-        assert!(check_protocol_version(version).is_ok());
+        assert!(check_protocol_version(version).is_err());
     }
-    for version in [0, 4, PROTOCOL_VERSION + 1] {
+    for version in [0, 4, 7, 8, PROTOCOL_VERSION + 1] {
         assert!(check_protocol_version(version).is_err());
     }
 }
