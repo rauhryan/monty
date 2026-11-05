@@ -3,6 +3,8 @@
 
 use std::collections::HashMap;
 
+#[cfg(feature = "cancellation-test-hooks")]
+use monty::cancellation_test_hooks;
 use monty::{Dump, MontyRepl, MontyRun, ReplProgress, Session, SessionRef, dump};
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyUuid, PrintWriter, ResourceLimits,
@@ -3344,7 +3346,7 @@ fn repair10_census(mode: &str) {
             let id = pending.pending_call_ids()[0];
             #[cfg(feature = "cancellation-test-hooks")]
             if mode.starts_with("delivery-") || *phase == "recovery" {
-                monty::cancellation_test_hooks::configure(if mode == "later" { "" } else { mode });
+                cancellation_test_hooks::configure(if mode == "later" { "" } else { mode });
             }
             match pending.resume_native(
                 vec![(id, ExtFunctionResult::Return(MontyObject::none()))],
@@ -3408,12 +3410,12 @@ fn repair10_census(mode: &str) {
         };
         #[cfg(feature = "cancellation-test-hooks")]
         if matches!(mode, "depth" | "terminal") {
-            let stats = monty::cancellation_test_hooks::export_stats();
+            let stats = cancellation_test_hooks::export_stats();
             assert!(stats.visits > 1 && stats.peak_pins > 0 && stats.dropped, "{stats:?}");
             assert_eq!(stats.peak_pins, stats.retired_pins);
         }
         #[cfg(feature = "cancellation-test-hooks")]
-        monty::cancellation_test_hooks::configure("");
+        cancellation_test_hooks::configure("");
         let trace = if mode.starts_with("delivery-") {
             "[]"
         } else {
@@ -5611,4 +5613,77 @@ asyncio.run(main())
         output,
         MontyObject::list(vec![MontyObject::string("cancel"), MontyObject::string("value")])
     );
+}
+
+/// Authored cancellation owns cyclic arguments just like delivered cancellation.
+/// Check live heaps after completion and original/restored disposal at every cut.
+#[test]
+fn public_authored_cancellation_snapshot_ownership() {
+    for source in [
+        include_str!("../../../tools/coroutines/authored_cancellation/cases/tasks.py"),
+        include_str!("../../../tools/coroutines/authored_cancellation/cases/groups.py"),
+        include_str!("../../../tools/coroutines/authored_cancellation/cases/scopes.py"),
+    ] {
+        let definitions = source.strip_suffix("asyncio.run(main())\n").expect("entry");
+        let mut repl = new_repl();
+        repl.feed_run(
+            definitions,
+            vec![("exchange".into(), MontyObject::function("exchange", None))],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+        let baseline = repl.heap_entry_count();
+        for _ in 0..3 {
+            let mut progress = repl
+                .feed_start("asyncio.run(main())", vec![], PrintWriter::Disabled)
+                .unwrap();
+            let mut cuts = 0;
+            while !matches!(progress, ReplProgress::Complete { .. }) {
+                cuts += 1;
+                assert!(cuts <= 6);
+                let bytes = dump("authored.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+                for _ in 0..2 {
+                    let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
+                        panic!("suspended")
+                    };
+                    let mut abandoned = copy.into_repl();
+                    abandoned
+                        .feed_run("pulse = []\npulse = None", vec![], PrintWriter::Disabled)
+                        .unwrap();
+                    assert_eq!(abandoned.heap_entry_count(), baseline, "restored cut {cuts}");
+                }
+                let mut abandoned = progress.into_repl();
+                abandoned
+                    .feed_run("pulse = []\npulse = None", vec![], PrintWriter::Disabled)
+                    .unwrap();
+                assert_eq!(abandoned.heap_entry_count(), baseline, "original cut {cuts}");
+                let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
+                    panic!("suspended")
+                };
+                progress = if matches!(*copy, ReplProgress::FunctionCall(_)) {
+                    copy.into_function_call()
+                        .unwrap()
+                        .resume_pending(PrintWriter::Disabled)
+                        .unwrap()
+                } else {
+                    let pending = copy.into_resolve_futures().unwrap();
+                    let ids = pending.pending_call_ids().to_vec();
+                    pending
+                        .resume(
+                            ids.into_iter()
+                                .map(|id| (id, ExtFunctionResult::Return(MontyObject::string("ok"))))
+                                .collect(),
+                            PrintWriter::Disabled,
+                        )
+                        .unwrap()
+                };
+            }
+            let (completed, output) = progress.into_complete().unwrap();
+            assert_eq!(output, MontyObject::string("\"ok\""));
+            repl = completed;
+            repl.feed_run("pulse = []\npulse = None", vec![], PrintWriter::Disabled)
+                .unwrap();
+            assert_eq!(repl.heap_entry_count(), baseline, "completed history: {source}");
+        }
+    }
 }

@@ -17,6 +17,8 @@ use super::{
     AwaitResult, CallFrame, FrameExit, Opcode, VM, frame_code, function_namespace, recursion::frame_recursion_depth,
     stack_index,
 };
+#[cfg(test)]
+use crate::frozen::FrozenFunction;
 use crate::{
     asyncio::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
@@ -1851,7 +1853,7 @@ impl VM<'_> {
             // Cached historical frozen admission must precede argument transfer,
             // frame installation and any publication to the intern tables.
             let Err(error) = self.call_frozen_exact(
-                crate::frozen::FrozenFunction::FunctoolsReduce,
+                FrozenFunction::FunctoolsReduce,
                 [
                     Value::None,
                     Value::None,

@@ -13,6 +13,8 @@ use monty_types::{
     ResourceTracker, SourceRange,
 };
 
+#[cfg(feature = "cancellation-test-hooks")]
+use crate::cancellation_test_hooks;
 use crate::{
     asyncio::CallId,
     bytecode::{FrameExit, PendingLookupEffect, VM, VMSnapshot},
@@ -1125,13 +1127,13 @@ pub(crate) fn convert_frame_exit<'s>(
     // position is the suspending expression for every exit but `ResolveFutures`.
     #[cfg(feature = "cancellation-test-hooks")]
     let result = if vm.native_cancel_reason().is_some() && matches!(result, Ok(FrameExit::Return(_))) {
-        if let Some(fatal) = crate::cancellation_test_hooks::projection_error() {
+        if let Some(fatal) = cancellation_test_hooks::projection_error() {
             if let Ok(FrameExit::Return(value)) = result {
                 value.drop_with(vm);
             }
             Err(fatal)
         } else {
-            crate::cancellation_test_hooks::prepare_export(vm);
+            cancellation_test_hooks::prepare_export(vm);
             result
         }
     } else {

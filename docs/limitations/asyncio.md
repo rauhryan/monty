@@ -40,6 +40,8 @@ Handles report the internal coroutine type rather than a separate Python Task ty
 Pending `result()` and `exception()` raise `RuntimeError` instead of `InvalidStateError`.
 Unobserved failures are retained while handles exist but do not produce asyncio's
 "Task exception was never retrieved" warning when the last handle is dropped.
+For cancelled Tasks, repeated `result()` / `exception()` calls re-raise the cached
+cancellation object; CPython may raise fresh `CancelledError` instances instead.
 
 Guest `Task.cancel()` currently accepts no message argument and raises catchable
 `asyncio.CancelledError('guest')`.

@@ -16,6 +16,8 @@ use monty_types::{
     unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 
+#[cfg(feature = "cancellation-test-hooks")]
+use crate::cancellation_test_hooks;
 use crate::{
     builtins::Builtins,
     bytecode::VM,
@@ -192,7 +194,7 @@ impl GraphExporter {
             pinned: Vec::new(),
             error: None,
             #[cfg(feature = "cancellation-test-hooks")]
-            instrumented: crate::cancellation_test_hooks::take_export(),
+            instrumented: cancellation_test_hooks::take_export(),
         }
     }
 
@@ -240,8 +242,8 @@ impl GraphExporter {
     fn push_inner(&mut self, value: &Value, vm: &mut VM<'_>) -> Result<NodeId, ExportError> {
         #[cfg(feature = "cancellation-test-hooks")]
         if self.instrumented {
-            crate::cancellation_test_hooks::visit(self.pinned.len());
-            if crate::cancellation_test_hooks::terminal_due(self.pinned.len()) {
+            cancellation_test_hooks::visit(self.pinned.len());
+            if cancellation_test_hooks::terminal_due(self.pinned.len()) {
                 return Err(ExportError::terminal(
                     SimpleException::new_msg(ExcType::RuntimeError, "REPAIR10_EXPORT_TERMINAL")
                         .with_position(vm.current_position()),
@@ -684,7 +686,7 @@ impl<C: ContainsHeap> DropWithContext<C> for GraphExporter {
         self.pinned.drop_with(ctx);
         #[cfg(feature = "cancellation-test-hooks")]
         if census.0 {
-            crate::cancellation_test_hooks::retired(census.1);
+            cancellation_test_hooks::retired(census.1);
         }
     }
 }

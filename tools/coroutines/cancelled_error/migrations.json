@@ -128,5 +128,10 @@
     "original": "tools/coroutines/native_async_tasks/cases/cancel.py",
     "originalSha256": "b9969dee51cad5cd515e888f5be6263b5363ba3813b8e87e5fed3dc31c18e9b3",
     "candidateSha256": "9c266eac0a70ac59545039d844d44016dd6e9c622dfed7b541a4ae315a8279d2"
+  },
+  "migrated/queues/ownership.py": {
+    "original": "tools/coroutines/queues/ownership.py",
+    "originalSha256": "fac09f7a67921240b406d0d4f58d4b6670181a56bfc9a778463653aecc858979",
+    "candidateSha256": "2b2b34d83fcf9515e80f79e0f68e51c503c715ebf606e3c8263dc75165119847"
   }
 }

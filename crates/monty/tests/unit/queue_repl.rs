@@ -13,8 +13,8 @@ fn ownership_queue_scope_records_and_abandonment() {
         ] {
             repl.feed_run(source, vec![], PrintWriter::Disabled).unwrap();
         }
-        let definitions =
-            include_str!("../../../../tools/coroutines/queues/ownership.py").replace("parent()._native1()", "");
+        let definitions = include_str!("../../../../tools/coroutines/cancelled_error/migrated/queues/ownership.py")
+            .replace("parent()._native1()", "");
         repl.feed_run(
             &definitions,
             vec![("exchange".into(), MontyObject::function("exchange", None))],

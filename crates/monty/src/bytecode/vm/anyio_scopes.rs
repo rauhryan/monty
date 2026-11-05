@@ -160,20 +160,6 @@ impl VM<'_> {
         None
     }
 
-    pub(super) fn anyio_result_cancelled(&self, result: &RunResult<Value>) -> bool {
-        let Err(RunError::Exc(error)) = result else {
-            return false;
-        };
-        let Some(Value::Ref(signal)) = &error.object else {
-            return false;
-        };
-        self.scheduler.current_task().is_some_and(|task| {
-            task.anyio_scopes
-                .iter()
-                .any(|id| matches!(self.scope(*id).signal, Some(Value::Ref(id)) if id == *signal))
-        })
-    }
-
     pub(super) fn anyio_scope_signal_id(&self, scope: HeapId) -> Option<HeapId> {
         if let Some(Value::Ref(id)) = self.scope(scope).signal {
             Some(id)

@@ -4,7 +4,7 @@
 //! snapshot field, protocol request, or production configuration selects a fault.
 //! State is thread-local and is deliberately not serialized: restored tests must
 //! re-arm it from their trusted host. Instrumented workers are not distributable.
-use std::cell::RefCell;
+use std::{cell::RefCell, mem};
 
 use monty_types::MontyException;
 
@@ -31,6 +31,9 @@ thread_local! {
 }
 
 /// Arm one fault on this host thread. Empty disables instrumentation.
+///
+/// # Panics
+/// Panics if `mode` is not an empty string or a supported fault name.
 pub fn configure(mode: &str) {
     assert!(matches!(
         mode,
@@ -88,7 +91,7 @@ pub(crate) fn prepare_export(vm: &mut VM<'_>) {
 }
 
 pub(crate) fn take_export() -> bool {
-    STATE.with_borrow_mut(|s| std::mem::take(&mut s.export_ready))
+    STATE.with_borrow_mut(|s| mem::take(&mut s.export_ready))
 }
 pub(crate) fn visit(pins: usize) {
     STATE.with_borrow_mut(|s| {

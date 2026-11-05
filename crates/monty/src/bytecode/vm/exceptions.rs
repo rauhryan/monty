@@ -6,6 +6,8 @@ use std::{
 };
 
 use super::VM;
+#[cfg(feature = "cancellation-test-hooks")]
+use crate::cancellation_test_hooks;
 use crate::{
     builtins::Builtins,
     defer_drop,
@@ -372,7 +374,7 @@ impl VM<'_> {
     fn handle_exception_step(&mut self, mut error: RunError, raised: Option<Value>) -> ExceptionHandlingResult {
         #[cfg(feature = "cancellation-test-hooks")]
         if self.native_cancel_reason().is_some()
-            && let Some(fatal) = crate::cancellation_test_hooks::delivery_error()
+            && let Some(fatal) = cancellation_test_hooks::delivery_error()
         {
             error.drop_with(self);
             error = fatal;

@@ -229,14 +229,12 @@ impl VM<'_> {
 
     pub(super) fn complete_public_task(&mut self, mut result: RunResult<Value>) -> RunResult<AwaitResult> {
         let task = self.scheduler.current_task_id().expect("public task");
-        let scope_cancelled = self.anyio_result_cancelled(&result);
+        // Task outcomes depend on the exception type, not cancellation origin.
+        // Exact signal identity is only needed when a scope suppresses its own signal.
+        let cancelled = matches!(&result, Err(error) if error.is_catchable(ExcType::CancelledError));
         let record = self.scheduler.get_task_mut(task);
         let group = record.group_parent;
         let id = record.child_result.take().expect("outcome root");
-        let cancelled = scope_cancelled
-            || matches!((&result, &record.child_cancel_signal),
-            (Err(RunError::Exc(error)), Some(Value::Ref(signal)))
-                if matches!(error.object, Some(Value::Ref(id)) if id == *signal));
         let coroutine = record.coroutine_id.expect("public coroutine");
         let HeapReadOutput::Coroutine(coro) = self.heap.read(coroutine) else {
             unreachable!()

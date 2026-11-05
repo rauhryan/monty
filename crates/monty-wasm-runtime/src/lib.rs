@@ -6,8 +6,12 @@
 //! component boundary or enter the TypeScript host.
 #![expect(unsafe_code, reason = "generated canonical-ABI exports require unsafe code")]
 
+#[cfg(feature = "cancellation-test-hooks")]
+use std::env;
 use std::{cell::RefCell, collections::hash_map::RandomState, io, time::Instant};
 
+#[cfg(feature = "cancellation-test-hooks")]
+use monty::cancellation_test_hooks;
 use monty_proto::{
     BudgetVec, DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, PROTOCOL_VERSION, WireArena, exceeds_max_frame_len,
     os_call_from_proto, pb,
@@ -50,8 +54,8 @@ fn new_child() -> Child {
     let _ = Instant::now();
     let _ = RandomState::new();
     #[cfg(feature = "cancellation-test-hooks")]
-    if let Ok(mode) = std::env::var("MONTY_REPAIR10_FAULT") {
-        monty::cancellation_test_hooks::configure(&mode);
+    if let Ok(mode) = env::var("MONTY_REPAIR10_FAULT") {
+        cancellation_test_hooks::configure(&mode);
     }
     Child::default()
 }

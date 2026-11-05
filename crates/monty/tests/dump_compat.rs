@@ -6,7 +6,10 @@
 //! `DUMP_VERSION`, and a synthetic old/new type pair round-tripped through the
 //! codec itself.
 
-use std::{env, fs, path::PathBuf};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 use insta::assert_snapshot;
 use monty::{
@@ -235,13 +238,13 @@ assert add5(2) == 7
 /// regenerate with `UPDATE_DUMP_FIXTURE=1 cargo test -p monty --test dump_compat`.
 #[test]
 fn fixture_dump_loads_and_resumes() {
-    check_fixture_dump(fixture_path());
+    check_fixture_dump(&fixture_path());
 }
 
 /// Genuine accepted v33 bytes remain readable; never regenerate this fixture.
 #[test]
 fn previous_accepted_v33_fixture_loads_and_resumes() {
-    check_fixture_dump(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v33.bin"));
+    check_fixture_dump(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v33.bin"));
 }
 
 /// Header-only protocol probes: unsupported versions must fail before CBOR decoding.
@@ -273,7 +276,7 @@ fn unsupported_versions_are_rejected_before_payload() {
 /// Genuine milestone2 producer state remains unchanged and readable.
 #[test]
 fn previous_accepted_v34_fixture_loads_and_resumes() {
-    check_fixture_dump(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v34.bin"));
+    check_fixture_dump(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v34.bin"));
 }
 
 /// Both identity-only state and retained named helpers must survive a genuine dump.
@@ -363,40 +366,40 @@ asyncio.run(main())
 /// Genuine version-32 snapshots predate public Queue metadata.
 #[test]
 fn previous_run_cleanup_fixture_loads_and_resumes() {
-    check_fixture_dump(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v32.bin"));
+    check_fixture_dump(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v32.bin"));
 }
 
 /// Genuine version-31 snapshots predate explicit run and ordinary cleanup ownership.
 #[test]
 fn previous_saved_cleanup_fixture_loads_and_resumes() {
-    check_fixture_dump(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v31.bin"));
+    check_fixture_dump(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v31.bin"));
 }
 
 /// Genuine version-30 snapshots predate saved exceptional-cleanup roles.
 #[test]
 fn previous_public_groups_fixture_loads_and_resumes() {
-    check_fixture_dump(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v30.bin"));
+    check_fixture_dump(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v30.bin"));
 }
 
 /// Genuine version-29 snapshots predate TaskGroup ownership and root shutdown.
 #[test]
 fn previous_public_tasks_fixture_loads_and_resumes() {
-    check_fixture_dump(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v29.bin"));
+    check_fixture_dump(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v29.bin"));
 }
 
 /// Genuine version-28 snapshots predate public Task metadata and join routes.
 #[test]
 fn previous_protected_gather_fixture_loads_and_resumes() {
-    check_fixture_dump(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v28.bin"));
+    check_fixture_dump(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v28.bin"));
 }
 
 /// Version 27 also predates the protected-gather barrier.
 #[test]
 fn previous_queue_fixture_loads_and_resumes() {
-    check_fixture_dump(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v27.bin"));
+    check_fixture_dump(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v27.bin"));
 }
 
-fn check_fixture_dump(path: PathBuf) {
+fn check_fixture_dump(path: &Path) {
     if env::var_os(UPDATE_FIXTURE).is_some() && path == fixture_path() {
         let mut repl = MontyRepl::new("fixture.py", ResourceTracker::default(), CompileOptions::default());
         repl.feed_run(FIXTURE_STATE, vec![], PrintWriter::Stdout).unwrap();
@@ -414,13 +417,13 @@ fn check_fixture_dump(path: PathBuf) {
         assert_eq!(call.function_name, "host_call");
         let bytes = dump("fixture.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, bytes).unwrap();
+        fs::write(path, bytes).unwrap();
         eprintln!("updated {}", path.display());
         // Snapshots own manual heap references; abandon them contextually.
         drop(progress.into_function_call().unwrap().into_repl());
         return;
     }
-    let bytes = fs::read(&path).unwrap_or_else(|err| {
+    let bytes = fs::read(path).unwrap_or_else(|err| {
         panic!(
             "failed to read {}: {err}; regenerate with {UPDATE_FIXTURE}=1 cargo test -p monty --test dump_compat",
             path.display()

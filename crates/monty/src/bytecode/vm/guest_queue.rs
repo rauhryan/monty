@@ -262,7 +262,7 @@ pub(super) fn finish_queue_operation(id: HeapId, commit: bool, heap: &mut HeapRe
     (result, queue)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ref-count-return"))]
 impl VM<'_> {
     /// Exercise FIFO cancellation at the internal delivery seam of real blocked tasks.
     pub(crate) fn ownership_probe_queue_waiter(&mut self, put: bool) {
