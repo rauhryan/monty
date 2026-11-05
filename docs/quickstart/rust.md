@@ -376,7 +376,6 @@ Already-entered matching retains its original error across selector suspension; 
 Blocking synchronous I/O and nonterminating cleanup remain outside the delivery guarantee.
 The experimental owned-child scope adds descendant cancellation and drain; see the [asyncio limitations](../limitations/asyncio.md#experimental-owned-children).
 
-
 For the experimental native coroutine route, call
 `ReplResolveFutures::validate_results` by reference before transferring a suspended
 execution to `resume_native` when invalid batches must leave it resumable.

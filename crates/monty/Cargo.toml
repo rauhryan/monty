@@ -83,3 +83,8 @@ serde_json = { workspace = true }
 
 [lints]
 workspace = true
+
+# Native half of the concurrency replay checks; uses the workspace lockfile.
+[[example]]
+name = "concurrency_transport"
+path = "tests/support/concurrency_transport.rs"

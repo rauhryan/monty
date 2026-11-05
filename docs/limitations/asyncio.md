@@ -285,8 +285,6 @@ Exit receives the exception type, exception object and `None` rather than a trac
 As with [ordinary context managers](with.md), exit is looked up again at exit, so replacing `__aexit__` during the body calls the replacement.
 
 Cancellation and resource/child ownership are host/library policy; the syntax itself injects no cancellation and implements no deadlines or task groups.
-The experimental examples in `tools/coroutines/` include a combined `Timebox` resource/child scope with explicit host-driven spawn, join and exit drain requests.
-They do not provide an importable scheduler package or a production authority journal.
 
 ### Host cancellation and experimental native entry
 

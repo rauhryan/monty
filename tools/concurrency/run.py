@@ -1,28 +1,18 @@
-"""Build and replay the maintained concurrency checks using tracked inputs only."""
+"""Build and replay native/Wasm concurrency regressions."""
 
 import argparse
-import hashlib
-import importlib.util
 import json
 import shutil
 from pathlib import Path
 
 import guard
+import replay
 
 ROOT = Path(__file__).resolve().parent
 REPO = guard.REPO
-LEGACY = REPO / 'tools/coroutines'
-
-
-def load(name, path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def digest(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+FIXTURES = REPO / 'crates/monty/tests/fixtures/concurrency'
+NATIVE = guard.TARGET / 'debug/examples/concurrency_transport'
+digest = replay.digest
 
 
 def files_under(directory):
@@ -44,10 +34,10 @@ def sources():
         for name in ('src', 'wit', 'proto'):
             paths.extend(files_under(crate / name))
     paths.extend(files_under(ROOT))
-    for name in ('native_async', 'native1', 'cancelled_error', 'authored_cancellation'):
-        paths.extend(files_under(LEGACY / name))
+    paths.extend(files_under(FIXTURES))
     paths.extend(
         [
+            REPO / 'crates/monty/tests/support/concurrency_transport.rs',
             REPO / 'crates/monty-js/scripts/build-component.mjs',
             REPO / 'crates/monty-js/package.json',
             REPO / 'crates/monty-js/package-lock.json',
@@ -57,10 +47,7 @@ def sources():
 
 
 def artifacts():
-    paths = [
-        guard.TARGET / 'debug/native_async',
-        guard.TARGET / 'wasm32-wasip1/release/monty_wasm_runtime.wasm',
-    ]
+    paths = [NATIVE, guard.TARGET / 'wasm32-wasip1/release/monty_wasm_runtime.wasm']
     component = REPO / 'crates/monty-js/dist/worker/component'
     paths.extend(component.glob('*.js'))
     paths.extend(component.glob('*.wasm'))
@@ -91,24 +78,34 @@ def authenticate(path):
 
 
 def preflight():
-    required = [
-        ROOT / 'native/Cargo.toml',
-        ROOT / 'native/Cargo.lock',
-        LEGACY / 'native_async/native.rs',
-        LEGACY / 'native_async/verify.py',
-        LEGACY / 'native1/bind.py',
-        LEGACY / 'cancelled_error/wasm.mjs',
-        LEGACY / 'cancelled_error/verify.py',
-        LEGACY / 'authored_cancellation/verify.py',
-    ]
-    for path in required:
-        if not path.is_file():
-            raise RuntimeError('missing tracked input: ' + str(path))
-    cancellation = load('cancellation', LEGACY / 'cancelled_error/verify.py')
-    gate = cancellation.gate
-    gate.ROOT = cancellation.original_root
-    gate.self_check()
-    return cancellation
+    """Preserve the frozen public-async oracle and source hashes across relocation."""
+    frozen = FIXTURES / 'public_async'
+    for name, expected in json.loads(
+        (frozen / 'contract.sha256.json').read_text()
+    ).items():
+        path = frozen / (name + '.txt' if name.endswith('.py') else name)
+        replay.check(digest(path) == expected, 'frozen input changed: ' + name)
+    cases = {
+        'native_async/' + name: case
+        | {'source': 'public_async/cases/' + name + '.py.txt'}
+        for name, case in json.loads((frozen / 'contract.json').read_text())[
+            'cases'
+        ].items()
+    }
+    cases.update(replay.strict_json((ROOT / 'cases.json').read_text()))
+    replay.check(len(cases) == 14, 'unexpected case inventory')
+    for name, case in cases.items():
+        replay.check(
+            len(case['steps']) == len(case['batches']) > 0,
+            'invalid host script: ' + name,
+        )
+        source = (FIXTURES / case['source']).read_text()
+        replay.check(
+            '__monty_host__' not in source and '._native' not in source,
+            'experimental guest entry',
+        )
+    replay.self_check()
+    return cases
 
 
 def build(output):
@@ -118,10 +115,10 @@ def build(output):
             'cargo',
             'build',
             '--locked',
-            '--manifest-path',
-            str(ROOT / 'native/Cargo.toml'),
-            '--bin',
-            'native_async',
+            '-p',
+            'monty',
+            '--example',
+            'concurrency_transport',
         ],
         'wasm': [
             'cargo',
@@ -162,42 +159,20 @@ def build(output):
     return association
 
 
-def verify(association, output, cancellation):
-    """Reuse fixed comparisons unchanged; redirect only executable selection."""
+def verify(association, output, cases):
     authenticate(association)
-    gate = cancellation.gate
-    gate.ROOT = cancellation.original_root
-    frozen = gate.frozen()
-    authored = load('authored', LEGACY / 'authored_cancellation/verify.py')
-    suites = [
-        ('native_async', frozen),
-        ('cancelled_error', cancellation.CASES),
-        ('authored_cancellation', authored.CASES),
-    ]
-    invoke = cancellation.base_invoke
-
-    def invoke_adapter(command, arguments, evidence):
-        if command[0] == 'node':
-            command = ['node', str(LEGACY / 'cancelled_error/wasm.mjs')]
-        else:
-            command = [str(guard.TARGET / 'debug/native_async')]
-        return invoke(command, arguments, evidence)
-
-    gate.invoke = invoke_adapter
     results = {}
-    for suite, cases in suites:
-        gate.ROOT = LEGACY / suite
-        gate.terminal = (
-            cancellation.terminal
-            if suite == 'cancelled_error'
-            else cancellation.base_terminal
+    for backend in ('native', 'wasm'):
+        command = (
+            [str(NATIVE)] if backend == 'native' else ['node', str(ROOT / 'wasm.mjs')]
         )
-        for backend in ('native', 'wasm'):
-            for name, case in cases.items():
-                key = f'{suite}-{backend}-{name}'
-                result = gate.run_case(name, case, backend, output / key)
-                results[key] = result
-                print(key, result, flush=True)
+        for name, case in cases.items():
+            key = backend + '-' + name.replace('/', '-')
+            result = replay.run_case(
+                case, command, FIXTURES / case['source'], output / key
+            )
+            results[key] = result
+            print(key, result, flush=True)
     authenticate(association)
     (output / 'report.json').write_text(json.dumps(results, indent=2) + '\n')
     if any(result['status'] != 'PASS' for result in results.values()):
@@ -210,10 +185,10 @@ def main():
     parser.add_argument('--output', type=Path)
     parser.add_argument('--association', type=Path)
     args = parser.parse_args()
-    cancellation = preflight()
+    cases = preflight()
     if args.action == 'sources':
         print(
-            f'Tracked-source preflight passed: {len(sources())} inputs; no build artifacts required'
+            f'Source preflight passed: {len(sources())} inputs; no build artifacts required'
         )
         return
     if args.output is None:
@@ -227,7 +202,7 @@ def main():
         if args.action in ('build', 'run'):
             association = build(output)
         if args.action in ('verify', 'run'):
-            verify(association, output, cancellation)
+            verify(association, output, cases)
     print('PASS', output)
 
 

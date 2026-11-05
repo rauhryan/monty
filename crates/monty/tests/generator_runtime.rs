@@ -580,7 +580,7 @@ None
 fn completion_identity_and_cycles() {
     let source = format!(
         "def exchange(value):\n    return None\n{}",
-        include_str!("../../../tools/coroutines/cases/completion.py")
+        include_str!("fixtures/concurrency/generators/completion.py.txt")
     );
     let output = checked_run(&source);
     assert_eq!(
@@ -1336,8 +1336,8 @@ fn new_repl() -> MontyRepl {
 /// host cut inside an executing child (activation pin) and dormant phase cuts.
 #[test]
 fn scope9_aggregate_original_and_restored_release_before_teardown() {
-    let library = include_str!("../../../tools/coroutines/scope7_guest.py");
-    let helpers = include_str!("../../../tools/coroutines/scope9_ownership.py");
+    let library = include_str!("fixtures/concurrency/generator_scopes/library.py.txt");
+    let helpers = include_str!("fixtures/concurrency/generator_scopes/ownership.py.txt");
     let stages = [
         ("body-wait", "start9()\nhost()"),
         (
@@ -1427,8 +1427,8 @@ fn scope9_aggregate_original_and_restored_release_before_teardown() {
 /// replace them. Event history is deliberately cleared for lifetime measurement.
 #[test]
 fn scope9_queued_owners_deferred_handles_and_retained_results() {
-    let library = include_str!("../../../tools/coroutines/scope7_guest.py");
-    let helpers = include_str!("../../../tools/coroutines/scope9_ownership.py");
+    let library = include_str!("fixtures/concurrency/generator_scopes/library.py.txt");
+    let helpers = include_str!("fixtures/concurrency/generator_scopes/ownership.py.txt");
     let output = checked_run(&format!(
         "{library}\n{helpers}\n{}",
         r"
@@ -1508,7 +1508,7 @@ None
 /// Host syntax uses the same owner graph through pending returns and exceptions.
 #[test]
 fn host_async_context_normal_error_return_and_suppression() {
-    let library = include_str!("../../../tools/coroutines/async10_guest.py");
+    let library = include_str!("fixtures/concurrency/async_contexts/guest.py.txt");
     let source = format!(
         "{library}\n{}",
         r"
@@ -1709,9 +1709,9 @@ None
 /// Combined scopes own pending completions, deferred handles and cyclic task frames.
 #[test]
 fn combined11_original_restored_abandon_before_teardown() {
-    let library = include_str!("../../../tools/coroutines/combined11_guest.py");
-    let driver = include_str!("../../../tools/coroutines/combined11_driver.py");
-    let helpers = include_str!("../../../tools/coroutines/combined11_ownership.py");
+    let library = include_str!("fixtures/concurrency/structured_cleanup/library.py.txt");
+    let driver = include_str!("fixtures/concurrency/structured_cleanup/driver.py.txt");
+    let helpers = include_str!("fixtures/concurrency/structured_cleanup/ownership.py.txt");
     for (stage, cut) in [
         ("new", "host()"),
         ("body", "start11()\nhost()"),
@@ -1810,9 +1810,9 @@ fn combined11_original_restored_abandon_before_teardown() {
 /// Cancellation drops a queued acquisition owner while keeping live deferred handles.
 #[test]
 fn combined11_counted_cancel_and_cleanup_owners() {
-    let library = include_str!("../../../tools/coroutines/combined11_guest.py");
-    let driver = include_str!("../../../tools/coroutines/combined11_driver.py");
-    let helpers = include_str!("../../../tools/coroutines/combined11_ownership.py");
+    let library = include_str!("fixtures/concurrency/structured_cleanup/library.py.txt");
+    let driver = include_str!("fixtures/concurrency/structured_cleanup/driver.py.txt");
+    let helpers = include_str!("fixtures/concurrency/structured_cleanup/ownership.py.txt");
     let output = checked_run(&format!(
         "{library}\n{driver}\n{helpers}\n{}",
         r"
@@ -1850,12 +1850,12 @@ None
 /// R11-1: release protected nested-exit graphs while globals and heap remain live.
 #[test]
 fn combined12_nested_cancel_abandon_before_teardown() {
-    let library = include_str!("../../../tools/coroutines/combined11_guest.py").replace(
+    let library = include_str!("fixtures/concurrency/structured_cleanup/library.py.txt").replace(
         "inner.defer('inner-arbitrary', 'I')",
         "inner.defer('inner-arbitrary', token)",
     );
-    let driver = include_str!("../../../tools/coroutines/combined11_driver.py");
-    let helpers = include_str!("../../../tools/coroutines/combined11_ownership.py");
+    let driver = include_str!("fixtures/concurrency/structured_cleanup/driver.py.txt");
+    let helpers = include_str!("fixtures/concurrency/structured_cleanup/ownership.py.txt");
     for (stage, cut) in [
         ("inner-drain", "cancel11('LATE-INNER')"),
         ("inner-cleanup", "cancel11('LATE-INNER')\nstep11()"),
@@ -1918,12 +1918,12 @@ fn combined12_nested_cancel_abandon_before_teardown() {
 /// Accepted cleanup aliases survive deferred cancellation and return to one owner.
 #[test]
 fn combined12_nested_cancel_alias_owners() {
-    let library = include_str!("../../../tools/coroutines/combined11_guest.py").replace(
+    let library = include_str!("fixtures/concurrency/structured_cleanup/library.py.txt").replace(
         "inner.defer('inner-arbitrary', 'I')",
         "inner.defer('inner-arbitrary', token)",
     );
-    let driver = include_str!("../../../tools/coroutines/combined11_driver.py");
-    let helpers = include_str!("../../../tools/coroutines/combined11_ownership.py");
+    let driver = include_str!("fixtures/concurrency/structured_cleanup/driver.py.txt");
+    let helpers = include_str!("fixtures/concurrency/structured_cleanup/ownership.py.txt");
     let output = checked_run(&format!(
         "{library}\n{driver}\n{helpers}\n{}",
         r"
@@ -1962,10 +1962,10 @@ None
 /// R12-1: new contexts and rejected input owners release on original/restored abandonment.
 #[test]
 fn combined13_fresh_scope_abandon_before_teardown() {
-    let library = include_str!("../../../tools/coroutines/combined11_guest.py");
-    let driver = include_str!("../../../tools/coroutines/combined11_driver.py");
-    let helpers = include_str!("../../../tools/coroutines/combined11_ownership.py");
-    let fixture = include_str!("../../../tools/coroutines/combined13_ownership.py");
+    let library = include_str!("fixtures/concurrency/structured_cleanup/library.py.txt");
+    let driver = include_str!("fixtures/concurrency/structured_cleanup/driver.py.txt");
+    let helpers = include_str!("fixtures/concurrency/structured_cleanup/ownership.py.txt");
+    let fixture = include_str!("fixtures/concurrency/structured_cleanup/retained_ownership.py.txt");
     for (stage, cut) in [
         ("new-scope", "prepare13()"),
         ("queued-rejection", "prepare13()\nhost()"),
@@ -2015,10 +2015,10 @@ fn combined13_fresh_scope_abandon_before_teardown() {
 /// Rejection releases label/mode inputs while deferred handles survive real cleanup.
 #[test]
 fn combined13_rejected_spawn_and_deferred_alias_owners() {
-    let library = include_str!("../../../tools/coroutines/combined11_guest.py");
-    let driver = include_str!("../../../tools/coroutines/combined11_driver.py");
-    let helpers = include_str!("../../../tools/coroutines/combined11_ownership.py");
-    let fixture = include_str!("../../../tools/coroutines/combined13_ownership.py");
+    let library = include_str!("fixtures/concurrency/structured_cleanup/library.py.txt");
+    let driver = include_str!("fixtures/concurrency/structured_cleanup/driver.py.txt");
+    let helpers = include_str!("fixtures/concurrency/structured_cleanup/ownership.py.txt");
+    let fixture = include_str!("fixtures/concurrency/structured_cleanup/retained_ownership.py.txt");
     let output = checked_run(&format!(
         "{library}\n{driver}\n{helpers}\n{fixture}\n{}",
         r"
@@ -2055,11 +2055,11 @@ None
 #[test]
 fn coordinator1_live_heap_and_abandonment() {
     let source = [
-        include_str!("../../../tools/coroutines/coordinator1/bindings.py"),
-        include_str!("../../../tools/coroutines/coordinator1/kernel.py"),
-        include_str!("../../../tools/coroutines/coordinator1/coordinator.py"),
-        include_str!("../../../tools/coroutines/coordinator1/stress_workload.py"),
-        include_str!("../../../tools/coroutines/coordinator1/ownership.py"),
+        include_str!("fixtures/concurrency/coordinator_stress/bindings.py.txt"),
+        include_str!("fixtures/concurrency/coordinator_stress/kernel.py.txt"),
+        include_str!("fixtures/concurrency/coordinator_stress/coordinator.py.txt"),
+        include_str!("fixtures/concurrency/coordinator_stress/stress_workload.py.txt"),
+        include_str!("fixtures/concurrency/coordinator_stress/ownership.py.txt"),
         "def adapt(body):\n    return body\nstate = None",
     ]
     .join("\n");
@@ -2117,7 +2117,7 @@ fn coordinator1_live_heap_and_abandonment() {
 /// Both original and loaded graphs reclaim aliases/cycles before heap teardown.
 #[test]
 fn native1_scheduler_cleanup_ownership() {
-    let definitions = include_str!("../../../tools/coroutines/native1/semantics.py");
+    let definitions = include_str!("fixtures/concurrency/native_cleanup/semantics.py.txt");
     let mut repl = new_repl();
     repl.feed_run(
         definitions,
@@ -2292,7 +2292,7 @@ fn native1_composes_with_existing_gather_tasks() {
 fn native2_cancelled_cleanup_live_ownership() {
     let mut repl = new_repl();
     repl.feed_run(
-        include_str!("../../../tools/coroutines/cancelled_error/migrated/native1/cancellation_ownership.py"),
+        include_str!("fixtures/concurrency/native_cleanup/cancellation_ownership.py.txt"),
         vec![("exchange".into(), MontyObject::function("exchange", None))],
         PrintWriter::Stdout,
     )
@@ -2418,7 +2418,7 @@ fn native4_cleanup_exit_pending_owner_census() {
     for mode in ["return", "error", "cleanup_error"] {
         let mut repl = new_repl();
         repl.feed_run(
-            include_str!("../../../tools/coroutines/cancelled_error/migrated/native1/cleanup_exit_ownership.py"),
+            include_str!("fixtures/concurrency/native_cleanup/cleanup_exit_ownership.py.txt"),
             vec![("exchange".into(), MontyObject::function("exchange", None))],
             PrintWriter::Stdout,
         )
@@ -2862,7 +2862,7 @@ fn native7_genuine_legacy_activation_and_delivered_recovery() {
 fn native7_policy2_owner_census() {
     let mut repl = new_repl();
     repl.feed_run(
-        include_str!("../../../tools/coroutines/cancelled_error/migrated/native1/cancellation_ownership.py"),
+        include_str!("fixtures/concurrency/native_cleanup/cancellation_ownership.py.txt"),
         vec![("exchange".into(), MontyObject::function("exchange", None))],
         PrintWriter::Stdout,
     )
@@ -2947,7 +2947,7 @@ fn native7_policy4_owner_census() {
     for mode in ["return", "error", "cleanup_error"] {
         let mut repl = new_repl();
         repl.feed_run(
-            include_str!("../../../tools/coroutines/cancelled_error/migrated/native1/cleanup_exit_ownership.py"),
+            include_str!("fixtures/concurrency/native_cleanup/cleanup_exit_ownership.py.txt"),
             vec![("exchange".into(), MontyObject::function("exchange", None))],
             PrintWriter::Stdout,
         )
@@ -3299,7 +3299,7 @@ fn repair10_census(mode: &str) {
     for restoring in [false, true] {
         let mut repl = new_repl();
         repl.feed_run(
-            include_str!("../../../tools/coroutines/cancelled_error/migrated/catchable_cancellation10/ownership.py"),
+            include_str!("fixtures/concurrency/cancellation_export/ownership.py.txt"),
             vec![("exchange".into(), MontyObject::function("exchange", None))],
             PrintWriter::Stdout,
         )
@@ -3451,7 +3451,7 @@ fn native7_compatibility11_historical_activation() {
 fn concurrent_io_live_ownership() {
     let mut repl = new_repl();
     repl.feed_run(
-        include_str!("../../../tools/coroutines/concurrent_io/wrappers.py"),
+        include_str!("fixtures/concurrency/concurrent_io/wrappers.py.txt"),
         vec![],
         PrintWriter::Stdout,
     )
@@ -3537,23 +3537,23 @@ fn concurrent_io_live_ownership() {
 #[test]
 fn concurrent_io_child_scope_ownership() {
     for fixture in [
-        include_str!("../../../tools/coroutines/cancelled_error/migrated/concurrent_io/children_drain.py"),
-        include_str!("../../../tools/coroutines/concurrent_io/children_errors.py"),
-        include_str!("../../../tools/coroutines/cancelled_error/migrated/concurrent_io/children_cancel.py"),
-        include_str!("../../../tools/coroutines/cancelled_error/migrated/concurrent_io/host_cancel.py"),
-        include_str!("../../../tools/coroutines/cancelled_error/migrated/concurrent_io/deferred_cleanup.py"),
-        include_str!("../../../tools/coroutines/cancelled_error/migrated/concurrent_io/gather_host.py"),
-        include_str!("../../../tools/coroutines/concurrent_io/gather_first_error.py"),
+        include_str!("fixtures/concurrency/concurrent_io/children_drain.py.txt"),
+        include_str!("fixtures/concurrency/concurrent_io/children_errors.py.txt"),
+        include_str!("fixtures/concurrency/concurrent_io/children_cancel.py.txt"),
+        include_str!("fixtures/concurrency/concurrent_io/host_cancel.py.txt"),
+        include_str!("fixtures/concurrency/concurrent_io/deferred_cleanup.py.txt"),
+        include_str!("fixtures/concurrency/concurrent_io/gather_host.py.txt"),
+        include_str!("fixtures/concurrency/concurrent_io/gather_first_error.py.txt"),
     ] {
         let mut repl = new_repl();
         repl.feed_run(
-            include_str!("../../../tools/coroutines/concurrent_io/wrappers.py"),
+            include_str!("fixtures/concurrency/concurrent_io/wrappers.py.txt"),
             vec![],
             PrintWriter::Stdout,
         )
         .unwrap();
         repl.feed_run(
-            include_str!("../../../tools/coroutines/concurrent_io/scope.py"),
+            include_str!("fixtures/concurrency/concurrent_io/scope.py.txt"),
             vec![],
             PrintWriter::Stdout,
         )
@@ -4284,19 +4284,15 @@ async def main():
 fn native_async_public_task_cancel_snapshot_ownership() {
     for (program, replies) in [
         (
-            include_str!("../../../tools/coroutines/cancelled_error/migrated/native_async_tasks/cases/cancel.py"),
+            include_str!("fixtures/concurrency/tasks/cancel.py.txt"),
             vec!["control", "again", "release", "waiter-release"],
         ),
         (
-            include_str!(
-                "../../../tools/coroutines/cancelled_error/migrated/native_async_tasks/cases/cancel-gather.py"
-            ),
+            include_str!("fixtures/concurrency/tasks/cancel-gather.py.txt"),
             vec!["control", "A-release", "B-release", "owner-release"],
         ),
         (
-            include_str!(
-                "../../../tools/coroutines/cancelled_error/migrated/native_async_tasks/cases/cancel-gather-wrapped.py"
-            ),
+            include_str!("fixtures/concurrency/tasks/cancel-gather-wrapped.py.txt"),
             vec!["control", "A-release", "B-release", "owner-release"],
         ),
     ] {
@@ -4375,269 +4371,259 @@ fn native_async_public_groups_snapshot_ownership() {
     for (name, source, replies, host_cancelled) in [
         (
             "repair7-final-return",
-            include_str!(
-                "../../../tools/coroutines/cancelled_error/migrated/native_async_groups/cases/repair7-final-return.py"
-            ),
+            include_str!("fixtures/concurrency/task_groups/repair7-final-return.py.txt"),
             vec!["control", "repeat", "release", "parent-release"],
             false,
         ),
         (
             "repair7-host",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/repair7-host.py"),
+            include_str!("fixtures/concurrency/task_groups/repair7-host.py.txt"),
             vec!["$cancel", "$cancel", "A-release", "B-release", "parent-release"],
             true,
         ),
         (
             "repair7-return",
-            include_str!(
-                "../../../tools/coroutines/cancelled_error/migrated/native_async_groups/cases/repair7-return.py"
-            ),
+            include_str!("fixtures/concurrency/task_groups/repair7-return.py.txt"),
             vec!["control", "repeat", "release", "parent-release"],
             false,
         ),
         (
             "repair7-caught",
-            include_str!(
-                "../../../tools/coroutines/cancelled_error/migrated/native_async_groups/cases/repair7-caught.py"
-            ),
+            include_str!("fixtures/concurrency/task_groups/repair7-caught.py.txt"),
             vec!["control", "repeat", "release", "parent-release"],
             false,
         ),
         (
             "repair7-body-AB",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/repair7-body-AB.py"),
+            include_str!("fixtures/concurrency/task_groups/repair7-body-AB.py.txt"),
             vec!["A", "B", "A-release", "B-release", "parent-release"],
             false,
         ),
         (
             "repair7-nested-AB",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/repair7-nested-AB.py"),
+            include_str!("fixtures/concurrency/task_groups/repair7-nested-AB.py.txt"),
             vec!["A", "B", "A-release", "B-release", "parent-release"],
             false,
         ),
         (
             "repair7-replace-AB",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/repair7-replace-AB.py"),
+            include_str!("fixtures/concurrency/task_groups/repair7-replace-AB.py.txt"),
             vec!["A", "B", "A-release", "B-release", "parent-release"],
             false,
         ),
         (
             "repair7-sync-helper-AB",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/repair7-sync-helper-AB.py"),
+            include_str!("fixtures/concurrency/task_groups/repair7-sync-helper-AB.py.txt"),
             vec!["A", "B", "A-release", "B-release", "parent-release"],
             false,
         ),
         (
             "repair7-async-helper-AB",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/repair7-async-helper-AB.py"),
+            include_str!("fixtures/concurrency/task_groups/repair7-async-helper-AB.py.txt"),
             vec!["A", "B", "A-release", "B-release", "parent-release"],
             false,
         ),
         (
             "repair7-exit-false-AB",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/repair7-exit-false-AB.py"),
+            include_str!("fixtures/concurrency/task_groups/repair7-exit-false-AB.py.txt"),
             vec!["A", "B", "A-release", "B-release", "parent-release"],
             false,
         ),
         (
             "repair7-exit-raise-AB",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/repair7-exit-raise-AB.py"),
+            include_str!("fixtures/concurrency/task_groups/repair7-exit-raise-AB.py.txt"),
             vec!["A", "B", "A-release", "B-release", "parent-release"],
             false,
         ),
         (
             "repair7-cyclic-AB",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/repair7-cyclic-AB.py"),
+            include_str!("fixtures/concurrency/task_groups/repair7-cyclic-AB.py.txt"),
             vec!["A", "B", "A-release", "B-release", "parent-release"],
             false,
         ),
         (
             "repair7-body-BA",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/repair7-body-BA.py"),
+            include_str!("fixtures/concurrency/task_groups/repair7-body-BA.py.txt"),
             vec!["A", "B", "B-release", "A-release", "parent-release"],
             false,
         ),
         (
             "repair7-nested-BA",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/repair7-nested-BA.py"),
+            include_str!("fixtures/concurrency/task_groups/repair7-nested-BA.py.txt"),
             vec!["A", "B", "B-release", "A-release", "parent-release"],
             false,
         ),
         (
             "repair7-replace-BA",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/repair7-replace-BA.py"),
+            include_str!("fixtures/concurrency/task_groups/repair7-replace-BA.py.txt"),
             vec!["A", "B", "B-release", "A-release", "parent-release"],
             false,
         ),
         (
             "repair7-sync-helper-BA",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/repair7-sync-helper-BA.py"),
+            include_str!("fixtures/concurrency/task_groups/repair7-sync-helper-BA.py.txt"),
             vec!["A", "B", "B-release", "A-release", "parent-release"],
             false,
         ),
         (
             "repair7-async-helper-BA",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/repair7-async-helper-BA.py"),
+            include_str!("fixtures/concurrency/task_groups/repair7-async-helper-BA.py.txt"),
             vec!["A", "B", "B-release", "A-release", "parent-release"],
             false,
         ),
         (
             "repair7-exit-false-BA",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/repair7-exit-false-BA.py"),
+            include_str!("fixtures/concurrency/task_groups/repair7-exit-false-BA.py.txt"),
             vec!["A", "B", "B-release", "A-release", "parent-release"],
             false,
         ),
         (
             "repair7-exit-raise-BA",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/repair7-exit-raise-BA.py"),
+            include_str!("fixtures/concurrency/task_groups/repair7-exit-raise-BA.py.txt"),
             vec!["A", "B", "B-release", "A-release", "parent-release"],
             false,
         ),
         (
             "repair7-cyclic-BA",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/repair7-cyclic-BA.py"),
+            include_str!("fixtures/concurrency/task_groups/repair7-cyclic-BA.py.txt"),
             vec!["A", "B", "B-release", "A-release", "parent-release"],
             false,
         ),
         (
             "repair7-guest",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/repair7-guest.py"),
+            include_str!("fixtures/concurrency/task_groups/repair7-guest.py.txt"),
             vec!["A", "control", "repeat", "A-release", "parent-release"],
             false,
         ),
         (
             "repair7-suppress",
-            include_str!(
-                "../../../tools/coroutines/cancelled_error/migrated/native_async_groups/cases/repair7-suppress.py"
-            ),
+            include_str!("fixtures/concurrency/task_groups/repair7-suppress.py.txt"),
             vec!["control", "repeat", "release", "parent-release"],
             false,
         ),
         (
             "retained-AB",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/retained-AB.py"),
+            include_str!("fixtures/concurrency/task_groups/retained-AB.py.txt"),
             vec!["A", "B", "A-release", "B-release", "parent-release"],
             false,
         ),
         (
             "retained-BA",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/retained-BA.py"),
+            include_str!("fixtures/concurrency/task_groups/retained-BA.py.txt"),
             vec!["A", "B", "B-release", "A-release", "parent-release"],
             false,
         ),
         (
             "retained-cyclic",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/retained-cyclic.py"),
+            include_str!("fixtures/concurrency/task_groups/retained-cyclic.py.txt"),
             vec!["A", "B", "A-release", "B-release", "parent-release"],
             false,
         ),
         (
             "outer-failure-inner-exit",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/outer-failure-inner-exit.py"),
+            include_str!("fixtures/concurrency/task_groups/outer-failure-inner-exit.py.txt"),
             vec!["A", "B-release"],
             false,
         ),
         (
             "depth3-normal-exit",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/depth3-normal-exit.py"),
+            include_str!("fixtures/concurrency/task_groups/depth3-normal-exit.py.txt"),
             vec!["A", "B-release", "parent-release"],
             false,
         ),
         (
             "depth3-body",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/depth3-body.py"),
+            include_str!("fixtures/concurrency/task_groups/depth3-body.py.txt"),
             vec!["A", "B-release", "parent-release"],
             false,
         ),
         (
             "depth3-protected",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/depth3-protected.py"),
+            include_str!("fixtures/concurrency/task_groups/depth3-protected.py.txt"),
             vec!["body", "A", "B-release", "owner-release", "parent-release"],
             false,
         ),
         (
             "depth3-failure-exit",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/depth3-failure-exit.py"),
+            include_str!("fixtures/concurrency/task_groups/depth3-failure-exit.py.txt"),
             vec!["C", "A", "B-release", "parent-release"],
             false,
         ),
         (
             "nested-guest-repeat",
-            include_str!(
-                "../../../tools/coroutines/cancelled_error/migrated/native_async_groups/cases/nested-guest-repeat.py"
-            ),
+            include_str!("fixtures/concurrency/task_groups/nested-guest-repeat.py.txt"),
             vec!["control", "repeat", "B-release", "owner-release"],
             false,
         ),
         (
             "nested-host-repeat",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/nested-host-repeat.py"),
+            include_str!("fixtures/concurrency/task_groups/nested-host-repeat.py.txt"),
             vec!["$cancel", "B-release", "owner-release"],
             true,
         ),
         (
             "guest-natural",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/guest-natural.py"),
+            include_str!("fixtures/concurrency/task_groups/guest-natural.py.txt"),
             vec!["A", "control", "repeat", "A-release", "parent-release"],
             false,
         ),
         (
             "same-owner",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/same-owner.py"),
+            include_str!("fixtures/concurrency/task_groups/same-owner.py.txt"),
             vec!["B", "after-inner", "A", "parent-release"],
             false,
         ),
         (
             "protected",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/protected.py"),
+            include_str!("fixtures/concurrency/task_groups/protected.py.txt"),
             vec!["body", "A", "C", "child-release", "D", "parent-release"],
             false,
         ),
         (
             "guest-cancel",
-            include_str!("../../../tools/coroutines/cancelled_error/migrated/native_async_groups/cases/cancel.py"),
+            include_str!("fixtures/concurrency/task_groups/cancel.py.txt"),
             vec!["control", "repeat", "A-release", "B-release", "owner-release"],
             false,
         ),
         (
             "body-gather",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/body-gather.py"),
+            include_str!("fixtures/concurrency/task_groups/body-gather.py.txt"),
             vec!["A", "B-release", "K-release", "parent-release"],
             false,
         ),
         (
             "body-joined-child",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/body-joined-child.py"),
+            include_str!("fixtures/concurrency/task_groups/body-joined-child.py.txt"),
             vec!["A", "B-release", "K-release", "parent-release"],
             false,
         ),
         (
             "normal",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/normal.py"),
+            include_str!("fixtures/concurrency/task_groups/normal.py.txt"),
             vec!["B", "A", "discarded", "parent-release"],
             false,
         ),
         (
             "failure",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/failure.py"),
+            include_str!("fixtures/concurrency/task_groups/failure.py.txt"),
             vec!["A", "child-release", "parent-release"],
             false,
         ),
         (
             "host-cancel",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/host-cancel.py"),
+            include_str!("fixtures/concurrency/task_groups/host-cancel.py.txt"),
             vec!["$cancel", "A-release", "B-release", "parent-release"],
             true,
         ),
         (
             "root-error",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/root-error.py"),
+            include_str!("fixtures/concurrency/task_groups/root-error.py.txt"),
             vec!["control", "child-release"],
             false,
         ),
         (
             "root-shutdown",
-            include_str!("../../../tools/coroutines/native_async_groups/cases/root-shutdown.py"),
+            include_str!("fixtures/concurrency/task_groups/root-shutdown.py.txt"),
             vec!["control", "child-release"],
             false,
         ),
@@ -4753,57 +4739,57 @@ fn native_async_run_and_ordinary_cleanup_snapshot_ownership() {
     for (name, source, replies) in [
         (
             "run-cyclic-return",
-            include_str!("../../../tools/coroutines/native_async_boundaries/cases/root-cyclic-false.py"),
+            include_str!("fixtures/concurrency/cleanup_boundaries/root-cyclic-false.py.txt"),
             vec!["control", "child-release"],
         ),
         (
             "run-cyclic-error",
-            include_str!("../../../tools/coroutines/native_async_boundaries/cases/root-cyclic-true.py"),
+            include_str!("fixtures/concurrency/cleanup_boundaries/root-cyclic-true.py.txt"),
             vec!["control", "child-release"],
         ),
         (
             "ordinary-finally",
-            include_str!("../../../tools/coroutines/native_async_boundaries/cases/body-direct-finally.py"),
+            include_str!("fixtures/concurrency/cleanup_boundaries/body-direct-finally.py.txt"),
             vec!["A", "child-release", "parent-release"],
         ),
         (
             "ordinary-context",
-            include_str!("../../../tools/coroutines/native_async_boundaries/cases/body-context.py"),
+            include_str!("fixtures/concurrency/cleanup_boundaries/body-context.py.txt"),
             vec!["A", "child-release", "parent-release"],
         ),
         (
             "ordinary-helper",
-            include_str!("../../../tools/coroutines/native_async_boundaries/cases/body-helper-transfer.py"),
+            include_str!("fixtures/concurrency/cleanup_boundaries/body-helper-transfer.py.txt"),
             vec!["A", "child-release", "parent-release"],
         ),
         (
             "ordinary-recovery",
-            include_str!("../../../tools/coroutines/native_async_boundaries/cases/body-recovery.py"),
+            include_str!("fixtures/concurrency/cleanup_boundaries/body-recovery.py.txt"),
             vec!["A", "recovery", "helper-release", "child-release", "parent-release"],
         ),
         (
             "transferred-direct",
-            include_str!("../../../tools/coroutines/native_async_boundaries/cases/body-transferred-direct.py"),
+            include_str!("fixtures/concurrency/cleanup_boundaries/body-transferred-direct.py.txt"),
             vec!["A", "B", "child-release", "parent-release"],
         ),
         (
             "run-in-task",
-            include_str!("../../../tools/coroutines/native_async_boundaries/cases/run-in-scheduler-task-owned.py"),
+            include_str!("fixtures/concurrency/cleanup_boundaries/run-in-scheduler-task-owned.py.txt"),
             vec!["control", "child-release", "outside"],
         ),
         (
             "run-in-task-nested-group",
-            include_str!("../../../tools/coroutines/native_async_boundaries/cases/run-in-nested-task-group-owned.py"),
+            include_str!("fixtures/concurrency/cleanup_boundaries/run-in-nested-task-group-owned.py.txt"),
             vec!["control", "body", "child-release", "outside"],
         ),
         (
             "host-run",
-            include_str!("../../../tools/coroutines/native_async_boundaries/cases/root-host.py"),
+            include_str!("fixtures/concurrency/cleanup_boundaries/root-host.py.txt"),
             vec!["control", "$cancel", "child-release"],
         ),
         (
             "host-cleanup",
-            include_str!("../../../tools/coroutines/native_async_boundaries/cases/body-host.py"),
+            include_str!("fixtures/concurrency/cleanup_boundaries/body-host.py.txt"),
             vec!["A", "$cancel", "child-release", "parent-release"],
         ),
     ] {
@@ -4881,21 +4867,17 @@ fn native_async_public_queue_snapshot_ownership() {
     for (name, source, replies) in [
         (
             "reserved-get-cancel",
-            include_str!(
-                "../../../tools/coroutines/cancelled_error/migrated/native_async_queues/cases/reserved-get-cancel.py"
-            ),
+            include_str!("fixtures/concurrency/public_queues/reserved-get-cancel.py.txt"),
             vec!["control", "verified"],
         ),
         (
             "reserved-put-cancel",
-            include_str!(
-                "../../../tools/coroutines/cancelled_error/migrated/native_async_queues/cases/reserved-put-cancel.py"
-            ),
+            include_str!("fixtures/concurrency/public_queues/reserved-put-cancel.py.txt"),
             vec!["control", "verified"],
         ),
         (
             "inspection-lazy",
-            include_str!("../../../tools/coroutines/native_async_queues/cases/inspection-lazy.py"),
+            include_str!("fixtures/concurrency/public_queues/inspection-lazy.py.txt"),
             vec![
                 "before-0",
                 "before--2",
@@ -4908,81 +4890,77 @@ fn native_async_public_queue_snapshot_ownership() {
         ),
         (
             "unbounded",
-            include_str!("../../../tools/coroutines/native_async_queues/cases/unbounded.py"),
+            include_str!("fixtures/concurrency/public_queues/unbounded.py.txt"),
             vec!["stored"],
         ),
         (
             "bounded-fifo",
-            include_str!("../../../tools/coroutines/native_async_queues/cases/bounded-fifo.py"),
+            include_str!("fixtures/concurrency/public_queues/bounded-fifo.py.txt"),
             vec!["full", "empty"],
         ),
         (
             "getters-fifo",
-            include_str!("../../../tools/coroutines/native_async_queues/cases/getters-fifo.py"),
+            include_str!("fixtures/concurrency/public_queues/getters-fifo.py.txt"),
             vec!["empty", "done"],
         ),
         (
             "cancel-get",
-            include_str!("../../../tools/coroutines/cancelled_error/migrated/native_async_queues/cases/cancel-get.py"),
+            include_str!("fixtures/concurrency/public_queues/cancel-get.py.txt"),
             vec!["blocked", "done"],
         ),
         (
             "cancel-put",
-            include_str!("../../../tools/coroutines/cancelled_error/migrated/native_async_queues/cases/cancel-put.py"),
+            include_str!("fixtures/concurrency/public_queues/cancel-put.py.txt"),
             vec!["blocked", "done"],
         ),
         (
             "delivered-cancel",
-            include_str!(
-                "../../../tools/coroutines/cancelled_error/migrated/native_async_queues/cases/delivered-cancel.py"
-            ),
+            include_str!("fixtures/concurrency/public_queues/delivered-cancel.py.txt"),
             vec!["control"],
         ),
         (
             "group-failure",
-            include_str!("../../../tools/coroutines/native_async_queues/cases/group-failure.py"),
+            include_str!("fixtures/concurrency/public_queues/group-failure.py.txt"),
             vec!["fail", "child-release", "parent-release"],
         ),
         (
             "ordinary-cleanup",
-            include_str!("../../../tools/coroutines/native_async_queues/cases/ordinary-cleanup.py"),
+            include_str!("fixtures/concurrency/public_queues/ordinary-cleanup.py.txt"),
             vec!["fail", "child-release", "parent-release"],
         ),
         (
             "run-shutdown",
-            include_str!("../../../tools/coroutines/native_async_queues/cases/run-shutdown.py"),
+            include_str!("fixtures/concurrency/public_queues/run-shutdown.py.txt"),
             vec!["control", "child-release"],
         ),
         (
             "protected-cleanup",
-            include_str!("../../../tools/coroutines/native_async_queues/cases/protected-cleanup.py"),
+            include_str!("fixtures/concurrency/public_queues/protected-cleanup.py.txt"),
             vec!["body", "release", "parent-release"],
         ),
         (
             "host-cleanup",
-            include_str!("../../../tools/coroutines/native_async_queues/cases/host-cleanup.py"),
+            include_str!("fixtures/concurrency/public_queues/host-cleanup.py.txt"),
             vec!["$cancel", "$cancel", "release", "parent-release"],
         ),
         (
             "host-group",
-            include_str!("../../../tools/coroutines/native_async_queues/cases/host-group.py"),
+            include_str!("fixtures/concurrency/public_queues/host-group.py.txt"),
             vec!["$cancel", "$cancel", "child-release", "parent-release"],
         ),
         (
             "misuse-reawait",
-            include_str!("../../../tools/coroutines/native_async_queues/cases/misuse-reawait.py"),
+            include_str!("fixtures/concurrency/public_queues/misuse-reawait.py.txt"),
             vec!["checked"],
         ),
         (
             "reservations",
-            include_str!("../../../tools/coroutines/native_async_queues/cases/reservations.py"),
+            include_str!("fixtures/concurrency/public_queues/reservations.py.txt"),
             vec!["put-reserved", "get-reserved"],
         ),
         (
             "cyclic-blocked-put",
-            include_str!(
-                "../../../tools/coroutines/cancelled_error/migrated/native_async_queues/cases/cyclic-blocked-put.py"
-            ),
+            include_str!("fixtures/concurrency/public_queues/cyclic-blocked-put.py.txt"),
             vec!["blocked", "delivered"],
         ),
     ] {
@@ -5322,14 +5300,14 @@ async def main():
 #[test]
 fn native_async_anyio_group_scope_snapshot_ownership() {
     for source in [
-        include_str!("../../../tools/coroutines/anyio_scopes/cases/group-cancel.py"),
-        include_str!("../../../tools/coroutines/anyio_scopes/cases/queue-cancel.py"),
-        include_str!("../../../tools/coroutines/anyio_scopes/cases/nested-group.py"),
-        include_str!("../../../tools/coroutines/anyio_scopes/cases/cleanup-error.py"),
-        include_str!("../../../tools/coroutines/anyio_scopes/cases/group-misuse.py"),
-        include_str!("../../../tools/coroutines/anyio_scopes/cases/group-owner-isolation.py"),
-        include_str!("../../../tools/coroutines/anyio_scopes/cases/group-ancestor-shield.py"),
-        include_str!("../../../tools/coroutines/cancelled_error/migrated/anyio_scopes/cases/inherited-shield-exit.py"),
+        include_str!("fixtures/concurrency/cancel_scopes/group-cancel.py.txt"),
+        include_str!("fixtures/concurrency/cancel_scopes/queue-cancel.py.txt"),
+        include_str!("fixtures/concurrency/cancel_scopes/nested-group.py.txt"),
+        include_str!("fixtures/concurrency/cancel_scopes/cleanup-error.py.txt"),
+        include_str!("fixtures/concurrency/cancel_scopes/group-misuse.py.txt"),
+        include_str!("fixtures/concurrency/cancel_scopes/group-owner-isolation.py.txt"),
+        include_str!("fixtures/concurrency/cancel_scopes/group-ancestor-shield.py.txt"),
+        include_str!("fixtures/concurrency/cancel_scopes/inherited-shield-exit.py.txt"),
     ] {
         let definitions = source.strip_suffix("asyncio.run(main())\n").expect("frozen entry");
         let mut repl = new_repl();
@@ -5436,18 +5414,14 @@ async def main():
 #[test]
 fn native_async_anyio_group_entry_role_snapshot_ownership() {
     for source in [
-        include_str!("../../../tools/coroutines/anyio_scopes_repair2/cases/group.py"),
-        include_str!("../../../tools/coroutines/anyio_scopes_repair2/cases/native-group.py"),
-        include_str!("../../../tools/coroutines/anyio_scopes_repair2/cases/list.py"),
-        include_str!("../../../tools/coroutines/anyio_scopes_repair2/cases/scope.py"),
-        include_str!(
-            "../../../tools/coroutines/cancelled_error/migrated/anyio_scopes_repair2/cases/alias-shield-group.py"
-        ),
-        include_str!("../../../tools/coroutines/anyio_scopes_repair2/cases/pending-group.py"),
-        include_str!(
-            "../../../tools/coroutines/cancelled_error/migrated/anyio_scopes_repair2/cases/alias-shield-native-group.py"
-        ),
-        include_str!("../../../tools/coroutines/anyio_scopes_repair2/cases/pending-native-group.py"),
+        include_str!("fixtures/concurrency/scope_checkpoints/group.py.txt"),
+        include_str!("fixtures/concurrency/scope_checkpoints/native-group.py.txt"),
+        include_str!("fixtures/concurrency/scope_checkpoints/list.py.txt"),
+        include_str!("fixtures/concurrency/scope_checkpoints/scope.py.txt"),
+        include_str!("fixtures/concurrency/scope_checkpoints/alias-shield-group.py.txt"),
+        include_str!("fixtures/concurrency/scope_checkpoints/pending-group.py.txt"),
+        include_str!("fixtures/concurrency/scope_checkpoints/alias-shield-native-group.py.txt"),
+        include_str!("fixtures/concurrency/scope_checkpoints/pending-native-group.py.txt"),
     ] {
         let definitions = source.strip_suffix("asyncio.run(main())\n").expect("frozen entry");
         let mut repl = new_repl();
@@ -5620,9 +5594,9 @@ asyncio.run(main())
 #[test]
 fn public_authored_cancellation_snapshot_ownership() {
     for source in [
-        include_str!("../../../tools/coroutines/authored_cancellation/cases/tasks.py"),
-        include_str!("../../../tools/coroutines/authored_cancellation/cases/groups.py"),
-        include_str!("../../../tools/coroutines/authored_cancellation/cases/scopes.py"),
+        include_str!("fixtures/concurrency/authored_cancellation/tasks.py.txt"),
+        include_str!("fixtures/concurrency/authored_cancellation/groups.py.txt"),
+        include_str!("fixtures/concurrency/authored_cancellation/scopes.py.txt"),
     ] {
         let definitions = source.strip_suffix("asyncio.run(main())\n").expect("entry");
         let mut repl = new_repl();

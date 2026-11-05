@@ -6,12 +6,12 @@ use monty_types::{CompileOptions, ExcType};
 #[test]
 fn milestone_sources_compile() {
     for source in [
-        include_str!("../../../tools/coroutines/cases/basic.py"),
-        include_str!("../../../tools/coroutines/cases/lexical.py"),
-        include_str!("../../../tools/coroutines/cases/single_cut.py"),
-        include_str!("../../../tools/coroutines/cases/combined.py"),
-        include_str!("../../../tools/coroutines/cases/completion.py"),
-        include_str!("../../../tools/coroutines/cases/generator.py"),
+        include_str!("fixtures/concurrency/generators/basic.py.txt"),
+        include_str!("fixtures/concurrency/generators/lexical.py.txt"),
+        include_str!("fixtures/concurrency/generators/single_cut.py.txt"),
+        include_str!("fixtures/concurrency/generators/combined.py.txt"),
+        include_str!("fixtures/concurrency/generators/completion.py.txt"),
+        include_str!("fixtures/concurrency/generators/generator.py.txt"),
     ] {
         MontyRun::new(source.to_owned(), "generator.py", vec![], CompileOptions::default()).unwrap();
     }
@@ -127,10 +127,10 @@ fn host_async_dialect_boundaries() {
         );
     }
     for source in [
-        include_str!("../../../tools/coroutines/async10_guest.py").to_owned(),
+        include_str!("fixtures/concurrency/async_contexts/guest.py.txt").to_owned(),
         format!(
             "{directive}{}",
-            include_str!("../../../tools/coroutines/scope10_bodies.py")
+            include_str!("fixtures/concurrency/generator_scopes/unwind_bodies.py.txt")
         ),
     ] {
         MontyRun::new(source, "host.py", vec![], CompileOptions::default()).unwrap();

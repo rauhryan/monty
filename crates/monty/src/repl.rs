@@ -1620,13 +1620,13 @@ mod compatibility11_tests {
     fn ownership_concurrent2_bounded_records() {
         let mut repl = MontyRepl::new("records.py", ResourceTracker::default(), CompileOptions::default());
         repl.feed_run(
-            include_str!("../../../tools/coroutines/concurrent_io/wrappers.py"),
+            include_str!("../tests/fixtures/concurrency/concurrent_io/wrappers.py.txt"),
             vec![],
             PrintWriter::Disabled,
         )
         .unwrap();
         repl.feed_run(
-            include_str!("../../../tools/coroutines/concurrent_io/scope.py"),
+            include_str!("../tests/fixtures/concurrency/concurrent_io/scope.py.txt"),
             vec![],
             PrintWriter::Disabled,
         )
@@ -1666,12 +1666,12 @@ mod compatibility11_tests {
         for _ in 0..24 {
             let mut repl = MontyRepl::new("records.py", ResourceTracker::default(), CompileOptions::default());
             for source in [
-                include_str!("../../../tools/coroutines/concurrent_io/wrappers.py"),
-                include_str!("../../../tools/coroutines/concurrent_io/scope.py"),
+                include_str!("../tests/fixtures/concurrency/concurrent_io/wrappers.py.txt"),
+                include_str!("../tests/fixtures/concurrency/concurrent_io/scope.py.txt"),
             ] {
                 repl.feed_run(source, vec![], PrintWriter::Disabled).unwrap();
             }
-            let source = include_str!("../../../tools/coroutines/concurrent_io/host_cancel.py").replace(
+            let source = include_str!("../tests/fixtures/concurrency/concurrent_io/host_cancel_legacy.py.txt").replace(
                 "    return json.dumps(",
                 "    await request('pulse')\n    return json.dumps(",
             );
@@ -1721,11 +1721,11 @@ mod compatibility11_tests {
     fn ownership_concurrent2_gather_records() {
         for (fixture, cancel) in [
             (
-                include_str!("../../../tools/coroutines/concurrent_io/gather_host.py"),
+                include_str!("../tests/fixtures/concurrency/concurrent_io/gather_host_legacy.py.txt"),
                 true,
             ),
             (
-                include_str!("../../../tools/coroutines/concurrent_io/gather_first_error.py"),
+                include_str!("../tests/fixtures/concurrency/concurrent_io/gather_first_error.py.txt"),
                 false,
             ),
         ] {
@@ -1736,8 +1736,8 @@ mod compatibility11_tests {
                     CompileOptions::default(),
                 );
                 for source in [
-                    include_str!("../../../tools/coroutines/concurrent_io/wrappers.py"),
-                    include_str!("../../../tools/coroutines/concurrent_io/scope.py"),
+                    include_str!("../tests/fixtures/concurrency/concurrent_io/wrappers.py.txt"),
+                    include_str!("../tests/fixtures/concurrency/concurrent_io/scope.py.txt"),
                 ] {
                     repl.feed_run(source, vec![], PrintWriter::Disabled).unwrap();
                 }
@@ -1794,20 +1794,20 @@ mod compatibility11_tests {
         for cancel in [false, true] {
             let mut repl = MontyRepl::new("join.py", ResourceTracker::default(), CompileOptions::default());
             repl.feed_run(
-                include_str!("../../../tools/coroutines/concurrent_io/wrappers.py"),
+                include_str!("../tests/fixtures/concurrency/concurrent_io/wrappers.py.txt"),
                 vec![],
                 PrintWriter::Disabled,
             )
             .unwrap();
             repl.feed_run(
-                include_str!("../../../tools/coroutines/concurrent_io/scope.py"),
+                include_str!("../tests/fixtures/concurrency/concurrent_io/scope.py.txt"),
                 vec![],
                 PrintWriter::Disabled,
             )
             .unwrap();
             let mut progress = repl
                 .feed_start(
-                    include_str!("../../../tools/coroutines/concurrent_io/gather_host.py"),
+                    include_str!("../tests/fixtures/concurrency/concurrent_io/gather_host_legacy.py.txt"),
                     vec![("exchange".into(), MontyObject::function("exchange", None))],
                     PrintWriter::Disabled,
                 )
@@ -1839,20 +1839,20 @@ mod compatibility11_tests {
     fn ownership_concurrent2_join_delivery() {
         let mut repl = MontyRepl::new("join.py", ResourceTracker::default(), CompileOptions::default());
         repl.feed_run(
-            include_str!("../../../tools/coroutines/concurrent_io/wrappers.py"),
+            include_str!("../tests/fixtures/concurrency/concurrent_io/wrappers.py.txt"),
             vec![],
             PrintWriter::Disabled,
         )
         .unwrap();
         repl.feed_run(
-            include_str!("../../../tools/coroutines/concurrent_io/scope.py"),
+            include_str!("../tests/fixtures/concurrency/concurrent_io/scope.py.txt"),
             vec![],
             PrintWriter::Disabled,
         )
         .unwrap();
         let mut progress = repl
             .feed_start(
-                include_str!("../../../tools/coroutines/concurrent_io/children_errors.py"),
+                include_str!("../tests/fixtures/concurrency/concurrent_io/children_errors.py.txt"),
                 vec![("exchange".into(), MontyObject::function("exchange", None))],
                 PrintWriter::Disabled,
             )

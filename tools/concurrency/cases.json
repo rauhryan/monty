@@ -1,0 +1,210 @@
+{
+  "cancelled_error/host": {
+    "steps": [
+      [
+        [
+          "body"
+        ],
+        [
+          "body"
+        ]
+      ],
+      [
+        [
+          "cleanup"
+        ],
+        [
+          "cleanup"
+        ]
+      ],
+      [
+        [],
+        [
+          "cleanup"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "$cancel": "FIRST"
+      },
+      {
+        "$cancel": "SECOND"
+      },
+      {
+        "cleanup": "ok"
+      }
+    ],
+    "cancelled": "FIRST",
+    "source": "cancelled_error/host.py.txt",
+    "terminal": {
+      "status": "cancelled",
+      "reason": "FIRST",
+      "value": "\"suppressed\"",
+      "error": null,
+      "interrupted_error": null,
+      "value_export_error": null
+    }
+  },
+  "cancelled_error/scope": {
+    "steps": [
+      [
+        [
+          "cleanup"
+        ],
+        [
+          "cleanup"
+        ]
+      ],
+      [
+        [
+          "after"
+        ],
+        [
+          "after"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "cleanup": "ok"
+      },
+      {
+        "after": "ok"
+      }
+    ],
+    "result": "ok",
+    "source": "cancelled_error/scope.py.txt"
+  },
+  "cancelled_error/task": {
+    "steps": [
+      [
+        [
+          "control"
+        ],
+        [
+          "control"
+        ]
+      ],
+      [
+        [
+          "cleanup"
+        ],
+        [
+          "cleanup"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "control": "ok"
+      },
+      {
+        "cleanup": "ok"
+      }
+    ],
+    "result": "ok",
+    "source": "cancelled_error/task.py.txt"
+  },
+  "authored_cancellation/tasks": {
+    "steps": [
+      [
+        [
+          "before"
+        ],
+        [
+          "before"
+        ]
+      ],
+      [
+        [
+          "completed"
+        ],
+        [
+          "completed"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "before": "ok"
+      },
+      {
+        "completed": "ok"
+      }
+    ],
+    "result": "ok",
+    "source": "authored_cancellation/tasks.py.txt"
+  },
+  "authored_cancellation/groups": {
+    "steps": [
+      [
+        [
+          "asyncio"
+        ],
+        [
+          "asyncio"
+        ]
+      ],
+      [
+        [
+          "anyio"
+        ],
+        [
+          "anyio"
+        ]
+      ],
+      [
+        [
+          "drained"
+        ],
+        [
+          "drained"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "asyncio": "ok"
+      },
+      {
+        "anyio": "ok"
+      },
+      {
+        "drained": "ok"
+      }
+    ],
+    "result": "ok",
+    "source": "authored_cancellation/groups.py.txt"
+  },
+  "authored_cancellation/scopes": {
+    "steps": [
+      [
+        [
+          "before"
+        ],
+        [
+          "before"
+        ]
+      ],
+      [
+        [
+          "completed"
+        ],
+        [
+          "completed"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "before": "ok"
+      },
+      {
+        "completed": "ok"
+      }
+    ],
+    "result": "ok",
+    "source": "authored_cancellation/scopes.py.txt"
+  }
+}

@@ -8,13 +8,13 @@ fn ownership_queue_scope_records_and_abandonment() {
     for host_cancel in [false, true] {
         let mut repl = MontyRepl::new("queues.py", ResourceTracker::default(), CompileOptions::default());
         for source in [
-            include_str!("../../../../tools/coroutines/concurrent_io/wrappers.py"),
-            include_str!("../../../../tools/coroutines/concurrent_io/scope.py"),
+            include_str!("../fixtures/concurrency/concurrent_io/wrappers.py.txt"),
+            include_str!("../fixtures/concurrency/concurrent_io/scope.py.txt"),
         ] {
             repl.feed_run(source, vec![], PrintWriter::Disabled).unwrap();
         }
-        let definitions = include_str!("../../../../tools/coroutines/cancelled_error/migrated/queues/ownership.py")
-            .replace("parent()._native1()", "");
+        let definitions =
+            include_str!("../fixtures/concurrency/private_queues/ownership.py.txt").replace("parent()._native1()", "");
         repl.feed_run(
             &definitions,
             vec![("exchange".into(), MontyObject::function("exchange", None))],
@@ -87,13 +87,16 @@ fn ownership_queue_scope_records_and_abandonment() {
 #[test]
 fn ownership_queue_fifo_reservation_cancel() {
     for (fixture, put) in [
-        (include_str!("../../../../tools/coroutines/queues/fifo.py"), true),
-        (include_str!("../../../../tools/coroutines/queues/waiters.py"), false),
+        (include_str!("../fixtures/concurrency/private_queues/fifo.py.txt"), true),
+        (
+            include_str!("../fixtures/concurrency/private_queues/waiters.py.txt"),
+            false,
+        ),
     ] {
         let mut repl = MontyRepl::new("queues.py", ResourceTracker::default(), CompileOptions::default());
         for source in [
-            include_str!("../../../../tools/coroutines/concurrent_io/wrappers.py"),
-            include_str!("../../../../tools/coroutines/concurrent_io/scope.py"),
+            include_str!("../fixtures/concurrency/concurrent_io/wrappers.py.txt"),
+            include_str!("../fixtures/concurrency/concurrent_io/scope.py.txt"),
         ] {
             repl.feed_run(source, vec![], PrintWriter::Disabled).unwrap();
         }
@@ -133,11 +136,11 @@ fn ownership_queue_fifo_reservation_cancel() {
 fn ownership_queue_public_fifo_reservation_cancel() {
     for (fixture, put) in [
         (
-            include_str!("../../../../tools/coroutines/native_async_queues/cases/bounded-fifo.py"),
+            include_str!("../fixtures/concurrency/public_queues/bounded-fifo.py.txt"),
             true,
         ),
         (
-            include_str!("../../../../tools/coroutines/native_async_queues/cases/getters-fifo.py"),
+            include_str!("../fixtures/concurrency/public_queues/getters-fifo.py.txt"),
             false,
         ),
     ] {
