@@ -34,7 +34,8 @@ async def parent():
         handle = scope.spawn(group())
         try:
             await handle
-        except ValueError as error:
+        # A child may fail during cleanup, or the host may cancel the parent.
+        except (asyncio.CancelledError, ValueError) as error:
             TRACE.append(['parent', str(error)])
     TRACE.append('parent-cleanup')
     await request('parent-cleanup')

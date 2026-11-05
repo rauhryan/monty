@@ -57,6 +57,21 @@ census. Python fixture bodies are test data, not importable modules. Their
 `.py` files were formatted once and are excluded from routine Ruff checks in
 `pyproject.toml` to keep host-injected names and source fragments stable.
 
+The `generator_runtime` target groups its tests under
+`crates/monty/tests/generator_runtime/`: generators, structured cleanup, native
+cancellation, asyncio and AnyIO. Two shared helpers construct a REPL and check
+live heap ownership. Test bodies and fixture inputs stay with their owning behavior.
+
+Run the native ownership and compatibility suites without historical exclusions:
+
+```sh
+cargo test --locked -p monty --features memory-model-checks,ref-count-return \
+  --lib --test generator_runtime --test generator_compile --test dump_compat --test asyncio
+```
+
+On shared build machines, run this command under the same guard and budgets
+as the replay build.
+
 The fixture README describes the retained test families. Original research
 sources, superseded drivers and provenance remain available at research commit
 `34519dd69d7f50f825cbe20a83b388169ea29f1f` in PR #1; this runner does not load them.

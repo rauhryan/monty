@@ -172,9 +172,10 @@ MIT
 An optional first host cause persists through snapshots and remains cancelled after guest catch-and-return.
 The terminal value is a dictionary with `status`, `reason`, `value`, `error`, `interrupted_error`, and `value_export_error`; ordinary `resume` behavior without a host request is unchanged.
 Compiler-owned finally and async-exit ranges protect yielding cleanup.
-Deferred cancellation is delivered at the outermost cleanup continuation before ordinary body work; escaping guest errors retain precedence.
-Pending cancellation bypasses prospective exception handlers outside cleanup before type-expression evaluation, retaining the escaping error instead of injecting a second signal.
-Already-entered matching retains its original error across selector suspension; required synchronous context exit consumes its suppression result before cancellation delivery.
+Deferred cancellation is delivered at the outermost cleanup continuation before ordinary body work.
+On this experimental native route, delivery can interrupt an unresolved guest error; its bounded metadata is retained in `interrupted_error`.
+Exception handlers may match the delivered `asyncio.CancelledError`; an uncaught signal or a later guest failure appears in `error`.
+An active selector continuation is abandoned at delivery; required context exit consumes its suppression result before cancellation delivery.
 Blocking synchronous I/O and nonterminating cleanup remain outside the delivery guarantee.
 See [asyncio limitations](../../docs/limitations/asyncio.md) for the supported concurrency and cancellation behavior.
 

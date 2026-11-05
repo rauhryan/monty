@@ -1671,7 +1671,7 @@ mod compatibility11_tests {
             ] {
                 repl.feed_run(source, vec![], PrintWriter::Disabled).unwrap();
             }
-            let source = include_str!("../tests/fixtures/concurrency/concurrent_io/host_cancel_legacy.py").replace(
+            let source = include_str!("../tests/fixtures/concurrency/concurrent_io/host_cancel.py").replace(
                 "    return json.dumps(",
                 "    await request('pulse')\n    return json.dumps(",
             );
@@ -1721,7 +1721,7 @@ mod compatibility11_tests {
     fn ownership_concurrent2_gather_records() {
         for (fixture, cancel) in [
             (
-                include_str!("../tests/fixtures/concurrency/concurrent_io/gather_host_legacy.py"),
+                include_str!("../tests/fixtures/concurrency/concurrent_io/gather_host.py"),
                 true,
             ),
             (
@@ -1784,7 +1784,7 @@ mod compatibility11_tests {
                         .unwrap();
                     first = false;
                 }
-                assert!(observed);
+                assert!(observed, "parent cleanup missing: cancel={cancel}, calls={calls:?}");
             }
         }
     }
@@ -1807,7 +1807,7 @@ mod compatibility11_tests {
             .unwrap();
             let mut progress = repl
                 .feed_start(
-                    include_str!("../tests/fixtures/concurrency/concurrent_io/gather_host_legacy.py"),
+                    include_str!("../tests/fixtures/concurrency/concurrent_io/gather_host.py"),
                     vec![("exchange".into(), MontyObject::function("exchange", None))],
                     PrintWriter::Disabled,
                 )
@@ -1883,6 +1883,7 @@ mod compatibility11_tests {
     fn ownership_compatibility11_saved_task_discrimination() {
         // Literal diagnostic is ORIGINAL, never the different handled PARKED.
         let source = r"from __monty_host__ import host_coroutines
+from asyncio import CancelledError
 def operation():
     return (yield exchange('selector'))
 async def choose():
@@ -1899,7 +1900,7 @@ async def body():
 async def entry():
     try:
         return await body()
-    except ValueError as error:
+    except CancelledError as error:
         assert str(error) == 'FIRST'
         return 'caught'
 entry()._native1()

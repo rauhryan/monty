@@ -9,8 +9,6 @@ The source bodies originate from the research branch at
 Formatting preserves their Python syntax trees and expected outcomes.
 The root Ruff configuration excludes this directory from routine formatting and
 linting so these test inputs remain stable, including host-injected names.
-Where a test deliberately adapts an old cancellation handler itself, `_legacy`
-distinguishes that original source from its dedicated CancelledError successor.
 
 - `generators`, `generator_scopes`, `async_contexts`, `structured_cleanup`:
     generator compilation, delegated state, context cleanup and retained ownership.

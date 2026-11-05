@@ -368,11 +368,12 @@ assert_eq!(result, MontyObject::int(42));
     identify the host receiver for routed calls and lookups, including class construction via `__call__`.
     Plain calls and lookups carry `None`.
 
-The experimental `ReplResolveFutures::resume_native` API additionally accepts an optional host cancellation reason for a single native main task.
+The experimental `ReplResolveFutures::resume_native` API additionally accepts an optional host cancellation reason.
 It retains the first reason and exports a terminal cancelled outcome even after guest catch-and-return, while compiler-marked cleanup can suspend for legitimate replies.
-Deferred cancellation is delivered when outermost cleanup protection ends, before another body instruction or external request; an escaping guest error retains precedence.
-On that error path, prospective exception handlers outside cleanup are bypassed before type-expression evaluation and no second catchable cancellation signal is injected.
-Already-entered matching retains its original error across selector suspension; required synchronous context exit consumes its suppression result before cancellation delivery.
+Deferred cancellation is delivered when outermost cleanup protection ends, before another body instruction or external request.
+On this experimental route, an unresolved guest error interrupted by delivery is retained as bounded metadata in the terminal `interrupted_error` field.
+The delivered `asyncio.CancelledError` can be caught by guest code; an uncaught signal or later guest failure appears in the terminal `error` field.
+Required context exit finishes its suppression bookkeeping before delivery.
 Blocking synchronous I/O and nonterminating cleanup remain outside the delivery guarantee.
 The experimental owned-child scope adds descendant cancellation and drain; see the [asyncio limitations](../limitations/asyncio.md#experimental-owned-children).
 

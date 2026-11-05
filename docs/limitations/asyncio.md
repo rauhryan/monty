@@ -311,9 +311,9 @@ Catching it does not clear the native terminal cancelled outcome, and the first 
 Compiler-marked plain `finally` bodies and async context exit delegation protect their external waits from host cancellation; ordinary operation errors remain catchable and are not masked.
 A first cancellation during cleanup preserves its reply and is delivered when outermost protection ends, before ordinary body work or another request.
 Pending returns yield to the catchable signal after required outer cleanup.
-An escaping original or cleanup error retains precedence without a second catchable cancellation signal.
-While cancellation is pending and undelivered, prospective `except` dispatch outside active cleanup is bypassed before evaluating type expressions, including handlers that would log and rethrow.
-If matching began before cancellation, its unresolved error is retained across selector calls and suspension; remaining unprotected matching work is abandoned when cleanup protection ends.
+On this experimental native route, delivery interrupts an unresolved original or cleanup error with the cancellation signal.
+Prospective `except` dispatch outside active cleanup may evaluate its type expression and match that signal.
+If matching began before cancellation, its active selector continuation is abandoned when cleanup protection ends and the signal is delivered.
 A selector return is not suppression of its caller’s error.
 Handlers inside active cleanup retain normal behavior; handlers after cancellation delivery may perform authored recovery.
 Required synchronous and async context exit calls finish their suppression bookkeeping before delivery: a false result retains the error, a true result suppresses it, and a raised exit error replaces it.
