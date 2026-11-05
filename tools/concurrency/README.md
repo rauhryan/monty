@@ -65,9 +65,13 @@ live heap ownership. Test bodies and fixture inputs stay with their owning behav
 Run the native ownership and compatibility suites without historical exclusions:
 
 ```sh
-cargo test --locked -p monty --features memory-model-checks,ref-count-return \
+cargo test --locked -p monty --features memory-model-checks,ref-count-return,cancellation-test-hooks \
   --lib --test generator_runtime --test generator_compile --test dump_compat --test asyncio
 ```
+
+`make test-memory-model-checks` and native CI run these three features together.
+This enables live-owner assertions, drop checks and host-only cancellation fault
+injection, including restored execution. The fault hooks are not enabled in worker builds.
 
 On shared build machines, run this command under the same guard and budgets
 as the replay build.

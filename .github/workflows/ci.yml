@@ -168,7 +168,7 @@ jobs:
           MONTY_FS_SOAK: '1'
       - run: cargo llvm-cov run --no-report -p monty-datatest
       # coverage for `make test-memory-model-checks`
-      - run: cargo llvm-cov --no-report -p monty --features memory-model-checks
+      - run: cargo llvm-cov --no-report -p monty --features memory-model-checks,ref-count-return,cancellation-test-hooks
       - run: cargo llvm-cov run --no-report -p monty-datatest --features memory-model-checks
       # coverage for `make test-ref-count-return`
       - run: cargo llvm-cov --no-report -p monty --features ref-count-return
@@ -488,7 +488,8 @@ jobs:
           # resolve the newest 3.14 patch, not whatever the runner image preinstalled
           check-latest: true
 
-      - run: cargo test -p monty --features memory-model-checks
+      # Run ownership assertions and cancellation fault injection on every native OS.
+      - run: cargo test -p monty --features memory-model-checks,ref-count-return,cancellation-test-hooks
       # monty-fs does host filesystem I/O, so its mount/path-security tests must
       # pass on all three OSes (it has no memory-model-checks feature — the
       # mount table never touches the interpreter heap).
