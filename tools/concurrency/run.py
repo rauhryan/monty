@@ -78,16 +78,15 @@ def authenticate(path):
 
 
 def preflight():
-    """Preserve the frozen public-async oracle and source hashes across relocation."""
+    """Check the frozen public-async oracle and pinned, formatted fixture sources."""
     frozen = FIXTURES / 'public_async'
     for name, expected in json.loads(
         (frozen / 'contract.sha256.json').read_text()
     ).items():
-        path = frozen / (name + '.txt' if name.endswith('.py') else name)
+        path = frozen / name
         replay.check(digest(path) == expected, 'frozen input changed: ' + name)
     cases = {
-        'native_async/' + name: case
-        | {'source': 'public_async/cases/' + name + '.py.txt'}
+        'native_async/' + name: case | {'source': 'public_async/cases/' + name + '.py'}
         for name, case in json.loads((frozen / 'contract.json').read_text())[
             'cases'
         ].items()

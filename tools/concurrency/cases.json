@@ -36,7 +36,7 @@
       }
     ],
     "cancelled": "FIRST",
-    "source": "cancelled_error/host.py.txt",
+    "source": "cancelled_error/host.py",
     "terminal": {
       "status": "cancelled",
       "reason": "FIRST",
@@ -74,7 +74,7 @@
       }
     ],
     "result": "ok",
-    "source": "cancelled_error/scope.py.txt"
+    "source": "cancelled_error/scope.py"
   },
   "cancelled_error/task": {
     "steps": [
@@ -104,7 +104,7 @@
       }
     ],
     "result": "ok",
-    "source": "cancelled_error/task.py.txt"
+    "source": "cancelled_error/task.py"
   },
   "authored_cancellation/tasks": {
     "steps": [
@@ -134,7 +134,7 @@
       }
     ],
     "result": "ok",
-    "source": "authored_cancellation/tasks.py.txt"
+    "source": "authored_cancellation/tasks.py"
   },
   "authored_cancellation/groups": {
     "steps": [
@@ -175,7 +175,7 @@
       }
     ],
     "result": "ok",
-    "source": "authored_cancellation/groups.py.txt"
+    "source": "authored_cancellation/groups.py"
   },
   "authored_cancellation/scopes": {
     "steps": [
@@ -205,6 +205,6 @@
       }
     ],
     "result": "ok",
-    "source": "authored_cancellation/scopes.py.txt"
+    "source": "authored_cancellation/scopes.py"
   }
 }

@@ -6,12 +6,12 @@ use monty_types::{CompileOptions, ExcType};
 #[test]
 fn milestone_sources_compile() {
     for source in [
-        include_str!("fixtures/concurrency/generators/basic.py.txt"),
-        include_str!("fixtures/concurrency/generators/lexical.py.txt"),
-        include_str!("fixtures/concurrency/generators/single_cut.py.txt"),
-        include_str!("fixtures/concurrency/generators/combined.py.txt"),
-        include_str!("fixtures/concurrency/generators/completion.py.txt"),
-        include_str!("fixtures/concurrency/generators/generator.py.txt"),
+        include_str!("fixtures/concurrency/generators/basic.py"),
+        include_str!("fixtures/concurrency/generators/lexical.py"),
+        include_str!("fixtures/concurrency/generators/single_cut.py"),
+        include_str!("fixtures/concurrency/generators/combined.py"),
+        include_str!("fixtures/concurrency/generators/completion.py"),
+        include_str!("fixtures/concurrency/generators/generator.py"),
     ] {
         MontyRun::new(source.to_owned(), "generator.py", vec![], CompileOptions::default()).unwrap();
     }
@@ -93,20 +93,6 @@ fn comprehension_outer_iterables_require_enclosing_function() {
     }
 }
 
-/// Actual version-14 bytes have neither function generator flags nor frame
-/// activation routes. Loading defaults those fields without invoking guest code.
-#[test]
-fn previous_dump_defaults_generator_metadata() {
-    let loaded = monty::Dump::load(include_bytes!("fixtures/dump_v14.bin")).unwrap();
-    assert_eq!(loaded.script_name, "fixture.py");
-    let monty::Session::Suspended(progress) = loaded.state else {
-        panic!("expected suspended legacy fixture")
-    };
-    let call = progress.into_function_call().expect("legacy host cut");
-    // Contextual physical disposal, not ordinary Rust drop of a snapshot.
-    drop(call.into_repl());
-}
-
 /// The explicit dialect is scoped to one compilation and rejects unsupported surfaces.
 #[test]
 fn host_async_dialect_boundaries() {
@@ -127,10 +113,10 @@ fn host_async_dialect_boundaries() {
         );
     }
     for source in [
-        include_str!("fixtures/concurrency/async_contexts/guest.py.txt").to_owned(),
+        include_str!("fixtures/concurrency/async_contexts/guest.py").to_owned(),
         format!(
             "{directive}{}",
-            include_str!("fixtures/concurrency/generator_scopes/unwind_bodies.py.txt")
+            include_str!("fixtures/concurrency/generator_scopes/unwind_bodies.py")
         ),
     ] {
         MontyRun::new(source, "host.py", vec![], CompileOptions::default()).unwrap();

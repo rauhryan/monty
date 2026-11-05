@@ -1620,13 +1620,13 @@ mod compatibility11_tests {
     fn ownership_concurrent2_bounded_records() {
         let mut repl = MontyRepl::new("records.py", ResourceTracker::default(), CompileOptions::default());
         repl.feed_run(
-            include_str!("../tests/fixtures/concurrency/concurrent_io/wrappers.py.txt"),
+            include_str!("../tests/fixtures/concurrency/concurrent_io/wrappers.py"),
             vec![],
             PrintWriter::Disabled,
         )
         .unwrap();
         repl.feed_run(
-            include_str!("../tests/fixtures/concurrency/concurrent_io/scope.py.txt"),
+            include_str!("../tests/fixtures/concurrency/concurrent_io/scope.py"),
             vec![],
             PrintWriter::Disabled,
         )
@@ -1666,12 +1666,12 @@ mod compatibility11_tests {
         for _ in 0..24 {
             let mut repl = MontyRepl::new("records.py", ResourceTracker::default(), CompileOptions::default());
             for source in [
-                include_str!("../tests/fixtures/concurrency/concurrent_io/wrappers.py.txt"),
-                include_str!("../tests/fixtures/concurrency/concurrent_io/scope.py.txt"),
+                include_str!("../tests/fixtures/concurrency/concurrent_io/wrappers.py"),
+                include_str!("../tests/fixtures/concurrency/concurrent_io/scope.py"),
             ] {
                 repl.feed_run(source, vec![], PrintWriter::Disabled).unwrap();
             }
-            let source = include_str!("../tests/fixtures/concurrency/concurrent_io/host_cancel_legacy.py.txt").replace(
+            let source = include_str!("../tests/fixtures/concurrency/concurrent_io/host_cancel_legacy.py").replace(
                 "    return json.dumps(",
                 "    await request('pulse')\n    return json.dumps(",
             );
@@ -1721,11 +1721,11 @@ mod compatibility11_tests {
     fn ownership_concurrent2_gather_records() {
         for (fixture, cancel) in [
             (
-                include_str!("../tests/fixtures/concurrency/concurrent_io/gather_host_legacy.py.txt"),
+                include_str!("../tests/fixtures/concurrency/concurrent_io/gather_host_legacy.py"),
                 true,
             ),
             (
-                include_str!("../tests/fixtures/concurrency/concurrent_io/gather_first_error.py.txt"),
+                include_str!("../tests/fixtures/concurrency/concurrent_io/gather_first_error.py"),
                 false,
             ),
         ] {
@@ -1736,8 +1736,8 @@ mod compatibility11_tests {
                     CompileOptions::default(),
                 );
                 for source in [
-                    include_str!("../tests/fixtures/concurrency/concurrent_io/wrappers.py.txt"),
-                    include_str!("../tests/fixtures/concurrency/concurrent_io/scope.py.txt"),
+                    include_str!("../tests/fixtures/concurrency/concurrent_io/wrappers.py"),
+                    include_str!("../tests/fixtures/concurrency/concurrent_io/scope.py"),
                 ] {
                     repl.feed_run(source, vec![], PrintWriter::Disabled).unwrap();
                 }
@@ -1794,20 +1794,20 @@ mod compatibility11_tests {
         for cancel in [false, true] {
             let mut repl = MontyRepl::new("join.py", ResourceTracker::default(), CompileOptions::default());
             repl.feed_run(
-                include_str!("../tests/fixtures/concurrency/concurrent_io/wrappers.py.txt"),
+                include_str!("../tests/fixtures/concurrency/concurrent_io/wrappers.py"),
                 vec![],
                 PrintWriter::Disabled,
             )
             .unwrap();
             repl.feed_run(
-                include_str!("../tests/fixtures/concurrency/concurrent_io/scope.py.txt"),
+                include_str!("../tests/fixtures/concurrency/concurrent_io/scope.py"),
                 vec![],
                 PrintWriter::Disabled,
             )
             .unwrap();
             let mut progress = repl
                 .feed_start(
-                    include_str!("../tests/fixtures/concurrency/concurrent_io/gather_host_legacy.py.txt"),
+                    include_str!("../tests/fixtures/concurrency/concurrent_io/gather_host_legacy.py"),
                     vec![("exchange".into(), MontyObject::function("exchange", None))],
                     PrintWriter::Disabled,
                 )
@@ -1839,20 +1839,20 @@ mod compatibility11_tests {
     fn ownership_concurrent2_join_delivery() {
         let mut repl = MontyRepl::new("join.py", ResourceTracker::default(), CompileOptions::default());
         repl.feed_run(
-            include_str!("../tests/fixtures/concurrency/concurrent_io/wrappers.py.txt"),
+            include_str!("../tests/fixtures/concurrency/concurrent_io/wrappers.py"),
             vec![],
             PrintWriter::Disabled,
         )
         .unwrap();
         repl.feed_run(
-            include_str!("../tests/fixtures/concurrency/concurrent_io/scope.py.txt"),
+            include_str!("../tests/fixtures/concurrency/concurrent_io/scope.py"),
             vec![],
             PrintWriter::Disabled,
         )
         .unwrap();
         let mut progress = repl
             .feed_start(
-                include_str!("../tests/fixtures/concurrency/concurrent_io/children_errors.py.txt"),
+                include_str!("../tests/fixtures/concurrency/concurrent_io/children_errors.py"),
                 vec![("exchange".into(), MontyObject::function("exchange", None))],
                 PrintWriter::Disabled,
             )
@@ -1877,70 +1877,6 @@ mod compatibility11_tests {
             vm.ownership_probe_join_delivery();
             reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
         });
-    }
-
-    #[test]
-    fn ownership_compatibility11_direct_coroutine_admission() {
-        for mode in ["ordinary", "pending", "delivered"] {
-            for restored in [false, true] {
-                let Session::Idle(mut repl) =
-                    Dump::load(include_bytes!("../tests/fixtures/compatibility11_frozen_v17.bin"))
-                        .unwrap()
-                        .state
-                else {
-                    panic!("idle")
-                };
-                repl.feed_run("legacy_coro = legacy_coroutine(TOKEN)", vec![], PrintWriter::Disabled)
-                    .unwrap();
-                let source = if mode == "pending" {
-                    "from __monty_host__ import host_coroutines\ndef operation():\n    return (yield exchange('wait'))\nasync def entry():\n    try:\n        pass\n    finally:\n        await operation()\nentry()._native1()"
-                } else {
-                    "from __monty_host__ import host_coroutines\ndef operation():\n    return (yield exchange('wait'))\nasync def entry():\n    await operation()\nentry()._native1()"
-                };
-                let progress = repl
-                    .feed_start(
-                        source,
-                        vec![("exchange".into(), MontyObject::function("exchange", None))],
-                        PrintWriter::Disabled,
-                    )
-                    .unwrap()
-                    .into_function_call()
-                    .unwrap()
-                    .resume_pending(PrintWriter::Disabled)
-                    .unwrap();
-                let progress = if restored {
-                    let bytes = dump("direct.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
-                    drop(progress.into_repl());
-                    let Session::Suspended(progress) = Dump::load(&bytes).unwrap().state else {
-                        panic!("suspended")
-                    };
-                    *progress
-                } else {
-                    progress
-                };
-                let ReplResolveFutures {
-                    mut repl,
-                    mut executor,
-                    vm_state,
-                    ..
-                } = progress.into_resolve_futures().unwrap();
-                HeapReader::with(&mut repl.heap, &mut executor, |reader, executor| {
-                    let mut vm = VM::restore(
-                        vm_state,
-                        &mut executor.tables,
-                        &executor.program,
-                        reader,
-                        PrintWriter::Disabled,
-                    );
-                    vm.compatibility11_direct_admission(mode);
-                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
-                });
-                repl.commit_executor(executor);
-                repl.feed_run("assert MARKERS == []", vec![], PrintWriter::Disabled)
-                    .unwrap();
-                eprintln!("compatibility11 direct/{mode}/restored={restored}: admission checked before body execution");
-            }
-        }
     }
 
     #[test]

@@ -241,73 +241,56 @@ fn fixture_dump_loads_and_resumes() {
     check_fixture_dump(&fixture_path());
 }
 
-/// Genuine accepted v33 bytes remain readable; never regenerate this fixture.
-#[test]
-fn previous_accepted_v33_fixture_loads_and_resumes() {
-    check_fixture_dump(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v33.bin"));
-}
-
 /// Header-only protocol probes: unsupported versions must fail before CBOR decoding.
 #[test]
 fn unsupported_versions_are_rejected_before_payload() {
     assert_eq!(MIN_SUPPORTED_DUMP_VERSION, 36);
-    for (version, expected) in [
-        (
-            35_u16,
-            DumpError::VersionTooOld {
-                found: 35,
-                min_supported: 36,
-            },
-        ),
-        (
-            DUMP_VERSION + 1,
-            DumpError::VersionTooNew {
-                found: DUMP_VERSION + 1,
-                max_supported: DUMP_VERSION,
-            },
-        ),
-    ] {
+    for version in 0..MIN_SUPPORTED_DUMP_VERSION {
         let mut header = b"MONTY\0".to_vec();
         header.extend_from_slice(&version.to_le_bytes());
-        assert_eq!(Dump::load(&header).unwrap_err(), expected);
+        assert_eq!(
+            Dump::load(&header).unwrap_err(),
+            DumpError::VersionTooOld {
+                found: version,
+                min_supported: MIN_SUPPORTED_DUMP_VERSION,
+            }
+        );
+    }
+    for version in [DUMP_VERSION + 1, u16::MAX] {
+        let mut header = b"MONTY\0".to_vec();
+        header.extend_from_slice(&version.to_le_bytes());
+        assert_eq!(
+            Dump::load(&header).unwrap_err(),
+            DumpError::VersionTooNew {
+                found: version,
+                max_supported: DUMP_VERSION,
+            }
+        );
     }
 }
 
-/// Genuine milestone2 producer state remains unchanged and readable.
+/// Identity-only state and retained named helpers survive independent restores.
 #[test]
-fn previous_accepted_v34_fixture_loads_and_resumes() {
-    check_fixture_dump(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v34.bin"));
-}
-
-/// Both identity-only state and retained named helpers must survive a genuine dump.
-/// CREATE_ANYIO_DUMP_FIXTURES writes only missing fixtures, never historical bytes.
-#[test]
-fn anyio_v34_fixtures_preserve_group_identity() {
+fn anyio_group_identity_roundtrips() {
     for named in [false, true] {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(if named {
-            "tests/fixtures/anyio_named_v34.bin"
+        let binding = if named {
+            "method = group.start_soon"
         } else {
-            "tests/fixtures/anyio_identity_v34.bin"
-        });
-        if env::var_os("CREATE_ANYIO_DUMP_FIXTURES").is_some() && !path.exists() {
-            let binding = if named {
-                "method = group.start_soon"
-            } else {
-                "create_task_group = None"
-            };
-            let invocation = if named {
-                "method(child, 42)"
-            } else {
-                "group.start_soon(child, 42)"
-            };
-            let preflight = if named {
-                "assert method(child, 0) is None"
-            } else {
-                "pass"
-            };
-            let expected = if named { "[0, 42]" } else { "[42]" };
-            let source = format!(
-                r"
+            "create_task_group = None"
+        };
+        let invocation = if named {
+            "method(child, 42)"
+        } else {
+            "group.start_soon(child, 42)"
+        };
+        let preflight = if named {
+            "assert method(child, 0) is None"
+        } else {
+            "pass"
+        };
+        let expected = if named { "[0, 42]" } else { "[42]" };
+        let source = format!(
+            r"
 import asyncio
 from anyio import create_task_group
 group = create_task_group()
@@ -329,28 +312,21 @@ async def main():
     return 42
 asyncio.run(main())
 "
-            );
-            let repl = MontyRepl::new("anyio.py", ResourceTracker::default(), CompileOptions::default());
-            let mut progress = repl.feed_start(&source, vec![], PrintWriter::Stdout).unwrap();
-            while let ReplProgress::NameLookup(lookup) = progress {
-                let host = MontyObject::function(lookup.name.clone(), None);
-                progress = lookup
-                    .resume(NameLookupResult::Value(host), PrintWriter::Stdout)
-                    .unwrap();
-            }
-            assert!(matches!(&progress, ReplProgress::FunctionCall(call) if call.function_name == "host_call"));
-            let bytes = dump("anyio.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
-            fs::write(&path, bytes).unwrap();
-            drop(progress.into_function_call().unwrap().into_repl());
+        );
+        let repl = MontyRepl::new("anyio.py", ResourceTracker::default(), CompileOptions::default());
+        let mut progress = repl.feed_start(&source, vec![], PrintWriter::Stdout).unwrap();
+        while let ReplProgress::NameLookup(lookup) = progress {
+            let host = MontyObject::function(lookup.name.clone(), None);
+            progress = lookup
+                .resume(NameLookupResult::Value(host), PrintWriter::Stdout)
+                .unwrap();
         }
-        let bytes = fs::read(path).unwrap();
-        assert_eq!(&bytes[..8], b"MONTY\0\x22\x00");
+        assert!(matches!(&progress, ReplProgress::FunctionCall(call) if call.function_name == "host_call"));
+        let bytes = dump("anyio.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+        drop(progress.into_function_call().unwrap().into_repl());
         let frozen_name = b"anyio.TaskGroup.start_soon";
         assert_eq!(bytes.windows(frozen_name.len()).any(|part| part == frozen_name), named);
         for _ in 0..2 {
-            if rejects_historical_dump(&bytes) {
-                return;
-            }
             let Session::Suspended(progress) = Dump::load(&bytes).unwrap().state else {
                 panic!("expected host_call suspension");
             };
@@ -361,42 +337,6 @@ asyncio.run(main())
             assert_eq!(value, MontyObject::int(42));
         }
     }
-}
-
-/// Genuine version-32 snapshots predate public Queue metadata.
-#[test]
-fn previous_run_cleanup_fixture_loads_and_resumes() {
-    check_fixture_dump(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v32.bin"));
-}
-
-/// Genuine version-31 snapshots predate explicit run and ordinary cleanup ownership.
-#[test]
-fn previous_saved_cleanup_fixture_loads_and_resumes() {
-    check_fixture_dump(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v31.bin"));
-}
-
-/// Genuine version-30 snapshots predate saved exceptional-cleanup roles.
-#[test]
-fn previous_public_groups_fixture_loads_and_resumes() {
-    check_fixture_dump(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v30.bin"));
-}
-
-/// Genuine version-29 snapshots predate TaskGroup ownership and root shutdown.
-#[test]
-fn previous_public_tasks_fixture_loads_and_resumes() {
-    check_fixture_dump(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v29.bin"));
-}
-
-/// Genuine version-28 snapshots predate public Task metadata and join routes.
-#[test]
-fn previous_protected_gather_fixture_loads_and_resumes() {
-    check_fixture_dump(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v28.bin"));
-}
-
-/// Version 27 also predates the protected-gather barrier.
-#[test]
-fn previous_queue_fixture_loads_and_resumes() {
-    check_fixture_dump(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v27.bin"));
 }
 
 fn check_fixture_dump(path: &Path) {
@@ -429,9 +369,6 @@ fn check_fixture_dump(path: &Path) {
             path.display()
         )
     });
-    if rejects_historical_dump(&bytes) {
-        return;
-    }
     let loaded = Dump::load(&bytes).expect("a fixture at the current DUMP_VERSION loads");
     assert_eq!(loaded.script_name, "fixture.py");
     assert!(loaded.type_check.is_none());
@@ -477,235 +414,6 @@ fn check_fixture_dump(path: &Path) {
     );
 }
 
-/// Preserve the actual v15 bytes, including New/Suspended generator state.
-#[test]
-fn previous_generator_fixture_resumes() {
-    if rejects_historical_dump(include_bytes!("fixtures/dump_v15.bin")) {
-        return;
-    }
-    let Session::Suspended(progress) = Dump::load(include_bytes!("fixtures/dump_v15.bin")).unwrap().state else {
-        panic!("v15 host cut")
-    };
-    let (mut repl, value) = progress
-        .into_function_call()
-        .unwrap()
-        .resume(MontyObject::int(41), PrintWriter::Stdout)
-        .unwrap()
-        .into_complete()
-        .unwrap();
-    assert_eq!(value, MontyObject::int(42));
-    repl.feed_run("result = 42", vec![], PrintWriter::Stdout).unwrap();
-    assert_eq!(
-        repl.feed_run(FIXTURE_CHECK, vec![], PrintWriter::Stdout).unwrap(),
-        MontyObject::tuple(vec![MontyObject::int(42), MontyObject::int(13)])
-    );
-}
-
-/// The class definitions in `dataclasses_v13.bin`, kept for reference: the
-/// fixture was written by the 1.1.0 release, before `@dataclass` generated
-/// methods. It must never be regenerated, since this build writes generated
-/// methods and the test would then check nothing.
-#[expect(dead_code, reason = "documents what the checked-in fixture holds")]
-const LEGACY_DATACLASS_STATE: &str = r"
-import dataclasses
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class Frozen:
-    x: int
-    y: int = 2
-
-
-@dataclass
-class Plain:
-    xs: list
-    n: int = 0
-
-
-@dataclass(eq=False)
-class NoEq:
-    a: int
-
-
-@dataclass
-class OwnRepr:
-    a: int
-
-    def __repr__(self):
-        return 'own'
-
-
-@dataclass(frozen=True)
-class FrozenHook:
-    x: int
-
-    def __setattr__(self, name, value):
-        pass
-
-
-def late_hook(self):
-    self.n = 100
-
-
-Plain.__post_init__ = late_hook
-f = Frozen(1)
-p = Plain([1])
-";
-
-/// Run against the upgraded classes: each behaves as its decoration said, and a
-/// `__post_init__` attached after decoration still never runs.
-const LEGACY_DATACLASS_CHECK: &str = r#"assert f == Frozen(1, 2)
-assert hash(f) == hash((1, 2))
-assert repr(f) == 'Frozen(x=1, y=2)'
-try:
-    f.x = 5
-    assert False, 'expected FrozenInstanceError'
-except dataclasses.FrozenInstanceError as e:
-    assert str(e) == "cannot assign to field 'x'"
-assert p == Plain([1])
-assert Plain([2]).n == 0
-assert p.n == 0
-assert Plain.__hash__ is None
-assert NoEq(1) != NoEq(1)
-assert repr(OwnRepr(1)) == 'own'
-assert OwnRepr(1) == OwnRepr(1)
-hooked = FrozenHook(3)
-assert hooked.x == 3
-try:
-    hooked.x = 4
-    assert False, 'expected FrozenInstanceError'
-except dataclasses.FrozenInstanceError as e:
-    assert str(e) == "cannot assign to field 'x'"
-"#;
-
-/// Dataclasses decorated by a build that generated no methods load with their
-/// methods generated (see `dataclasses::legacy`), and a re-dump of the upgraded
-/// session, written at the current version, loads the same way without one.
-#[test]
-fn legacy_dataclasses_upgrade_on_load() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dataclasses_v13.bin");
-    let mut bytes = fs::read(&path).unwrap();
-    for _ in 0..2 {
-        if rejects_historical_dump(&bytes) {
-            return;
-        }
-        let loaded = Dump::load(&bytes).expect("the fixture and its re-dump load");
-        let Session::Idle(mut repl) = loaded.state else {
-            panic!("the fixture was dumped idle");
-        };
-        repl.feed_run(LEGACY_DATACLASS_CHECK, vec![], PrintWriter::Stdout)
-            .unwrap();
-        bytes = dump("dataclasses.py", None, &[], SessionRef::Idle(&repl)).unwrap();
-    }
-}
-
-/// The snippet suspended in `dataclasses_v13_suspended.bin`, kept for reference:
-/// the 1.1.0 release ran it up to the `host_value` lookup and dumped it. The
-/// classes are the in-flight snippet's, so their names live in the executor's
-/// interns, not the session's. Never regenerate it, as with the idle fixture.
-#[expect(dead_code, reason = "documents what the checked-in fixture holds")]
-const LEGACY_SUSPENDED_SNIPPET: &str = r#"import dataclasses
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class Frozen:
-    x: int
-    y: int = 2
-
-
-@dataclass
-class Plain:
-    xs: list
-    n: int = 0
-
-
-f = Frozen(1)
-answer = host_value
-assert answer == 42
-assert f == Frozen(1, 2)
-assert hash(f) == hash((1, 2))
-assert repr(f) == 'Frozen(x=1, y=2)'
-try:
-    f.x = 5
-    assert False, 'expected FrozenInstanceError'
-except dataclasses.FrozenInstanceError as e:
-    assert str(e) == "cannot assign to field 'x'"
-assert Plain([1]) == Plain([1])
-assert repr(Plain([1])) == 'Plain(xs=[1], n=0)'
-assert Plain.__hash__ is None
-"#;
-
-/// A version 13 dump suspended mid-snippet upgrades its dataclasses too: the
-/// resumed snippet's own asserts check them.
-#[test]
-fn legacy_dataclasses_upgrade_in_a_suspended_session() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dataclasses_v13_suspended.bin");
-    if rejects_historical_dump(&fs::read(&path).unwrap()) {
-        return;
-    }
-    let loaded = Dump::load(&fs::read(&path).unwrap()).expect("a version 13 suspended dump loads");
-    let Session::Suspended(progress) = loaded.state else {
-        panic!("the fixture was dumped suspended");
-    };
-    let lookup = progress.into_name_lookup().expect("suspended on `host_value`");
-    let progress = lookup
-        .resume(NameLookupResult::Value(MontyObject::int(42)), PrintWriter::Stdout)
-        .unwrap();
-    assert!(progress.into_complete().is_some(), "the snippet runs to completion");
-}
-
-/// The state in `dataclasses_v13_hook_owns_class.bin`, kept for reference: the
-/// 1.1.0 release ran it and dumped it idle. `A.__delattr__` holds the only
-/// reference to `B`, a later class. Never regenerate it.
-#[expect(dead_code, reason = "documents what the checked-in fixture holds")]
-const LEGACY_HOOK_OWNS_CLASS_STATE: &str = r"from dataclasses import dataclass
-
-
-@dataclass(frozen=True, eq=False)
-class A:
-    x: int
-
-
-def attach():
-    @dataclass
-    class B:
-        y: int
-
-    A.__delattr__ = B
-
-
-attach()
-";
-
-/// Upgrading `A` replaces the hook holding the last reference to `B`, a class
-/// still waiting for its own upgrade; the load must not touch `B` once freed.
-#[test]
-fn legacy_upgrade_survives_freeing_a_queued_class() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dataclasses_v13_hook_owns_class.bin");
-    if rejects_historical_dump(&fs::read(&path).unwrap()) {
-        return;
-    }
-    let loaded = Dump::load(&fs::read(&path).unwrap()).expect("a version 13 dump loads");
-    let Session::Idle(mut repl) = loaded.state else {
-        panic!("the fixture was dumped idle");
-    };
-    repl.feed_run(
-        r#"import dataclasses
-a = A(1)
-assert repr(a) == 'A(x=1)'
-try:
-    A.__delattr__(a, 'x')
-    assert False, 'expected FrozenInstanceError'
-except dataclasses.FrozenInstanceError as e:
-    assert str(e) == "cannot delete field 'x'""#,
-        vec![],
-        PrintWriter::Stdout,
-    )
-    .unwrap();
-}
-
 /// A current-version dump runs no upgrade, so a dataclass whose generated
 /// methods were all rebound keeps its own hooks across a reload.
 #[test]
@@ -742,9 +450,6 @@ assert F.__delattr__ is deleter
     )
     .unwrap();
     let bytes = dump("rebound.py", None, &[], SessionRef::Idle(&repl)).unwrap();
-    if rejects_historical_dump(&bytes) {
-        return;
-    }
     let Session::Idle(mut repl) = Dump::load(&bytes).unwrap().state else {
         panic!("dumped idle");
     };
@@ -860,40 +565,13 @@ fn layout_edits_load_older_encodings() {
     }
 }
 
-/// Preserve accepted v16 bytes after adding the host context opcode.
+/// Current state preserves a cancelled ancestor, active shield and exact signal.
 #[test]
-fn previous_delegating_fixture_resumes() {
-    if rejects_historical_dump(include_bytes!("fixtures/dump_v16.bin")) {
-        return;
-    }
-    let Session::Suspended(progress) = Dump::load(include_bytes!("fixtures/dump_v16.bin")).unwrap().state else {
-        panic!("v16 host cut")
-    };
-    let (mut repl, value) = progress
-        .into_function_call()
-        .unwrap()
-        .resume(MontyObject::int(41), PrintWriter::Stdout)
-        .unwrap()
-        .into_complete()
-        .unwrap();
-    assert_eq!(value, MontyObject::int(42));
-    repl.feed_run("result = 42", vec![], PrintWriter::Stdout).unwrap();
-    assert_eq!(
-        repl.feed_run(FIXTURE_CHECK, vec![], PrintWriter::Stdout).unwrap(),
-        MontyObject::tuple(vec![MontyObject::int(42), MontyObject::int(13)])
-    );
-}
-
-/// Genuine v35 state retains a cancelled ancestor, active shield and exact signal.
-/// Creation only writes a missing prospective fixture; never rewrites old bytes.
-#[test]
-fn anyio_v35_scope_fixture_resumes_twice() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/anyio_scope_v35.bin");
-    if env::var_os("CREATE_ANYIO_SCOPE_FIXTURE").is_some() && !path.exists() {
-        let repl = MontyRepl::new("scope.py", ResourceTracker::default(), CompileOptions::default());
-        let mut progress = repl
-            .feed_start(
-                r"
+fn anyio_scope_snapshot_resumes_twice() {
+    let repl = MontyRepl::new("scope.py", ResourceTracker::default(), CompileOptions::default());
+    let mut progress = repl
+        .feed_start(
+            r"
 import asyncio
 import anyio
 async def main():
@@ -901,7 +579,7 @@ async def main():
         scope.cancel()
         try:
             await rejected()
-        except ValueError as caught:
+        except asyncio.CancelledError as caught:
             signal = caught
         with anyio.CancelScope(shield=True) as shield:
             assert host_call() == 41
@@ -912,29 +590,22 @@ async def main():
     return 42
 asyncio.run(main())
 ",
-                vec![],
-                PrintWriter::Disabled,
-            )
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+    while let ReplProgress::NameLookup(lookup) = progress {
+        let host = MontyObject::function(lookup.name.clone(), None);
+        progress = lookup
+            .resume(NameLookupResult::Value(host), PrintWriter::Disabled)
             .unwrap();
-        while let ReplProgress::NameLookup(lookup) = progress {
-            let host = MontyObject::function(lookup.name.clone(), None);
-            progress = lookup
-                .resume(NameLookupResult::Value(host), PrintWriter::Disabled)
-                .unwrap();
-        }
-        assert!(matches!(&progress, ReplProgress::FunctionCall(call) if call.function_name == "host_call"));
-        let bytes = dump("scope.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
-        fs::write(&path, bytes).unwrap();
-        drop(progress.into_function_call().unwrap().into_repl());
     }
-    let bytes = fs::read(path).unwrap();
-    assert_eq!(&bytes[..8], b"MONTY\0\x23\x00");
+    assert!(matches!(&progress, ReplProgress::FunctionCall(call) if call.function_name == "host_call"));
+    let bytes = dump("scope.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+    drop(progress.into_function_call().unwrap().into_repl());
     for _ in 0..2 {
-        if rejects_historical_dump(&bytes) {
-            return;
-        }
         let Session::Suspended(progress) = Dump::load(&bytes).unwrap().state else {
-            panic!("suspended")
+            panic!("suspended");
         };
         let progress = progress
             .into_function_call()
@@ -946,32 +617,23 @@ asyncio.run(main())
     }
 }
 
-/// The cancellation-type migration deliberately rejects every pre-v36 producer.
-fn rejects_historical_dump(bytes: &[u8]) -> bool {
-    let found = u16::from_le_bytes([bytes[6], bytes[7]]);
-    if found < MIN_SUPPORTED_DUMP_VERSION {
+/// These genuine producers represent upstream state and the incompatible
+/// cancellation signal immediately before the current format. Never regenerate.
+#[test]
+fn historical_snapshots_are_rejected() {
+    assert_eq!(MIN_SUPPORTED_DUMP_VERSION, 36);
+    for (bytes, version) in [
+        (include_bytes!("fixtures/dump_v14.bin").as_slice(), 14),
+        (include_bytes!("fixtures/anyio_scope_v35.bin").as_slice(), 35),
+    ] {
+        assert_eq!(&bytes[..6], b"MONTY\0");
+        assert_eq!(u16::from_le_bytes([bytes[6], bytes[7]]), version);
         assert_eq!(
             Dump::load(bytes).unwrap_err(),
             DumpError::VersionTooOld {
-                found,
-                min_supported: MIN_SUPPORTED_DUMP_VERSION
+                found: version,
+                min_supported: MIN_SUPPORTED_DUMP_VERSION,
             }
         );
-        true
-    } else {
-        false
-    }
-}
-
-#[test]
-fn cancellation_type_migration_rejects_all_historical_fixtures() {
-    for entry in fs::read_dir(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().is_some_and(|ext| ext == "bin") {
-            let bytes = fs::read(path).unwrap();
-            if bytes.starts_with(b"MONTY\0") && u16::from_le_bytes([bytes[6], bytes[7]]) < 36 {
-                assert!(rejects_historical_dump(&bytes));
-            }
-        }
     }
 }

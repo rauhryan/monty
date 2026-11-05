@@ -17,8 +17,6 @@ use super::{
     AwaitResult, CallFrame, FrameExit, Opcode, VM, frame_code, function_namespace, recursion::frame_recursion_depth,
     stack_index,
 };
-#[cfg(test)]
-use crate::frozen::FrozenFunction;
 use crate::{
     asyncio::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
@@ -1805,80 +1803,6 @@ impl<'h> HeapReadMut<'h, GatherFuture> {
 
 #[cfg(test)]
 impl VM<'_> {
-    /// Direct ordinary-coroutine admission, without going through host syntax's
-    /// intentionally generator-only yield-from lowering.
-    pub(crate) fn compatibility11_direct_admission(&mut self, mode: &str) {
-        if mode != "ordinary" {
-            self.cancel_native("FIRST").unwrap();
-            if mode == "delivered" {
-                self.cancel_native("REPEAT").unwrap();
-            }
-            let cancel = self.scheduler.main_task().unwrap().native_cancel.as_ref().unwrap();
-            assert_eq!(cancel.delivered, mode == "delivered");
-            assert_eq!(cancel.reason, "FIRST");
-        }
-        let id = self
-            .globals
-            .iter()
-            .find_map(|value| match value {
-                Value::Ref(id) if matches!(self.heap.get(*id), HeapData::Coroutine(_)) => Some(*id),
-                _ => None,
-            })
-            .unwrap();
-        let HeapReadOutput::Coroutine(coro) = self.heap.read(id) else {
-            unreachable!()
-        };
-        assert_eq!(coro.get(self.heap).state, CoroutineState::New);
-        let before = (self.stack.len(), self.suspended_frames.len(), self.recursion_depth);
-        let interns = minicbor_serde::to_vec(self.interns).unwrap();
-        let namespace = minicbor_serde::to_vec(&coro.get(self.heap).namespace).unwrap();
-        let result = self.await_coroutine(&coro);
-        if mode == "pending" {
-            let Err(error) = result else {
-                panic!("legacy admission must refuse")
-            };
-            assert!(
-                matches!(&error, RunError::UncatchableExc(exc) if exc.exc.exc_type() == ExcType::RuntimeError && exc.exc.arg().map(String::as_str) == Some("native cancellation requires catchable cancellation policy 7"))
-            );
-            error.drop_with(self);
-            assert_eq!(coro.get(self.heap).state, CoroutineState::New);
-            assert_eq!(
-                minicbor_serde::to_vec(&coro.get(self.heap).namespace).unwrap(),
-                namespace
-            );
-            assert_eq!(
-                (self.stack.len(), self.suspended_frames.len(), self.recursion_depth),
-                before
-            );
-            // Cached historical frozen admission must precede argument transfer,
-            // frame installation and any publication to the intern tables.
-            let Err(error) = self.call_frozen_exact(
-                FrozenFunction::FunctoolsReduce,
-                [
-                    Value::None,
-                    Value::None,
-                    Value::None,
-                    Value::None,
-                    Value::None,
-                    Value::None,
-                ],
-            ) else {
-                panic!("frozen legacy admission must refuse")
-            };
-            assert!(matches!(&error, RunError::UncatchableExc(_)));
-            error.drop_with(self);
-            assert_eq!(
-                (self.stack.len(), self.suspended_frames.len(), self.recursion_depth),
-                before
-            );
-            assert_eq!(minicbor_serde::to_vec(self.interns).unwrap(), interns);
-        } else {
-            assert!(matches!(result.unwrap(), AwaitResult::FramePushed));
-            assert_eq!(coro.get(self.heap).state, CoroutineState::Running);
-            assert_eq!(self.suspended_frames.len(), before.1 + 1);
-        }
-    }
-
     /// Use the scheduler's real save path, without introducing another task.
     pub(crate) fn compatibility11_save_main_task(&mut self) {
         self.save_task_context(TaskId::default());

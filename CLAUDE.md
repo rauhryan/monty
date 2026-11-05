@@ -255,8 +255,9 @@ When the old data still holds everything the new meaning needs, bump `DUMP_VERSI
 `MIN_SUPPORTED_DUMP_VERSION`, and convert in one of two places so the live heap never carries a legacy form:
 a `#[serde(from = "Dumped…")]` shim when one value's stored shape changed (see `TableCursor`), or an upgrade in
 `dump_upgrade.rs`, which `Dump::load` runs over an older dump's heap and interns; its module docs list the rules.
-The first upgrade is `modules/dataclasses/legacy.rs` (version 13), tested against the `dataclasses_v13*.bin` fixtures
-the 1.1.0 release wrote, which must never be regenerated.
+The historical version-13 upgrade lives in `modules/dataclasses/legacy.rs`; the current minimum version rejects those dumps before upgrading.
+Retained binary fixtures and their purposes are listed in `crates/monty/tests/fixtures/README.md`.
+Never regenerate a historical rejection fixture with the current serializer.
 
 ### Compilation overlays and stable intern entries
 

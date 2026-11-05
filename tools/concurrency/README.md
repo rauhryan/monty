@@ -41,7 +41,8 @@ python3 tools/concurrency/run.py verify \
   --output playground/concurrency-replay-1
 ```
 
-The public-async oracle and its source hashes retain the original frozen gate.
+The public-async oracle retains the original frozen expectations; its source
+hashes pin the fixtures after their one-time Ruff formatting.
 Six additional cases cover cancellation exception identity, host terminal
 cancellation and authored cancellation. The strict comparator rejects duplicate
 JSON keys, nonfinite values, type-coerced equality and mismatched restore traces.
@@ -53,8 +54,8 @@ and source/artifact/receipt drift.
 Transport replay complements the crate's generator, async, dump and live-heap
 ownership tests; it does not replace them or claim an instrumented Wasm heap
 census. Python fixture bodies are test data, not importable modules. Their
-`.py.txt` extension preserves exact bytes and avoids treating host-injected names
-and experimental dialect snippets as regular Python tooling.
+`.py` files were formatted once and are excluded from routine Ruff checks in
+`pyproject.toml` to keep host-injected names and source fragments stable.
 
 The fixture README describes the retained test families. Original research
 sources, superseded drivers and provenance remain available at research commit
