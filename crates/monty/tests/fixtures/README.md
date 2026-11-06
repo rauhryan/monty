@@ -27,9 +27,27 @@ Removed experimental snapshots remain in Git history at `5858ff4139fa0495b96a0ef
 b4a7d974ae30823d67d47bdcf1c0631c80d684c65b7d05d4d318385b1f02cb39  dump_v37.bin
 ```
 
-## Baseline candidates
+## Frozen v40 baseline
 
-`concurrency/baseline/` contains ordinary Python source for the next baseline capture.
+`baseline_v40/manifest.json` records six immutable snapshots produced by clean commit `71cef5732232d74751c0ef7c826c226f2d53dd5d`.
+Its manifest includes source hashes, producer tree/toolchain/build provenance, snapshot hashes, state assertions and continuation expectations.
+The native-produced bytes were restored twice on both native and actual Wasm, including partial abandonment and sticky cancellation.
+The snapshot files total 117701 bytes.
+Do not regenerate these files; use the capture command to create a separate candidate for a later baseline.
+Freezing this producer does not itself enable another snapshot format or promise compatibility with upstream snapshots.
+
+To verify these exact bytes against a current consumer build:
+
+```sh
+python3 tools/concurrency/run.py verify-baseline \
+  --association playground/consumer-build/association.json \
+  --manifest crates/monty/tests/fixtures/baseline_v40/manifest.json \
+  --output playground/baseline-v40-check-1
+```
+
+## Baseline capture sources
+
+`concurrency/baseline/` contains ordinary Python source for baseline capture.
 The common idle source is shared with `dump_compat.rs`; current round trips still generate bytes in memory.
 The concurrency runner's `baseline` action captures six selected states into ignored review output and tests the exact native-produced bytes on native and Wasm.
 It does not add maintained binaries or change the supported format range.

@@ -1,0 +1,412 @@
+{
+  "schema": 1,
+  "status": "frozen",
+  "format": 40,
+  "producer_backend": "native",
+  "producer": {
+    "git": {
+      "head": "71cef5732232d74751c0ef7c826c226f2d53dd5d",
+      "branch": "integration/upstream-20261106",
+      "status": "",
+      "merge_head": "",
+      "tree": "c2a89830362306e1dcae3861db2da365bf73d0cf"
+    },
+    "versions": {
+      "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+      "cargo": "cargo 1.98.0 (797e8a9bc 2026-08-05)",
+      "node": "v24.22.0",
+      "python3": "Python 3.13.5"
+    },
+    "rustc_verbose": "rustc 1.98.0 (88d9e12ae 2026-08-18)\nbinary: rustc\ncommit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea\ncommit-date: 2026-08-18\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.0\nLLVM version: 22.1.8",
+    "native_features": [],
+    "build_environment": {
+      "RUSTUP_TOOLCHAIN": "1.98.0",
+      "CARGO_BUILD_JOBS": "2",
+      "CARGO_INCREMENTAL": "0",
+      "CARGO_PROFILE_DEV_DEBUG": "0",
+      "CARGO_PROFILE_TEST_DEBUG": "0"
+    },
+    "builds": {
+      "native.json": {
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "-p",
+          "monty",
+          "--example",
+          "concurrency_transport"
+        ],
+        "receipt_sha256": "02b29856ebb38b8784aff722fb373a2c56b007a9963d20be6957664bca67b8c2",
+        "exit": 0
+      },
+      "wasm.json": {
+        "command": [
+          "cargo",
+          "build",
+          "--locked",
+          "-p",
+          "monty-wasm-runtime",
+          "--target",
+          "wasm32-wasip1",
+          "--release"
+        ],
+        "receipt_sha256": "9b56b5272be5b5a547fb93b21927b31e42ef95936b4808eadef3b360678b218f",
+        "exit": 0
+      },
+      "component.json": {
+        "command": [
+          "node",
+          "crates/monty-js/scripts/build-component.mjs"
+        ],
+        "receipt_sha256": "6a2091f25029cc65939f1b98a178a5fa256bbaf9f9fc7d3d88fa2c8e204ecd34",
+        "exit": 0
+      }
+    },
+    "artifacts": {
+      "crates/monty-js/dist/worker/component/monty.component.core.wasm": "18a6333eaf2daef213ccbfbd7be8fbbe00df4a1f8d7cf85e5c11693b2c5bfcca",
+      "crates/monty-js/dist/worker/component/monty.component.core2.wasm": "e764a442d40199804739a8fcf8b06897d9cd21dc8aae33c067fbe9d38eaaf73e",
+      "crates/monty-js/dist/worker/component/monty.component.core3.wasm": "f6ca4d98715d3eb51fb58a9cfc6ee558fd2bc7ca8eee48bdea9dda96e6334186",
+      "crates/monty-js/dist/worker/component/monty.component.core4.wasm": "85022c45607e585ab1f7bd648ecd60907ec8ec91d37461a7919c6539714723e8",
+      "crates/monty-js/dist/worker/component/monty.component.js": "0caeb3ec2f03ee9f777a59d39fd569db1808e95fbdfdc0714c6f16cd03f3dd12",
+      "playground/coroutine-baseline/target/debug/examples/concurrency_transport": "4f2b1ee22aafb5644ae358a21d4ecc81338476091c8e5e70779a56cd29a88caf",
+      "playground/coroutine-baseline/target/wasm32-wasip1/release/monty_wasm_runtime.wasm": "66191cd17294e8dc76a8daa2982456e91aedf5ff954ff5c35ff8e7d5137ef3b1"
+    },
+    "capture_manifest_sha256": "f843690ccdcf4d16b5dd5e36d15ab4f0e54c4e3e4fd513c2f4671d676bad76e2",
+    "association_sha256": "7ef2c1e58bb02cf72be9a08e8d1d861be973c19da1385591b21947cdecb12bca"
+  },
+  "snapshots": {
+    "idle": {
+      "idle": true,
+      "continuation": "# ruff: noqa: F821\nimport json\n\nassert big == 2**100 and item == Item('widget', 3)\nassert add5(2) == 7 and part() == 6 and with_default(1) == 2\nassert cycle[0] is cycle and cycle[1] is owned_completion\nassert owned_completion.value is cycle\nassert next(new_generator) is cycle\nassert new_generator.send(cycle) is cycle\nassert dormant_generator.send(cycle) is cycle\nassert next(new_generator, 'done') == 'done'\nassert next(dormant_generator, 'done') == 'done'\nassert delegated_generator.send(cycle) is cycle\ntry:\n    next(delegated_generator)\nexcept StopIteration as done:\n    assert done.value is cycle\nelse:\n    assert False\nassert next(it) == 2 and list(t_it) == ['two']\nassert next(counter) == 6\nassert bound() == 12\nassert str(err) == 'boom'\nassert m.groups() == ('12', 'ab')\njson.dumps('ok')\n",
+      "expected": [
+        {
+          "complete": "ok"
+        }
+      ],
+      "batches": [],
+      "file": "snapshots/idle.bin",
+      "sha256": "1a6e398ffb27d1e4e59e352ea586caf384752574a614a8b912d4c95b7389c46b",
+      "source": "baseline/idle_state.py",
+      "source_sha256": "bf9172260661ffc6930b4c35a8dddb2480efb8fb16d68304dfce5ec6637a986d",
+      "capture": "idle",
+      "census": {
+        "active_handled": 0,
+        "active_unwinding": 0,
+        "active_internal": 0,
+        "parked_handled": 0,
+        "parked_unwinding": 0,
+        "parked_internal": 0,
+        "idle": true,
+        "draining_groups": 0,
+        "empty_queues": 0,
+        "active_shields": 0,
+        "cancelled_scopes": 0,
+        "host_cancellations": []
+      },
+      "requires": {
+        "equal": {
+          "idle": true
+        }
+      },
+      "bytes": 46575
+    },
+    "handled": {
+      "idle": false,
+      "step": false,
+      "expected": [
+        {
+          "complete": "ok"
+        }
+      ],
+      "batches": [
+        {
+          "results": [
+            {
+              "id": 0,
+              "value": "ok"
+            }
+          ]
+        }
+      ],
+      "file": "snapshots/handled.bin",
+      "sha256": "273c8392dfabbb5c1f42a4329ba6c28764ad62965a6dcd27ec41f033da003027",
+      "source": "baseline/handled.py",
+      "source_sha256": "3a37486fa45e59d199e3a355cbd01dffa999c6b838e04af83aca09c5a255ad76",
+      "capture": 0,
+      "census": {
+        "active_handled": 1,
+        "active_unwinding": 0,
+        "active_internal": 0,
+        "parked_handled": 0,
+        "parked_unwinding": 0,
+        "parked_internal": 0,
+        "idle": false,
+        "draining_groups": 0,
+        "empty_queues": 0,
+        "active_shields": 0,
+        "cancelled_scopes": 0,
+        "host_cancellations": []
+      },
+      "requires": {
+        "minimum": {
+          "active_handled": 1
+        }
+      },
+      "bytes": 6765
+    },
+    "unwinding": {
+      "idle": false,
+      "step": true,
+      "expected": [
+        {
+          "calls": [],
+          "pending": [
+            0
+          ]
+        },
+        {
+          "complete": "ok"
+        }
+      ],
+      "batches": [
+        {
+          "ack": true
+        },
+        {
+          "results": [
+            {
+              "id": 0,
+              "value": "ok"
+            }
+          ]
+        }
+      ],
+      "file": "snapshots/unwinding.bin",
+      "sha256": "e963415139df1642f6c36226c5a1d8da12d39b034f04b8527d5150b1a712a547",
+      "source": "baseline/unwinding.py",
+      "source_sha256": "12766c557ac82809f515eef2e87ba7a0f40966caf0be249d992fa572c7304e04",
+      "capture": 0,
+      "census": {
+        "active_handled": 0,
+        "active_unwinding": 1,
+        "active_internal": 0,
+        "parked_handled": 0,
+        "parked_unwinding": 0,
+        "parked_internal": 0,
+        "idle": false,
+        "draining_groups": 0,
+        "empty_queues": 0,
+        "active_shields": 0,
+        "cancelled_scopes": 0,
+        "host_cancellations": []
+      },
+      "requires": {
+        "minimum": {
+          "active_unwinding": 1
+        }
+      },
+      "bytes": 8856
+    },
+    "internal": {
+      "idle": false,
+      "step": true,
+      "expected": [
+        {
+          "calls": [],
+          "pending": [
+            0
+          ]
+        },
+        {
+          "complete": "ok"
+        }
+      ],
+      "batches": [
+        {
+          "ack": true
+        },
+        {
+          "results": [
+            {
+              "id": 0,
+              "value": "ok"
+            }
+          ]
+        }
+      ],
+      "file": "snapshots/internal.bin",
+      "sha256": "3464a14898769cf64c61c2a254f955b8f9f1a7c3c56896d63268a1c6ac978936",
+      "source": "baseline/internal.py",
+      "source_sha256": "c057e868e8ab3f161a2265f159085810bddf9e7a550805e81dcd55e2c7a82cd4",
+      "capture": 0,
+      "census": {
+        "active_handled": 0,
+        "active_unwinding": 0,
+        "active_internal": 1,
+        "parked_handled": 0,
+        "parked_unwinding": 0,
+        "parked_internal": 0,
+        "idle": false,
+        "draining_groups": 0,
+        "empty_queues": 0,
+        "active_shields": 0,
+        "cancelled_scopes": 0,
+        "host_cancellations": []
+      },
+      "requires": {
+        "minimum": {
+          "active_internal": 1
+        }
+      },
+      "bytes": 31008
+    },
+    "queue": {
+      "idle": false,
+      "step": false,
+      "expected": [
+        {
+          "calls": [
+            {
+              "id": 3,
+              "label": "after"
+            }
+          ],
+          "pending": [
+            3
+          ]
+        },
+        {
+          "complete": "ok"
+        }
+      ],
+      "batches": [
+        {
+          "results": [
+            {
+              "id": 2,
+              "value": "ok"
+            }
+          ]
+        },
+        {
+          "results": [
+            {
+              "id": 3,
+              "value": "ok"
+            }
+          ]
+        }
+      ],
+      "file": "snapshots/queue.bin",
+      "sha256": "361ce5ae26bb4af42cd94bac48e67fc587a2e54b76aa094071f4ca155eb24d08",
+      "source": "baseline/queue.py",
+      "source_sha256": "41392eb881a5cad5e0344ef2868f635871dd53216d776a4c8ad54636b3c99901",
+      "capture": 1,
+      "census": {
+        "active_handled": 0,
+        "active_unwinding": 1,
+        "active_internal": 0,
+        "parked_handled": 1,
+        "parked_unwinding": 0,
+        "parked_internal": 0,
+        "idle": false,
+        "draining_groups": 1,
+        "empty_queues": 1,
+        "active_shields": 1,
+        "cancelled_scopes": 1,
+        "host_cancellations": []
+      },
+      "requires": {
+        "minimum": {
+          "active_unwinding": 1,
+          "parked_handled": 1,
+          "draining_groups": 1,
+          "empty_queues": 1,
+          "active_shields": 1,
+          "cancelled_scopes": 1
+        }
+      },
+      "bytes": 14602
+    },
+    "host": {
+      "idle": false,
+      "step": false,
+      "expected": [
+        {
+          "calls": [],
+          "pending": [
+            1
+          ]
+        },
+        {
+          "complete": {
+            "error": null,
+            "interrupted_error": null,
+            "reason": "FIRST",
+            "status": "cancelled",
+            "value": "\"suppressed\"",
+            "value_export_error": null
+          }
+        }
+      ],
+      "batches": [
+        {
+          "results": [],
+          "cancel": "SECOND"
+        },
+        {
+          "results": [
+            {
+              "id": 1,
+              "value": "ok"
+            }
+          ]
+        }
+      ],
+      "file": "snapshots/host.bin",
+      "sha256": "c6fe4848a6d22a8a3b4664e01522f351227b01d6c30c3a36f6a97c440f446b6f",
+      "source": "cancelled_error/host.py",
+      "source_sha256": "c07bec1eed436d39d8d4a47eee41272ff2154678baa0af39614ea83d59c0f696",
+      "capture": 1,
+      "census": {
+        "active_handled": 1,
+        "active_unwinding": 0,
+        "active_internal": 0,
+        "parked_handled": 0,
+        "parked_unwinding": 0,
+        "parked_internal": 0,
+        "idle": false,
+        "draining_groups": 0,
+        "empty_queues": 0,
+        "active_shields": 1,
+        "cancelled_scopes": 0,
+        "host_cancellations": [
+          {
+            "reason": "FIRST",
+            "delivered": true
+          }
+        ]
+      },
+      "requires": {
+        "minimum": {
+          "active_shields": 1
+        },
+        "equal": {
+          "host_cancellations": [
+            {
+              "reason": "FIRST",
+              "delivered": true
+            }
+          ]
+        }
+      },
+      "bytes": 9895
+    }
+  },
+  "verification": {
+    "backend_state_coordinates": 12,
+    "independent_restores_per_coordinate": 2,
+    "report_sha256": "16eebdbbf915317832d4cb34b6cdc6fb5f66a74bf59605e3f8fd24343b58f08c"
+  }
+}
