@@ -1,189 +1,16 @@
-//! Dump compatibility across builds.
-//!
-//! The dump codec names every field and variant, so a data-layout change made
-//! after a dump was written must still load it. Two tests pin that property:
-//! a checked-in dump written by an earlier compatible build, and a synthetic old/new type pair round-tripped through the
-//! codec itself.
-
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-};
+//! Current snapshot round trips and explicit rejection of historical formats.
 
 use insta::assert_snapshot;
 use monty::{
     DUMP_VERSION, Dump, DumpError, MIN_SUPPORTED_DUMP_VERSION, MontyRepl, ReplProgress, Session, SessionRef, dump,
 };
-use monty_types::{CompileOptions, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
+use monty_types::{CompileOptions, ExecutionClock, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
 use serde::{Deserialize, Serialize};
-
-/// Environment variable that rewrites the fixture instead of checking it.
-const UPDATE_FIXTURE: &str = "UPDATE_DUMP_FIXTURE";
-/// Keep genuine older bytes while additive changes remain compatible.
-const FIXTURE_VERSION: u16 = 37;
 
 /// Builds the state the fixture holds: the common heap types, live iterators,
 /// functions, classes and a cycle, ahead of a suspension on a host call whose
 /// arguments carry heap values.
-const FIXTURE_STATE: &str = r"
-import collections
-import dataclasses
-import datetime
-import functools
-import itertools
-import pathlib
-import random
-import re
-
-big = 2**100
-neg = -7
-f = 3.5
-s = 'héllo'
-b = b'\x00\x01bytes'
-xs = [1, 2.5, 'three', None, True]
-t = (1, 'two')
-d = {'a': 1, 'b': [2, 3], 3: 'int key'}
-st = {1, 2, 3}
-fs = frozenset({'x', 'y'})
-dq = collections.deque([1, 2, 3], maxlen=5)
-Point = collections.namedtuple('Point', ['x', 'y'])
-p = Point(1, 2)
-
-
-@dataclasses.dataclass
-class Item:
-    name: str
-    qty: int = 0
-
-
-item = Item('widget', 3)
-
-
-class Counter:
-    total = 0
-
-    def __init__(self, start):
-        self.value = start
-
-    def bump(self):
-        self.value += 1
-        return self.value
-
-
-c = Counter(10)
-c.bump()
-
-
-def make_adder(n):
-    def add(x):
-        return x + n
-
-    return add
-
-
-add5 = make_adder(5)
-
-
-it = iter([1, 2])
-next(it)
-
-try:
-    raise ValueError('boom')
-except ValueError as exc:
-    err = exc
-
-dt = datetime.datetime(2024, 1, 2, 3, 4, 5, 678901)
-dlt = datetime.timedelta(days=1, seconds=2)
-pat = re.compile(r'(\d+)-(\w+)')
-m = pat.match('12-ab')
-part = functools.partial(add5, 1)
-cycle = []
-cycle.append(cycle)
-
-
-def generator(value):
-    try:
-        received = yield value
-        assert received is value
-    finally:
-        yield value
-
-
-new_generator = generator(cycle)
-dormant_generator = generator(cycle)
-assert next(dormant_generator) is cycle
-
-
-def delegating():
-    yield from generator(cycle)
-    return cycle
-
-
-delegated_generator = delegating()
-assert next(delegated_generator) is cycle
-owned_completion = StopIteration(cycle)
-cycle.append(owned_completion)
-
-day = datetime.date(2024, 5, 6)
-tz = datetime.timezone(datetime.timedelta(hours=2), 'X')
-tm = datetime.time(1, 2, 3)
-raw = b'\x07\x08' + b'\x09'
-rg = range(2, 10, 3)
-sl = slice(1, 5, 2)
-bound = c.bump
-kv, iv, vv = d.keys(), d.items(), d.values()
-rnd = random.Random(42)
-rnd.random()
-dq_it = iter(dq)
-next(dq_it)
-t_it = iter(t)
-next(t_it)
-b_it = iter(raw)
-next(b_it)
-di_it = iter(d.items())
-next(di_it)
-s_it = iter(st)
-next(s_it)
-call_it = iter(lambda: 7, 0)
-joined = '-'.join(['x', 'y'])
-str_it = iter('abc')
-next(str_it)
-range_it = iter(range(3))
-next(range_it)
-dk_it = iter(d)
-next(dk_it)
-dv_it = iter(d.values())
-next(dv_it)
-counter = itertools.count(5)
-next(counter)
-alias = list[int]
-opt = int | None
-where = pathlib.Path('/data') / 'file.txt'
-
-
-def with_default(x, y=[1]):
-    return x + len(y)
-
-
-def exec_host(xs, d, b):
-    g = {'host_call': host_call, 'xs': xs, 'd': d, 'b': b}
-    exec('out = host_call(xs, d, b)', g)
-    return g['out']
-
-
-pending_log = []
-
-
-class Pending:
-    def __init__(self, xs, d, b):
-        try:
-            raise KeyError('pending')
-        except KeyError:
-            try:
-                self.result = exec_host(xs, d, b)
-            finally:
-                pending_log.append('finally')
-";
+const FIXTURE_STATE: &str = include_str!("fixtures/concurrency/baseline/idle_state.py");
 
 /// The host call the fixture is suspended on, from inside an `exec()` frame with a
 /// globals dict, a `finally` block, an `except` handler and an `__init__`.
@@ -233,19 +60,19 @@ assert add5(2) == 7
 (result, c.value)
 ";
 
-/// A dump written by an earlier supported build still loads and
-/// runs. Failing here means a data-layout change broke older dumps: add a
-/// `#[serde(alias)]` or `#[serde(default)]`, or bump `DUMP_VERSION` and
-/// regenerate with `UPDATE_DUMP_FIXTURE=1 cargo test -p monty --test dump_compat`.
+/// Current snapshots preserve the common heap types and suspended frames.
 #[test]
-fn fixture_dump_loads_and_resumes() {
-    check_fixture_dump(&fixture_path());
+fn current_dump_loads_and_resumes() {
+    let bytes = current_fixture_dump();
+    for _ in 0..2 {
+        check_fixture_dump(&bytes);
+    }
 }
 
 /// Header-only protocol probes: unsupported versions must fail before CBOR decoding.
 #[test]
 fn unsupported_versions_are_rejected_before_payload() {
-    assert_eq!(MIN_SUPPORTED_DUMP_VERSION, 37);
+    assert_eq!(MIN_SUPPORTED_DUMP_VERSION, DUMP_VERSION);
     for version in 0..MIN_SUPPORTED_DUMP_VERSION {
         let mut header = b"MONTY\0".to_vec();
         header.extend_from_slice(&version.to_le_bytes());
@@ -340,46 +167,35 @@ asyncio.run(main())
     }
 }
 
-fn check_fixture_dump(path: &Path) {
-    if env::var_os(UPDATE_FIXTURE).is_some() && path == fixture_path() {
-        assert_eq!(
-            FIXTURE_VERSION, DUMP_VERSION,
-            "never overwrite a historical fixture; select a new current fixture first"
-        );
-        let mut repl = MontyRepl::new("fixture.py", ResourceTracker::default(), CompileOptions::default());
-        repl.feed_run(FIXTURE_STATE, vec![], PrintWriter::Stdout).unwrap();
-        let mut progress = repl.feed_start(FIXTURE_CALL, vec![], PrintWriter::Stdout).unwrap();
-        // `host_call` is looked up from inside `exec_host`, where it is not yet defined
-        while let ReplProgress::NameLookup(lookup) = progress {
-            let host = MontyObject::function(lookup.name.clone(), None);
-            progress = lookup
-                .resume(NameLookupResult::Value(host), PrintWriter::Stdout)
-                .unwrap();
-        }
-        let ReplProgress::FunctionCall(call) = &progress else {
-            panic!("the fixture must suspend on host_call, got {progress:?}");
-        };
-        assert_eq!(call.function_name, "host_call");
-        let bytes = dump("fixture.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, bytes).unwrap();
-        eprintln!("updated {}", path.display());
-        // Snapshots own manual heap references; abandon them contextually.
-        drop(progress.into_function_call().unwrap().into_repl());
-        return;
+fn current_fixture_dump() -> Vec<u8> {
+    let mut repl = MontyRepl::new("fixture.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(FIXTURE_STATE, vec![], PrintWriter::Stdout).unwrap();
+    let mut progress = repl.feed_start(FIXTURE_CALL, vec![], PrintWriter::Stdout).unwrap();
+    // `host_call` is looked up from inside `exec_host`, where it is not yet defined
+    while let ReplProgress::NameLookup(lookup) = progress {
+        let host = MontyObject::function(lookup.name.clone(), None);
+        progress = lookup
+            .resume(NameLookupResult::Value(host), PrintWriter::Stdout)
+            .unwrap();
     }
-    let bytes = fs::read(path).unwrap_or_else(|err| {
-        panic!(
-            "failed to read {}: {err}; regenerate with {UPDATE_FIXTURE}=1 cargo test -p monty --test dump_compat",
-            path.display()
-        )
-    });
-    let loaded = Dump::load(&bytes).expect("a fixture within the supported version range loads");
+    let ReplProgress::FunctionCall(call) = &progress else {
+        panic!("the fixture must suspend on host_call, got {progress:?}");
+    };
+    assert_eq!(call.function_name, "host_call");
+    let bytes = dump("fixture.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+    // Snapshots own manual heap references; abandon them contextually.
+    drop(progress.into_function_call().unwrap().into_repl());
+    bytes
+}
+
+fn check_fixture_dump(bytes: &[u8]) {
+    let loaded = Dump::load(bytes).expect("the current snapshot loads");
     assert_eq!(loaded.script_name, "fixture.py");
     assert!(loaded.type_check.is_none());
     let Session::Suspended(progress) = loaded.state else {
         panic!("fixture was dumped suspended on a host call");
     };
+    assert_eq!(progress.tracker().execution_clock(), ExecutionClock::Wall);
     let call = progress.into_function_call().expect("suspended on host_call");
     assert_eq!(call.function_name, "host_call");
     // the call arguments are a value graph of their own inside the dump
@@ -484,13 +300,6 @@ fn persisted_key_hashes_are_stable() {
     assert_snapshot!(hashes.py_repr(), @"(-7376904247260835724, -8418895208483869890, -7578619387304540654, -6751866591645121981, -8097107109803033201, 2456456309100923238, -5014982954702616963, 2858064283329581446)");
 }
 
-/// The retained compatibility anchor; additive changes do not require another binary.
-fn fixture_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(format!("dump_v{FIXTURE_VERSION}.bin"))
-}
-
 /// A record as an older build wrote it.
 #[derive(Serialize)]
 struct RecordV1 {
@@ -528,8 +337,7 @@ enum KindV2 {
     Beta(u8),
 }
 
-/// The codec property the fixture test relies on, asserted here rather than
-/// assumed from upstream: an older layout loads into the edited one.
+/// Named-field codec behavior, independent of the supported dump version range.
 #[test]
 fn layout_edits_load_older_encodings() {
     for (old, expected) in [
@@ -625,11 +433,12 @@ asyncio.run(main())
 /// cancellation signal before queue accounting. Never regenerate.
 #[test]
 fn historical_snapshots_are_rejected() {
-    assert_eq!(MIN_SUPPORTED_DUMP_VERSION, 37);
+    assert_eq!(MIN_SUPPORTED_DUMP_VERSION, DUMP_VERSION);
     for (bytes, version) in [
         (include_bytes!("fixtures/dump_v14.bin").as_slice(), 14),
         (include_bytes!("fixtures/anyio_scope_v35.bin").as_slice(), 35),
         (include_bytes!("fixtures/dump_v36.bin").as_slice(), 36),
+        (include_bytes!("fixtures/dump_v37.bin").as_slice(), 37),
     ] {
         assert_eq!(&bytes[..6], b"MONTY\0");
         assert_eq!(u16::from_le_bytes([bytes[6], bytes[7]]), version);

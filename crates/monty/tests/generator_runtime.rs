@@ -22,3 +22,6 @@ mod anyio;
 
 #[path = "generator_runtime/support.rs"]
 mod support;
+
+#[path = "generator_runtime/baseline.rs"]
+mod baseline;

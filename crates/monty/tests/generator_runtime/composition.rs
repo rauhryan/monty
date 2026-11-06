@@ -84,3 +84,38 @@ fn generator_composition_snapshot_ownership() {
         "../fixtures/concurrency/generator_composition/suspension.py"
     ));
 }
+
+/// Upstream chaining and annotation helpers coexist with task/generator ownership.
+#[test]
+fn upstream_exception_chain_snapshot_ownership() {
+    check_public_fixture_snapshots(include_str!("../fixtures/concurrency/upstream_merge/suspension.py"));
+}
+
+/// Cause cycles and rejected raise causes release every owned exception reference.
+#[test]
+fn upstream_exception_chain_cycles() {
+    checked_run(
+        r"
+for index in range(100):
+    error = ValueError('cycle')
+    try:
+        raise error from error
+    except ValueError as caught:
+        assert caught.__cause__ is error
+    try:
+        raise error from 1
+    except TypeError:
+        pass
+    error = None
+None
+",
+    );
+}
+
+/// Public exception causes drive contextmanager identity across independent restores.
+#[test]
+fn contextmanager_cause_snapshot_ownership() {
+    check_public_fixture_snapshots(include_str!(
+        "../fixtures/concurrency/contextmanager_cause/suspension.py"
+    ));
+}

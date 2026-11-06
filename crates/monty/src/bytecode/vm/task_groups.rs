@@ -636,7 +636,7 @@ impl VM<'_> {
                     ExceptionObject {
                         simple,
                         args: Some(args),
-                        generator_stop_cause: None,
+                        chain: None,
                     },
                 )))));
                 Err(RunError::Exc(raised))

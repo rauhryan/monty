@@ -19,7 +19,7 @@ these built-ins; `raise MyClass()` on a plain user class raises
 `AssertionError`, `MemoryError`, `StopIteration`, `SyntaxError`,
 `TimeoutError`, `TypeError`.
 
-Module-specific: `json.JSONDecodeError` and `tomllib.TOMLDecodeError` (subclasses of `ValueError`),
+Module-specific: `asyncio.CancelledError` (directly under `BaseException`), `json.JSONDecodeError` and `tomllib.TOMLDecodeError` (subclasses of `ValueError`),
 `re.PatternError` / `re.error`, `io.UnsupportedOperation` (catchable as
 both `OSError` and `ValueError`, matching CPython's dual parentage).
 
@@ -38,7 +38,8 @@ both `OSError` and `ValueError`, matching CPython's dual parentage).
 
 ## Constructor signature
 
-All exception constructors accept **zero or one string argument** only.
+Exception constructors accept zero or one positional argument.
+Non-string arguments retain guest object identity.
 Multi-argument forms used in CPython (e.g. `OSError(errno, strerror, filename)`,
 `UnicodeDecodeError(encoding, obj, start, end, reason)`) are
 not supported; passing more than one argument raises an internal error.
@@ -47,25 +48,33 @@ not supported; passing more than one argument raises an internal error.
 
 - `exc.args` — a tuple with 0 or 1 elements. Always a `tuple`, even when
     empty.
-- `str(exc)` — returns the single message string, or `""` if none.
+
+- `str(exc)` formats the retained argument, or returns `""` if none.
+
 - `KeyError` always carries the missing key's `str()` text rather than the key
     itself, so `str(exc)` and `repr(exc)` quote non-string keys:
     `{}[1]` gives `KeyError('1')` where CPython gives `KeyError(1)`, and a
     `bytes` key gives `KeyError("b'a'")`.
+    The key's `__str__` therefore runs when the `KeyError` is raised, which CPython never does.
+    An exception from it is replaced by the type name (`KeyError('<K>')`), but a resource limit hit inside it
+    ends the run with `MemoryError` or `TimeoutError` where CPython raises a plain `KeyError`.
+
 - `repr(exc)` — `ClassName('message')` matching CPython, **except**
     `UnicodeDecodeError`/`UnicodeEncodeError`: CPython reprs these from their
     real 5-field constructor (`UnicodeDecodeError('ascii', b'\xff', 0, 1, 'ordinal not in range(128)')`), which Monty
     doesn't track, so Monty's
     `repr()` uses the generic single-message form instead.
+
 - The dotted exception classes — `json.JSONDecodeError`, `tomllib.TOMLDecodeError`, `re.PatternError`,
     `binascii.Error`, `binascii.Incomplete`, `_csv.Error` — repr under their qualified name:
     `binascii.Error('bad')` where CPython gives `Error('bad')`.
     `type(exc).__name__` and `str(type(exc))` match CPython.
 
-**Not implemented:** `__cause__`, `__context__`, `__suppress_context__`,
-`__traceback__`, `__notes__`, `add_note()`. The `raise X from Y` syntax
-parses, but the `from Y` cause is **silently dropped**: chained
-tracebacks are not preserved across `raise from`.
+- `exc.__cause__`, `exc.__context__` and `exc.__suppress_context__` are read-only: `exc.__cause__ = other` raises
+    `AttributeError`, where CPython accepts an exception or `None`.
+
+**Not implemented:** `__traceback__`, `__notes__`, `add_note()`. A traceback printed for an exception with a
+`__cause__` or `__context__` shows that exception alone: CPython's chained output (`The above exception was the direct cause of the following exception:`) is not produced, inside the sandbox or at the host boundary.
 
 ## Custom subclasses
 

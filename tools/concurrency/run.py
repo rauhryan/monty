@@ -5,6 +5,7 @@ import json
 import shutil
 from pathlib import Path
 
+import baseline
 import guard
 import replay
 
@@ -16,9 +17,7 @@ digest = replay.digest
 
 
 def files_under(directory):
-    return [
-        p for p in directory.rglob('*') if p.is_file() and '__pycache__' not in p.parts
-    ]
+    return [p for p in directory.rglob('*') if p.is_file() and '__pycache__' not in p.parts]
 
 
 def sources():
@@ -51,11 +50,7 @@ def artifacts():
     component = REPO / 'crates/monty-js/dist/worker/component'
     paths.extend(component.glob('*.js'))
     paths.extend(component.glob('*.wasm'))
-    paths.extend(
-        (
-            REPO / 'crates/monty-js/node_modules/@bytecodealliance/preview2-shim/dist'
-        ).rglob('*.js')
-    )
+    paths.extend((REPO / 'crates/monty-js/node_modules/@bytecodealliance/preview2-shim/dist').rglob('*.js'))
     required = [
         component / 'monty.component.js',
         component / 'monty.component.core.wasm',
@@ -68,9 +63,7 @@ def artifacts():
 def authenticate(path):
     association = json.loads(path.read_text())
     if association['sources'] != sources() or association['artifacts'] != artifacts():
-        raise RuntimeError(
-            'source or artifact inventory differs from the build association'
-        )
+        raise RuntimeError('source or artifact inventory differs from the build association')
     for receipt, expected in association['receipts'].items():
         if digest(path.parent / receipt) != expected:
             raise RuntimeError('build receipt changed: ' + receipt)
@@ -80,19 +73,15 @@ def authenticate(path):
 def preflight():
     """Check the frozen public-async oracle and pinned, formatted fixture sources."""
     frozen = FIXTURES / 'public_async'
-    for name, expected in json.loads(
-        (frozen / 'contract.sha256.json').read_text()
-    ).items():
+    for name, expected in json.loads((frozen / 'contract.sha256.json').read_text()).items():
         path = frozen / name
         replay.check(digest(path) == expected, 'frozen input changed: ' + name)
     cases = {
         'native_async/' + name: case | {'source': 'public_async/cases/' + name + '.py'}
-        for name, case in json.loads((frozen / 'contract.json').read_text())[
-            'cases'
-        ].items()
+        for name, case in json.loads((frozen / 'contract.json').read_text())['cases'].items()
     }
     cases.update(replay.strict_json((ROOT / 'cases.json').read_text()))
-    replay.check(len(cases) == 21, 'unexpected case inventory')
+    replay.check(len(cases) == 23, 'unexpected case inventory')
     for name, case in cases.items():
         replay.check(
             len(case['steps']) == len(case['batches']) > 0,
@@ -147,8 +136,7 @@ def build(output):
                 'artifacts': artifacts(),
                 'receipts': receipts,
                 'tools': {
-                    name: shutil.which(name, path=guard.environment()['PATH'])
-                    for name in ('python3', 'node', 'cargo')
+                    name: shutil.which(name, path=guard.environment()['PATH']) for name in ('python3', 'node', 'cargo')
                 },
             },
             indent=2,
@@ -162,14 +150,10 @@ def verify(association, output, cases):
     authenticate(association)
     results = {}
     for backend in ('native', 'wasm'):
-        command = (
-            [str(NATIVE)] if backend == 'native' else ['node', str(ROOT / 'wasm.mjs')]
-        )
+        command = [str(NATIVE)] if backend == 'native' else ['node', str(ROOT / 'wasm.mjs')]
         for name, case in cases.items():
             key = backend + '-' + name.replace('/', '-')
-            result = replay.run_case(
-                case, command, FIXTURES / case['source'], output / key
-            )
+            result = replay.run_case(case, command, FIXTURES / case['source'], output / key)
             results[key] = result
             print(key, result, flush=True)
     authenticate(association)
@@ -180,28 +164,37 @@ def verify(association, output, cases):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('sources', 'build', 'verify', 'run'))
+    parser.add_argument('action', choices=('sources', 'build', 'verify', 'run', 'baseline', 'verify-baseline'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--association', type=Path)
+    parser.add_argument('--manifest', type=Path)
     args = parser.parse_args()
     cases = preflight()
     if args.action == 'sources':
-        print(
-            f'Source preflight passed: {len(sources())} inputs; no build artifacts required'
-        )
+        print(f'Source preflight passed: {len(sources())} inputs; no build artifacts required')
         return
     if args.output is None:
         parser.error('--output is required')
-    if args.action == 'verify' and args.association is None:
+    if args.action in ('verify', 'verify-baseline') and args.association is None:
         parser.error('--association is required for verify')
+    if args.action == 'verify-baseline' and args.manifest is None:
+        parser.error('--manifest is required for verify-baseline')
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     with guard.session():
         association = args.association
-        if args.action in ('build', 'run'):
+        if args.action in ('build', 'run', 'baseline'):
             association = build(output)
         if args.action in ('verify', 'run'):
             verify(association, output, cases)
+        if args.action in ('baseline', 'verify-baseline'):
+            authenticate(association)
+            commands = {'native': [str(NATIVE)], 'wasm': ['node', str(ROOT / 'wasm.mjs')]}
+            manifest = args.manifest
+            if args.action == 'baseline':
+                manifest = baseline.capture(output, association, commands['native'], FIXTURES)
+            baseline.verify(manifest, output, commands)
+            authenticate(association)
     print('PASS', output)
 
 

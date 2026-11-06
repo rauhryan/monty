@@ -4,6 +4,7 @@ mod boundary_uuid;
 mod heap;
 mod heap_traits;
 
+mod annotations;
 mod args;
 mod asyncio;
 mod builtins;
@@ -12,7 +13,6 @@ mod bytecode;
 pub mod cancellation_test_hooks;
 mod codecs;
 mod dump_format;
-mod dump_upgrade;
 mod exception_private;
 mod expressions;
 mod frozen;

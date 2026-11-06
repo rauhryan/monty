@@ -147,25 +147,11 @@ pub(crate) struct Task {
 }
 
 /// Distinct cleanup policies are lifetime roles, not independent task flags.
-/// Keep the bool representation written by initial round8 producers.
 #[derive(Debug, Default, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(from = "bool", into = "bool")]
 pub(crate) enum CleanupLifetime {
     #[default]
     Admitted,
     Transferred,
-}
-
-impl From<bool> for CleanupLifetime {
-    fn from(transferred: bool) -> Self {
-        if transferred { Self::Transferred } else { Self::Admitted }
-    }
-}
-
-impl From<CleanupLifetime> for bool {
-    fn from(policy: CleanupLifetime) -> Self {
-        policy == CleanupLifetime::Transferred
-    }
 }
 
 /// A queued gather error remains unconsumed until task activation.
@@ -187,9 +173,6 @@ pub(crate) struct NativeCancellation {
     pub delivered: bool,
     /// Stale settlements for this detached external operation are ignored.
     pub revoked: Option<u32>,
-    /// Distinguishes legacy delivered+null from current delivered+null.
-    #[serde(default)]
-    pub policy: u8,
     /// Frozen once at delivery. Plain metadata never roots a guest object.
     #[serde(default)]
     pub interrupted_error: Option<InterruptedError>,
@@ -282,7 +265,7 @@ pub(crate) struct SerializedTaskFrame {
     /// Caller's bytecode offset at the call site (for tracebacks). See
     /// `CallFrame.call_offset`.
     pub call_offset: Option<u32>,
-    /// Whether this frame is a class `__init__` (see `CallFrame.is_initializer`).
+    /// Whether this frame is a class `__init__` or an imported module body (see `CallFrame.is_initializer`).
     pub is_initializer: bool,
     /// Frame namespace, owning its dict references (see `CallFrame.namespace`).
     pub namespace: Option<Box<FrameNamespace>>,

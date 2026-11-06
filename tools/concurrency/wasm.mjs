@@ -87,7 +87,7 @@ if (mode === 'start' || mode === 'run') {
   event = feed(await readFile(source,'utf8'), [{name:'exchange',value:0}], [{tag:'function',val:{name:'exchange'}}])
 } else {
   event = dispatch({tag:'load',val:new Uint8Array(await readFile(source))})
-  assert(['resolve-futures','function-call'].includes(event.tag))
+  assert(['ok','resolve-futures','function-call'].includes(event.tag))
   if (mode === 'dispose') {
     assert.equal(dispatch({tag:'reset'}).tag,'ok')
     console.log('{"disposed":true}')
@@ -105,10 +105,16 @@ if (mode === 'start' || mode === 'run') {
     console.log(JSON.stringify({rejected:rejected.val}))
     process.exit(0)
   }
-  event = resume(event, JSON.parse(replyText))
+  if (mode === 'feed-idle') {
+    assert.equal(event.tag, 'ok')
+    event = feed(await readFile(replyText, 'utf8'))
+  } else {
+    event = resume(event, JSON.parse(replyText))
+  }
 }
 let view
 ;[event, view] = boundary(event)
+if (mode === 'feed-idle') assert.equal(event.tag, 'complete', 'idle continuation must complete')
 if (mode === 'run') {
   const views = [view]
   for (const batch of JSON.parse(await readFile(replyText,'utf8'))) {

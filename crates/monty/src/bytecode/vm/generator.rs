@@ -291,11 +291,6 @@ impl VM<'_> {
             let HeapData::Generator(object) = vm.heap.get(*id) else {
                 unreachable!("generator request")
             };
-            if matches!(&object.state, GeneratorState::Suspended { .. })
-                || matches!(&object.state, GeneratorState::New { .. }) && !throwing
-            {
-                vm.admit_native_code(&vm.interns.get_function(object.function).code)?;
-            }
             match &object.state {
                 GeneratorState::Running if frames == 0 => {
                     return Err(ExcType::value_error("generator already executing"));
@@ -700,7 +695,7 @@ impl VM<'_> {
         let object = Value::Ref(self.heap.allocate(HeapData::Exception(Box::new(ExceptionObject {
             simple: SimpleException::new_none(ExcType::StopIteration),
             args: Some(args),
-            generator_stop_cause: None,
+            chain: None,
         }))));
         let error = self.make_exception(&object, false);
         object.drop_with(self);

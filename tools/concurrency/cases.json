@@ -577,5 +577,76 @@
       }
     ],
     "result": "ok"
+  },
+  "upstream_merge/exception_chains": {
+    "source": "upstream_merge/suspension.py",
+    "steps": [
+      [
+        [
+          "handled"
+        ],
+        [
+          "handled"
+        ]
+      ],
+      [
+        [
+          "chained"
+        ],
+        [
+          "chained"
+        ]
+      ],
+      [
+        [
+          "generator"
+        ],
+        [
+          "generator"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "handled": "ok"
+      },
+      {
+        "chained": "ok"
+      },
+      {
+        "generator": "ok"
+      }
+    ],
+    "result": "ok"
+  },
+  "contextmanager_cause/suspension": {
+    "source": "contextmanager_cause/suspension.py",
+    "steps": [
+      [
+        [
+          "stop"
+        ],
+        [
+          "stop"
+        ]
+      ],
+      [
+        [
+          "replacement"
+        ],
+        [
+          "replacement"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "stop": "ok"
+      },
+      {
+        "replacement": "ok"
+      }
+    ],
+    "result": "ok"
   }
 }

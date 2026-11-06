@@ -12,6 +12,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{HeapData, HeapReadOutput},
+    py_value::PyValue,
     types::PyTrait,
     value::Value,
 };
@@ -61,7 +62,7 @@ impl VM<'_> {
         if self.is_anyio_scope(ctx_id) {
             return self.anyio_scope_context(ctx_id, None, true);
         }
-        let mut ctx = self.heap.read(ctx_id);
+        let mut ctx = PyValue::from_heap(ctx_id, self.heap);
         if ctx.py_is_context_manager(self) {
             ctx.py_enter(self)
         } else {
@@ -86,7 +87,7 @@ impl VM<'_> {
         if this.is_anyio_scope(ctx_id) {
             return this.anyio_scope_context(ctx_id, None, false);
         }
-        this.heap.read(ctx_id).py_exit(this, None)
+        PyValue::from_heap(ctx_id, this.heap).py_exit(this, None)
     }
 
     /// `WithExceptStart`: peek at `[..., ctx, exc]`, call
@@ -106,7 +107,7 @@ impl VM<'_> {
         if self.is_anyio_scope(ctx_id) {
             return self.anyio_scope_context(ctx_id, Some(exc_id), false);
         }
-        self.heap.read(ctx_id).py_exit(self, Some(exc_id))
+        PyValue::from_heap(ctx_id, self.heap).py_exit(self, Some(exc_id))
     }
 }
 

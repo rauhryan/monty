@@ -23,10 +23,7 @@ use crate::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
         GatherState, PendingChildren, TaskGroupState, TaskId,
     },
-    bytecode::{
-        Code,
-        vm::scheduler::{GatherErrorDelivery, SerializedTaskFrame},
-    },
+    bytecode::vm::scheduler::{GatherErrorDelivery, SerializedTaskFrame},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{
@@ -141,7 +138,6 @@ impl<'h> VM<'h> {
 
         // Extract coroutine data before mutating
         let func_id = coro.get(self.heap).func_id;
-        self.admit_native_code(&self.interns.get_function(func_id).code)?;
         let globals = coro.get(self.heap).globals;
         let namespace_values: Vec<Value> = coro
             .get(self.heap)
@@ -1404,6 +1400,7 @@ impl<'h> VM<'h> {
                 ExtFunctionResult::NotFound(function_name) => {
                     self.fail_future(call_id, ExtFunctionResult::not_found_exc(&function_name));
                 }
+                ExtFunctionResult::ModuleFile(_) => self.fail_future(call_id, ExcType::module_file_for_non_import()),
             }
         }
         Ok(())
@@ -1424,9 +1421,10 @@ impl<'h> VM<'h> {
     pub(crate) fn cancel_native(&mut self, reason: &str) -> RunResult<()> {
         // Repeats retain ownership after the native root returns to its caller.
         if self.scheduler.main_task().is_some_and(|t| t.native_cancel.is_some()) {
-            return self.deliver_native_cancel();
+            self.deliver_native_cancel();
+            return Ok(());
         }
-        self.check_native_cancel_code()?;
+
         let native_generator = self
             .suspended_frames
             .iter()
@@ -1451,38 +1449,14 @@ impl<'h> VM<'h> {
         }
         self.scheduler.adopt_root_tasks();
         self.cancel_public_task_reason(TaskId::default(), reason);
-        self.deliver_native_cancel()
+        self.deliver_native_cancel();
+        Ok(())
     }
 
     /// Function identity survives task parking and snapshot restoration. Module-level
     /// await and ordinary generators retain their separate execution policies.
     pub(super) fn is_coroutine_frame(&self, function: Option<FunctionId>) -> bool {
         function.is_some_and(|id| self.interns.get_function(id).is_async)
-    }
-
-    /// Older genuine dumps remain usable for ordinary execution, but cannot
-    /// resume a cancellation contract whose continuation points they lack.
-    fn check_native_cancel_code(&self) -> RunResult<()> {
-        let legacy = self
-            .suspended_frames
-            .iter()
-            .chain([&self.current_frame])
-            .any(|f| !f.code.supports_native_cancel())
-            || self.scheduler.owned_task_tree(self.heap).iter().any(|id| {
-                self.scheduler.task(*id).is_some_and(|task| {
-                    task.frames.iter().any(|f| {
-                        let code = frame_code(self.interns, self.module_code, f.function_id);
-                        !code.supports_native_cancel()
-                    })
-                })
-            });
-        if legacy {
-            Err(RunError::uncatchable(MontyException::runtime_error(
-                "native cancellation requires catchable cancellation policy 7",
-            )))
-        } else {
-            Ok(())
-        }
     }
 
     /// A compiler-owned continuation boundary, after operand/exception cleanup.
@@ -1507,12 +1481,11 @@ impl<'h> VM<'h> {
             return Ok(());
         }
         if !returning
-            && self
+            && !self
                 .current_frame
                 .code
                 .native_cancel_points
-                .as_ref()
-                .is_none_or(|points| !points.contains(&u32::try_from(self.instruction_ip).expect("instruction offset")))
+                .contains(&u32::try_from(self.instruction_ip).expect("instruction offset"))
         {
             return Ok(());
         }
@@ -1586,22 +1559,6 @@ impl<'h> VM<'h> {
             .clone()
     }
 
-    /// Pending-only admission must run before frame installation/state transfer.
-    pub(super) fn admit_native_code(&self, code: &Code) -> RunResult<()> {
-        if self
-            .scheduler
-            .main_task()
-            .and_then(|t| t.native_cancel.as_ref())
-            .is_some_and(|c| !c.delivered)
-            && !code.supports_native_cancel()
-        {
-            return Err(RunError::uncatchable(MontyException::runtime_error(
-                "native cancellation requires catchable cancellation policy 7",
-            )));
-        }
-        Ok(())
-    }
-
     /// Interrupt active selection at its continuation; local catchers may recover.
     pub(super) fn native_matching_error(&mut self, returning: bool) -> Option<RunError> {
         if self.scheduler.current_task()?.gather_protected {
@@ -1640,29 +1597,20 @@ impl<'h> VM<'h> {
     }
 
     /// Repeat requests never reinject or consume a protected cleanup reply.
-    fn deliver_native_cancel(&mut self) -> RunResult<()> {
+    fn deliver_native_cancel(&mut self) {
         if let Some(cancel) = self.scheduler.main_task().and_then(|task| task.native_cancel.as_ref()) {
-            if cancel.policy != 7 {
-                return Err(RunError::uncatchable(MontyException::runtime_error(
-                    "native cancellation requires catchable cancellation policy 7",
-                )));
-            }
-            if !cancel.delivered {
-                self.check_native_cancel_code()?;
-            }
             let reason = cancel.reason.clone();
             for id in self.scheduler.owned_task_tree(self.heap) {
                 self.cancel_child_task(id, &reason);
             }
         }
-        Ok(())
     }
 
     /// Ingests a host batch, then resumes tasks in resolution order for both values and errors.
     /// With no runnable task, yields the remaining pending call IDs to the host.
     /// Returns an internal error if neither runnable tasks nor pending calls remain.
     pub fn resume_with_resolved_futures(&mut self, results: Vec<(u32, ExtFunctionResult)>) -> RunResult<FrameExit> {
-        self.deliver_native_cancel()?;
+        self.deliver_native_cancel();
         self.apply_future_results(results)?;
         if let Some(next_task_id) = self.scheduler.next_ready_task() {
             if let Err(error) = self.activate_task(next_task_id) {

@@ -497,10 +497,10 @@ impl CodeBuilder {
             self.exception_table,
             local_names,
         );
-        code.native_cleanup = Some(self.native_cleanup);
-        code.native_cleanup_entries = Some(self.native_cleanup_entries);
-        code.native_cancel_points = Some(self.native_cancel_points);
-        code.native_matching = Some(self.native_matching);
+        code.native_cleanup = self.native_cleanup;
+        code.native_cleanup_entries = self.native_cleanup_entries;
+        code.native_cancel_points = self.native_cancel_points;
+        code.native_matching = self.native_matching;
         code
     }
 

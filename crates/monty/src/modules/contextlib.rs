@@ -4,10 +4,9 @@ use crate::{
     args::{ArgValues, FromArgs},
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
-    defer_drop,
     exception_private::{ExcType, RunResult},
-    frozen::{FrozenFunction, FrozenFunctions},
-    heap::{HeapData, HeapId, HeapReadOutput},
+    frozen::FrozenFunction,
+    heap::{HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::Module,
@@ -42,28 +41,13 @@ pub(super) fn call(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
             Value::Builtin(Builtins::ExcType(ExcType::StopIteration)),
             Value::Builtin(Builtins::ExcType(ExcType::RuntimeError)),
             Value::Builtin(Builtins::ExcType(ExcType::BaseException)),
-            Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::GeneratorStopCause)),
         ],
     )
 }
 
-/// Only the VM's PEP 479 conversion carries this owned cause.
-pub(crate) fn stop_cause(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let (error, original) = args.get_two_args("generator_stop_cause", vm.heap)?;
-    defer_drop!(error, vm);
-    defer_drop!(original, vm);
-    let matches = match (error.read_heap(vm), original) {
-        (Some(HeapReadOutput::Exception(error)), Value::Ref(original)) => {
-            matches!(&error.get(vm.heap).generator_stop_cause, Some(Value::Ref(cause)) if cause == original)
-        }
-        _ => false,
-    };
-    Ok(Value::Bool(matches))
-}
-
 /// CPython's one-yield protocol, including identity-sensitive suppression and PEP 479.
 pub(crate) const CONTEXTMANAGER_SOURCE: &str = r#"
-def __monty_contextmanager(func, next_, stop_, runtime_, base_, stop_cause):
+def __monty_contextmanager(func, next_, stop_, runtime_, base_):
     class _GeneratorContextManager:
         def __init__(self, func, args, kwargs):
             self.func = func
@@ -95,7 +79,7 @@ def __monty_contextmanager(func, next_, stop_, runtime_, base_, stop_cause):
             except stop_ as error:
                 return error is not value
             except runtime_ as error:
-                if error is value or stop_cause(error, value):
+                if error is value or (typ is stop_ and error.__cause__ is value):
                     return False
                 raise
             except base_ as error:

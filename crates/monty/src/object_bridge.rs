@@ -128,6 +128,20 @@ pub(crate) struct TerminalExportError {
     snippet_frame: Option<Box<StackFrame>>,
     hide_caret: bool,
 }
+impl From<monty_types::ResourceError> for ExportError {
+    fn from(error: monty_types::ResourceError) -> Self {
+        let (RunError::Exc(error) | RunError::UncatchableExc(error)) = RunError::from(error) else {
+            unreachable!("resource errors carry exception metadata")
+        };
+        Self::Terminal(Box::new(TerminalExportError {
+            exc: error.exc,
+            frame: error.frame,
+            snippet_frame: error.snippet_frame,
+            hide_caret: error.hide_caret,
+        }))
+    }
+}
+
 impl ExportError {
     /// Release guest identity before retaining a terminal formatting diagnostic.
     pub(crate) fn terminal(mut error: ExceptionRaise, vm: &mut VM<'_>) -> Self {
@@ -177,7 +191,7 @@ pub(crate) struct GraphExporter {
     /// [`MontyNode::Cycle`] leaf rather than infinite recursion.
     in_progress: AHashSet<HeapId>,
     /// A reference to every memoized object, released by [`finish`](Self::finish):
-    /// a user `__repr__` run by [`repr_node`] can free an exported object
+    /// a user `__repr__` run by [`repr_node`](Self::repr_node) can free an exported object
     /// mid-message, and a new object in the reused slot would inherit its node.
     pinned: Vec<Value>,
     error: Option<ExportError>,
@@ -267,6 +281,7 @@ impl GraphExporter {
             Value::Int(i) => MontyNode::Int(*i),
             Value::Float(f) => MontyNode::Float(*f),
             Value::InternString(string_id) => MontyNode::String(interns.get_str(*string_id).to_owned()),
+            Value::InlineString(text) => MontyNode::String(text.as_str().to_owned()),
             Value::InternBytes(bytes_id) => MontyNode::Bytes(interns.get_bytes(*bytes_id).to_owned()),
             Value::InternLongInt(li_id) => MontyNode::BigInt(interns.get_long_int(*li_id).clone()),
             Value::Ref(id) => return self.push_ref(*id, value, vm),
@@ -329,7 +344,7 @@ impl GraphExporter {
     }
 
     /// Converts one heap object into its node, pushing container children first.
-    /// Recursing can run a user `__repr__` ([`repr_node`] on e.g. a
+    /// Recursing can run a user `__repr__` ([`repr_node`](Self::repr_node) on e.g. a
     /// `functools.partial` bound to an instance), so mutable containers clone
     /// every child before recursing: the clones keep the children alive and the
     /// iteration valid if that `__repr__` mutates the container. Immutable
@@ -544,10 +559,10 @@ impl GraphExporter {
                     imag: c.imag,
                 })
             }
-            // A host module crosses back with its id and attrs; a bundled one
-            // has no host identity and crosses as its repr.
-            HeapReadOutput::Module(m) => match m.get(vm.heap).id() {
-                Some(id) => {
+            // A host module crosses back with its id and attrs; a bundled or
+            // file one has no host identity and crosses as its repr.
+            HeapReadOutput::Module(m) => {
+                if let Some(id) = m.get(vm.heap).id() {
                     let name = m.get(vm.heap).name_str(vm.interns).to_owned();
                     let children = snapshot_dict_pairs(m.get(vm.heap).attrs(), vm.heap);
                     defer_drop!(children, vm);
@@ -556,9 +571,10 @@ impl GraphExporter {
                         id,
                         attrs: self.push_pairs(children, vm)?,
                     }
+                } else {
+                    MontyNode::Repr(m.get(vm.heap).repr(vm.interns))
                 }
-                None => MontyNode::Repr(format!("<module '{}'>", m.get(vm.heap).name_str(vm.interns))),
-            },
+            }
             HeapReadOutput::Generator(generator) => {
                 let func = vm.interns.get_function(generator.get(vm.heap).function);
                 MontyNode::Repr(format!("<generator object {}>", vm.interns.get_str(func.name.name_id)))
@@ -912,7 +928,8 @@ impl MontyTypeExt for MontyType {
             | Type::CsvDialect
             | Type::DecimalContext
             | Type::DecimalSignalDict
-            | Type::DecimalContextManager => return None,
+            | Type::DecimalContextManager
+            | Type::ForwardRef => return None,
             Type::Decimal => Self::Decimal,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,
@@ -1286,7 +1303,7 @@ fn repr_node(value: &Value, vm: &mut VM<'_>) -> Result<MontyNode, ExportError> {
         Ok(s) => {
             // `py_repr` yields a heap `str` `Value`; extract its text and drop it.
             defer_drop!(s, vm);
-            MontyNode::Repr(s.to_str(vm).map(str::to_owned).unwrap_or_default())
+            MontyNode::Repr(s.as_str(vm).map(str::to_owned).unwrap_or_default())
         }
         Err(RunError::UncatchableExc(error)) => return Err(ExportError::terminal(error, vm)),
         Err(e) => {

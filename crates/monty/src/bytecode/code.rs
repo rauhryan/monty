@@ -4,6 +4,8 @@
 //! bytecode instructions, a constant pool, source location information for tracebacks,
 //! and an exception handler table.
 
+use std::ops::Not;
+
 use crate::{intern::StringId, parse::CodeRange, value::Value};
 
 /// Compiled bytecode for a function or module.
@@ -44,31 +46,25 @@ pub struct Code {
     local_names: Vec<StringId>,
 
     /// Compiler-owned cleanup ranges. Only opt-in native cancellation consults these.
-    #[serde(default, rename = "P")]
-    pub(crate) native_cleanup: Option<Vec<(u32, u32)>>,
+    #[serde(rename = "P")]
+    pub(crate) native_cleanup: Vec<(u32, u32)>,
 
     /// Authored cleanup entry points, distinct from cancellation masking ranges.
-    #[serde(default, rename = "U")]
-    pub(crate) native_cleanup_entries: Option<Vec<u32>>,
+    #[serde(rename = "U")]
+    pub(crate) native_cleanup_entries: Vec<u32>,
 
     /// Nop continuation boundaries after cleanup and non-local unwind.
-    /// None identifies older code which cannot promise prompt native cancellation.
-    #[serde(default, rename = "Q")]
-    pub(crate) native_cancel_points: Option<Vec<u32>>,
-
-    /// Distinguishes prospective except dispatch from required cleanup.
-    /// Old code remains runnable but cannot admit the stronger cancellation policy.
-    #[serde(default, rename = "R")]
-    pub(crate) native_error_dispatch: bool,
+    #[serde(rename = "Q")]
+    pub(crate) native_cancel_points: Vec<u32>,
 
     /// In-progress matching ranges and the frame-relative active exception index.
-    /// None identifies code lacking cancellation arbitration across selector calls.
-    #[serde(default, rename = "S")]
-    pub(crate) native_matching: Option<Vec<(u32, u32, u16)>>,
+    #[serde(rename = "S")]
+    pub(crate) native_matching: Vec<(u32, u32, u16)>,
 
-    /// Semantic cancellation policy; absent in genuine legacy code.
-    #[serde(default, rename = "T")]
-    pub(crate) native_cancel_policy: u8,
+    /// Whether the source ran under `from __future__ import annotations`: its
+    /// definitions store PEP 563 strings, and `exec()` here inherits the flag.
+    #[serde(rename = "V", default, skip_serializing_if = "Not::not")]
+    future_annotations: bool,
 }
 
 impl Code {
@@ -95,38 +91,41 @@ impl Code {
             location_table,
             exception_table,
             local_names,
-            native_cleanup: Some(Vec::new()),
-            native_cleanup_entries: Some(Vec::new()),
-            native_cancel_points: Some(Vec::new()),
-            native_error_dispatch: true,
-            native_matching: Some(Vec::new()),
-            native_cancel_policy: 7,
+            future_annotations: false,
+            native_cleanup: Vec::new(),
+            native_cleanup_entries: Vec::new(),
+            native_cancel_points: Vec::new(),
+            native_matching: Vec::new(),
         }
-    }
-
-    /// Whether this code can participate in pending policy7 cancellation.
-    pub(crate) fn supports_native_cancel(&self) -> bool {
-        self.native_cancel_policy == 7
-            && self.native_cancel_points.is_some()
-            && self.native_error_dispatch
-            && self.native_matching.is_some()
     }
 
     /// Whether a suspended instruction belongs to a lexical cleanup body.
     pub(crate) fn native_cleanup_at(&self, ip: usize) -> bool {
         self.native_cleanup
             .iter()
-            .flatten()
             .any(|&(start, end)| (start as usize..end as usize).contains(&ip))
     }
 
     /// Resolve the existing exception owner; metadata never owns heap values.
     pub(crate) fn native_matching_at(&self, ip: usize) -> Option<usize> {
-        self.native_matching.as_ref()?.iter().find_map(|&(start, end, depth)| {
+        self.native_matching.iter().find_map(|&(start, end, depth)| {
             (start as usize..end as usize)
                 .contains(&ip)
                 .then_some(usize::from(depth))
         })
+    }
+
+    /// Marks the code as compiled under `from __future__ import annotations`.
+    #[must_use]
+    pub(crate) fn with_future_annotations(mut self, future_annotations: bool) -> Self {
+        self.future_annotations = future_annotations;
+        self
+    }
+
+    /// Whether the code was compiled under `from __future__ import annotations`.
+    #[must_use]
+    pub(crate) fn future_annotations(&self) -> bool {
+        self.future_annotations
     }
 
     /// Returns the raw bytecode bytes.
@@ -201,9 +200,8 @@ impl Clone for Code {
             native_cleanup: self.native_cleanup.clone(),
             native_cleanup_entries: self.native_cleanup_entries.clone(),
             native_cancel_points: self.native_cancel_points.clone(),
-            native_error_dispatch: self.native_error_dispatch,
             native_matching: self.native_matching.clone(),
-            native_cancel_policy: self.native_cancel_policy,
+            future_annotations: self.future_annotations,
         }
     }
 }

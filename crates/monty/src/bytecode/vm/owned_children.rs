@@ -111,7 +111,6 @@ impl VM<'_> {
                 reason: reason.to_owned(),
                 delivered: false,
                 revoked: None,
-                policy: 7,
                 interrupted_error: None,
             });
         }

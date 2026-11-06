@@ -62,7 +62,8 @@ Key rules:
 
 - **Virtual paths** are always POSIX-style (`/mnt/data/file.txt`), never Windows-style
 - **Host paths** use `std::path::Path`/`PathBuf` which handles OS differences automatically
-- Avoid `#[cfg(unix)]`-only code in the main crate — all features must work on all platforms
+- Avoid `#[cfg(unix)]`-only code in the main crate — all features must work on all platforms.
+    The one exception is the CPU execution clock, which is Linux-only so that it needs no `unsafe`.
 - Tests in `crates/*/tests/` should be cross-platform; use helper functions for
     OS-specific APIs like symlink creation (see `symlink_file`/`symlink_dir` in
     `crates/monty-fs/tests/common/mod.rs`, shared via `mod common;` — each
@@ -177,10 +178,33 @@ subprocesses:
     `monty-proto` depends only on `monty-types` by default; its `worker` feature
     (enabled by `monty-runtime`/`monty-wasm-runtime`) pulls in the full `monty`
     interpreter for the child-side `worker` state machine.
+    Its `grpc` feature (`monty_proto::grpc`, enabled by `monty-pool`) holds the remote transport's vocabulary:
+    the `MontySession.Session` path, the opaque-bytes codec, and `Cause`, the `monty-cause` trailer a server ends a
+    stream with. The remote transport is one HTTP/2 connection per pool and one bidirectional stream per session,
+    carrying the same messages with no length prefix; a server sends its response headers as soon as it admits a
+    stream (the client sends nothing until it sees them), refuses one with a trailers-only status, and probes
+    liveness with in-band `Ping` events the client's transport answers with `Pong` (HTTP/2 PING frames are
+    hop-local and stop at a proxy). `PROTOCOL_VERSION` is the maintainer's to bump, at most once per release: alone
+    for an additive change older peers can ignore (see its doc comment), together with `MIN_SUPPORTED` when the
+    whole protocol changes; never on your own.
+    Its `python` feature (`monty_proto::python`, PyO3 value conversion) serves `monty-python` and also
+    `monty-cpython`, an embedded-CPython worker in the private `monty-private` repository, so keep shared
+    conversion there and host-only binding logic in `monty-python`.
+    `monty-private`'s crates (`monty-cpython`, `monty-relay`, `monty-server`, ...) also consume the wire
+    protocol: check them before changing `monty_proto::python`'s API or the `OsCall` arms, which
+    `monty-relay` scans by field number.
 - `monty subprocess` (in `crates/monty-runtime/src/subprocess.rs`) — the child:
     reads framed requests on stdin, writes framed events on stdout, serving one
     REPL session per checkout. Strict alternation: one request in, zero or more
     streamed `Print` events out, then exactly one turn-ending event.
+- `PoolConfig::execution_clock` selects wall time (default) or native thread CPU time for all local sessions.
+    A remote gRPC server selects its own clock and reports it to clients; session limits cannot override it.
+    CPU mode needs Linux workers, so it needs no `unsafe`: `Pool::new` rejects it for subprocess pools elsewhere and
+    the worker refuses it. Remote clients on any platform can adopt a Linux server's CPU clock.
+    Local subprocess pools supervise CPU with the child's OS process clock.
+    CPU mode requires a finite `PoolConfig::request_timeout`; remote clients do not supervise CPU locally.
+    WebAssembly workers accept wall mode only.
+    Snapshots retain their clock; the worker rejects a load configured with another clock.
 - `crates/monty-pool` — the parent: an async (tokio) elastic pool of workers
     with crash detection/replacement and a hard per-turn timeout. Frame reads
     are cancel-safe (partial-frame state lives in the worker, no pump task),
@@ -232,9 +256,11 @@ Snapshots store function IDs and offsets, rebuilding code borrows on restore.
 
 Dumps (`crates/monty/src/dump_format.rs`) are CBOR through serde: derived structs are maps keyed by field name and
 enums by variant name (a `#[serde(transparent)]` newtype or a hand-written impl chooses its own shape and must keep
-it). Adding a field (`#[serde(default)]`), removing one, or inserting a variant anywhere keeps older dumps
-loading, while tuple structs and tuple variants are positional and may only grow at the end; the names are the
-persistence contract, so renaming a serialized field or variant needs `#[serde(alias = "old")]`, and `#[serde(deny_unknown_fields)]` must never go on a dumped type.
+it).
+Named-field additions with defaults and removals can preserve compatibility without migration code.
+Tuple fields are positional; changing their order or meaning requires a format/minimum-version bump.
+Renaming a serialized field or variant requires an alias or a format/minimum-version bump.
+Do not add `#[serde(deny_unknown_fields)]` to dumped types.
 Persisted `Vec<u8>` / `[u8; N]` data takes `#[serde(with = "serde_bytes")]` so it is written as one byte string.
 Types written many times (`Value`, `HeapEntry`, `CcColor`, the hot `HeapData` variants, `List`, `Tuple`, `Dict`,
 `DictEntry`, `SetEntry`, `CodeRange`, `LocationEntry`, `CodeLoc`, `Instance`, `Closure`, `FunctionDefaults`,
@@ -245,17 +271,15 @@ or variant on them takes an unused letter.
 discriminants are bytecode operands), `CmpOperator` values, the compiler's constant layout, how a key hashes (dict and
 set entries persist their hash, which is why keys without a heap identity hash by name or a persisted id such as a
 `FunctionId`, never by discriminant), a semantic change to a stored value, or a `sha1` / `sha2` crate upgrade that
-changes their `SerializableState` layout (`hashlib`'s SHA-1 and SHA-2 objects persist it verbatim). `crates/monty/tests/dump_compat.rs` loads a checked-in fixture written at the current version; a
-change that breaks it decides between an alias, a default, or a bump plus `UPDATE_DUMP_FIXTURE=1` to regenerate.
+changes their `SerializableState` layout (`hashlib`'s SHA-1 and SHA-2 objects persist it verbatim). `crates/monty/tests/dump_compat.rs` tests current round trips and rejection of historical formats.
 Frozen function code is also persisted: Rust calls its captured entry signature, and that code calls private native helpers.
 Incompatible changes to either calling convention require compatibility handling or a version bump, including changes
 to argument order or meaning.
 Compatible source-body changes do not require a bump; restored sessions retain their captured implementations.
-When the old data still holds everything the new meaning needs, bump `DUMP_VERSION` but keep
-`MIN_SUPPORTED_DUMP_VERSION`, and convert in one of two places so the live heap never carries a legacy form:
-a `#[serde(from = "Dumped…")]` shim when one value's stored shape changed (see `TableCursor`), or an upgrade in
-`dump_upgrade.rs`, which `Dump::load` runs over an older dump's heap and interns; its module docs list the rules.
-The historical version-13 upgrade lives in `modules/dataclasses/legacy.rs`; the current minimum version rejects those dumps before upgrading.
+This pre-release fork makes no cross-version snapshot compatibility promise.
+Prefer a format/minimum-version bump over migration machinery or redundant runtime representations.
+Current-format snapshots must still restore faithfully, including independently resumed and abandoned states.
+Historical binaries test rejection and must remain unchanged; current round-trip tests generate state in memory.
 Retained binary fixtures and their purposes are listed in `crates/monty/tests/fixtures/README.md`.
 Never regenerate a historical rejection fixture with the current serializer.
 
@@ -477,10 +501,12 @@ limit's job. The exception is a loop allocating per item, where a preflight on
 the result buffer cannot see what the items themselves cost:
 `tracker.check_memory_time_every(i)` is the amortized poll for that, as in
 `parse_json_array` and `re_pattern`'s match and split loops. `*args`, parsed
-JSON arrays and `re.findall` with at most one capture group are preflighted now
-— each killed the worker on ordinary code while listed as bounded-by-input
-above; a wider `findall` and `re.finditer` allocate per match between the checks
-and are still open. Test each graceful path in
+JSON arrays, `str`/`bytes` split pieces and `re.findall` with at most one capture
+group are preflighted now — each killed the worker on ordinary code while listed
+as bounded-by-input above. `re.finditer` scans spans under growth and time checks,
+then preflights the whole build pass with a per-match estimate, since it cannot
+stop part way; a wider `findall` allocates per match between the checks and is
+still open. Test each graceful path in
 `large_allocations_are_rejected_before_the_hard_limit`
 (`crates/monty-runtime/tests/subprocess.rs`) — the interpreter's own tests
 never arm the allocator, so only subprocess tests exercise `max_memory`.
@@ -832,7 +858,8 @@ Unknown keys, wrong types and malformed blocks are errors, and every key default
 
 - `call-external = true` to support calling external functions
 - `run-async = true` to support running async code
-- `mount-fs = true` to mount a fixture directory: `/mnt` for Monty, a real temp dir for CPython, `root` in both
+- `mount-fs = true` to mount a fixture directory: `/mnt` for Monty, a real temp dir for CPython, `root` in both;
+    modules written there import on both sides (it is first on CPython's `sys.path`; write every file before the first import)
 - `skip-cpython-windows = true` to skip the CPython side on Windows (POSIX path semantics)
 - `cpython-main-module = true` to set `__name__ = '__main__'` on CPython only
 - `gc-interval = <N>` to override the GC interval
@@ -1058,6 +1085,9 @@ where they are. Change one and you must change all of them:
     `limitations/random.md`, `docs/security.md` (the clock / entropy / waiting), `docs/cli.md` and
     `crates/monty-runtime/README.md` (`--max-sleep`, `--max-total-sleep`), the `checkout()` docstrings in
     `_monty.pyi` and `crates/monty-js/ts/pool.ts`.
+- **The default `max_checkouts_per_worker`** (1000) — `monty_pool::DEFAULT_MAX_CHECKOUTS_PER_WORKER` (authoritative;
+    compile- and test-time checks pin the JS constant and Python `text_signature`s to it), `_monty.pyi`, `crates/monty-js/ts/options.ts`,
+    `crates/monty-js/ts/pool.ts`, the `monty-pool` README, `docs/resource-limits.md`, `docs/security.md` and `docs/quickstart/`.
 - **Mount modes and their defaults** — `limitations/filesystem.md`, `docs/filesystem.md`,
     the `MountDir` docstrings in `_monty.pyi` and `crates/monty-js/ts/mount.ts`.
 

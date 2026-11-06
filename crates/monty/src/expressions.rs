@@ -669,7 +669,11 @@ pub enum Node<F> {
     Pass,
     Expr(ExprLoc),
     Return(Option<ExprLoc>),
-    Raise(Option<ExprLoc>),
+    /// `raise exc from cause`; a bare `raise` has neither.
+    Raise {
+        exc: Option<ExprLoc>,
+        cause: Option<ExprLoc>,
+    },
     Assert {
         test: ExprLoc,
         msg: Option<ExprLoc>,
@@ -983,6 +987,12 @@ pub struct PreparedFunctionDef {
     pub is_async: bool,
     /// Contains a lexical yield, even when its bytecode is unreachable.
     pub is_generator: bool,
+    /// The prepared `__annotate__(format)` of an annotated `def`, compiled as a
+    /// nested function and recorded on the [`Function`](crate::function::Function).
+    pub annotate: Option<Box<Self>>,
+    /// Whether this is a synthesized `__annotate__`, named so in tracebacks
+    /// whatever a class body binds it as (`__annotate_func__`).
+    pub is_annotate: bool,
 }
 
 /// Type alias for prepared AST nodes (output of prepare phase).

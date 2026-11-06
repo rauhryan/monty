@@ -147,10 +147,50 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let step = args[1].ends_with("-step");
     let mode = args[1].trim_end_matches("-step");
+    if mode == "start-idle" {
+        let mut repl = MontyRepl::new(
+            "concurrent_io.py",
+            ResourceTracker::default(),
+            CompileOptions::default(),
+        );
+        repl.feed_run(&fs::read_to_string(&args[2]).unwrap(), vec![], PrintWriter::Disabled)
+            .unwrap();
+        fs::write(
+            &args[3],
+            dump("concurrent_io.py", None, &[], SessionRef::Idle(&repl)).unwrap(),
+        )
+        .unwrap();
+        println!("{{\"idle\":true}}");
+        return;
+    }
+    if mode == "inspect" {
+        let state = Dump::load(&fs::read(&args[2]).unwrap()).unwrap().state;
+        let view = match &state {
+            Session::Idle(repl) => serde_json::to_value(SessionRef::Idle(repl)).unwrap(),
+            Session::Suspended(progress) => serde_json::to_value(SessionRef::Suspended(progress)).unwrap(),
+            Session::Running(_) => panic!("REPL snapshot required"),
+        };
+        println!("{view}");
+        if let Session::Suspended(progress) = state {
+            drop(progress.into_repl());
+        }
+        return;
+    }
     let progress = if mode == "start" || mode == "run" {
         start(&args[2])
+    } else if mode == "feed-idle" {
+        let Session::Idle(repl) = Dump::load(&fs::read(&args[2]).unwrap()).unwrap().state else {
+            panic!("idle")
+        };
+        repl.feed_start(&fs::read_to_string(&args[3]).unwrap(), vec![], PrintWriter::Disabled)
+            .unwrap()
     } else {
-        let Session::Suspended(progress) = Dump::load(&fs::read(&args[2]).unwrap()).unwrap().state else {
+        let state = Dump::load(&fs::read(&args[2]).unwrap()).unwrap().state;
+        if mode == "dispose" && matches!(state, Session::Idle(_)) {
+            println!("{{\"disposed\":true}}");
+            return;
+        }
+        let Session::Suspended(progress) = state else {
             panic!("suspended")
         };
         if mode == "dispose" {
@@ -193,6 +233,12 @@ fn main() {
         resume(*progress, &serde_json::from_str(&args[3]).unwrap())
     };
     let (mut progress, mut view) = boundary(progress, step);
+    if mode == "feed-idle" {
+        assert!(
+            matches!(progress, ReplProgress::Complete { .. }),
+            "idle continuation must complete"
+        );
+    }
     if mode == "run" {
         let batches: Vec<Value> = serde_json::from_str(&fs::read_to_string(&args[3]).unwrap()).unwrap();
         let mut views = vec![view];

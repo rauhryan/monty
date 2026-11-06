@@ -1,6 +1,7 @@
 use std::{
     borrow::Cow,
     fmt::{self, Display, Write},
+    mem,
     ops::Deref,
 };
 
@@ -179,6 +180,31 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::type_error("isinstance() argument 2 cannot be a parameterized generic")
     }
 
+    /// Creates the TypeError `typing.get_type_hints()` raises for an object that
+    /// is neither annotated nor callable: `5 does not have annotations`.
+    fn no_annotations(obj: &Value, vm: &mut VM<'_>) -> RunError {
+        match obj.py_repr(vm) {
+            Ok(repr_value) => {
+                defer_drop!(repr_value, vm);
+                let repr = repr_value
+                    .as_str(vm)
+                    .map_or_else(|| format!("<{}>", obj.py_type_name(vm)), str::to_owned);
+                Self::type_error(format!("{repr} does not have annotations"))
+            }
+            Err(err) => err,
+        }
+    }
+
+    /// Creates the SyntaxError `typing.get_type_hints()` raises for a forward
+    /// reference that does not compile as an expression, e.g. `' int'` or `'x = 1'`.
+    fn forward_ref_not_expression(source: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::SyntaxError,
+            format!("Forward reference must be an expression -- got {}", StringRepr(source)),
+        )
+        .into()
+    }
+
     /// Creates the TypeError for an ordering comparison (`<`, `<=`, `>`, `>=`)
     /// between values whose types define no ordering, e.g. `1 < 'a'` or two
     /// instances of a user class without comparison dunders.
@@ -265,12 +291,14 @@ pub(crate) trait ExcTypeExt: Sized {
     /// If the key's string conversion fails (e.g. huge LongInt exceeding
     /// `INT_MAX_STR_DIGITS`), falls back to the type name so that a
     /// `KeyError` is always raised rather than a spurious `ValueError`.
+    /// An uncatchable error (a resource limit hit inside a user `__str__`) is
+    /// returned as is, so it cannot become a catchable `KeyError`.
     fn key_error(key: &Value, vm: &mut VM<'_>) -> RunError {
         let key_str = match key.py_str(vm) {
             Ok(key_value) => {
                 // `key_value` is a heap `str` `Value`; extract its text and drop it.
                 defer_drop!(key_value, vm);
-                if let Ok(s) = key_value.to_str(vm) {
+                if let Some(s) = key_value.as_str(vm) {
                     s.to_owned()
                 } else {
                     format!("<{}>", key.py_type_name(vm))
@@ -790,12 +818,27 @@ pub(crate) trait ExcTypeExt: Sized {
     }
 
     /// Creates `FileNotFoundError: [Errno 2] No such file or directory: '{path}'`,
-    /// as raised by `os.chdir('')` without consulting the host.
+    /// as raised for an empty path without consulting the host.
     #[must_use]
     fn file_not_found_error(path: &str) -> RunError {
         SimpleException::new_msg(
             ExcType::FileNotFoundError,
             format!("[Errno 2] No such file or directory: {}", StringRepr(path)),
+        )
+        .into()
+    }
+
+    /// Creates `FileNotFoundError: [Errno 2] No such file or directory: '{src}' -> '{dst}'`,
+    /// CPython's two-path form for `os.rename` / `os.replace` with an empty path.
+    #[must_use]
+    fn file_not_found_error_pair(src: &str, dst: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::FileNotFoundError,
+            format!(
+                "[Errno 2] No such file or directory: {} -> {}",
+                StringRepr(src),
+                StringRepr(dst)
+            ),
         )
         .into()
     }
@@ -827,6 +870,12 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn type_error_mixed_path_components() -> RunError {
         Self::type_error("Can't mix strings and bytes in path components")
+    }
+
+    /// `object of type '{type}' has no len()`
+    #[must_use]
+    fn type_error_no_len(type_name: &str) -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, format!("object of type '{type_name}' has no len()")).into()
     }
 
     /// Creates the `os.fspath` TypeError, also raised by pure-Python `os`
@@ -1053,7 +1102,7 @@ pub(crate) trait ExcTypeExt: Sized {
             Ok(repr_value) => {
                 defer_drop!(repr_value, vm);
                 repr_value
-                    .to_str(vm)
+                    .try_to_str(vm)
                     .map_or_else(|_| format!("<{}>", key.py_type_name(vm)), str::to_owned)
             }
             Err(err) => return err,
@@ -1093,12 +1142,19 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::OverflowError, "timestamp out of range for C PyTime_t").into()
     }
 
-    /// The `OverflowError` the `time` conversion functions raise for epoch
-    /// seconds outside the range a broken-down time can hold:
+    /// The `OverflowError` the `time` conversion functions and `fromtimestamp()`
+    /// raise for epoch seconds outside the range a broken-down time can hold:
     /// `timestamp out of range for platform time_t`.
     #[must_use]
     fn timestamp_out_of_range() -> RunError {
         SimpleException::new_msg(ExcType::OverflowError, "timestamp out of range for platform time_t").into()
+    }
+
+    /// The `ValueError` CPython's time conversions raise for a NaN length or
+    /// timestamp: `Invalid value NaN (not a number)`.
+    #[must_use]
+    fn invalid_nan() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "Invalid value NaN (not a number)").into()
     }
 
     /// `time.mktime()`'s `OverflowError` for a wall clock it cannot place on
@@ -1222,6 +1278,20 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn allocation_too_large() -> RunError {
         SimpleException::new(ExcType::MemoryError, None).into()
+    }
+
+    /// Creates the OverflowError CPython raises when `str * n` would exceed
+    /// `Py_ssize_t` bytes (`'ab' * 2**62`).
+    #[must_use]
+    fn repeated_string_too_long() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "repeated string is too long").into()
+    }
+
+    /// Creates the OverflowError CPython raises when `bytes * n` would exceed
+    /// `Py_ssize_t` bytes (`b'ab' * 2**62`).
+    #[must_use]
+    fn repeated_bytes_too_long() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "repeated bytes are too long").into()
     }
 
     /// Creates the ValueError `itertools.islice` raises for a non-positive or
@@ -1734,23 +1804,35 @@ pub(crate) trait ExcTypeExt: Sized {
 
     /// Creates an ImportError for when a name cannot be imported from a module.
     ///
-    /// Matches CPython's format for built-in modules:
+    /// Matches CPython's format, which names the file a module was loaded from:
     /// `ImportError: cannot import name 'name' from 'module' (unknown location)`
     ///
     /// Sets `hide_caret: true` because CPython doesn't show carets for import errors.
     #[must_use]
-    fn cannot_import_name(name: &str, module_name: &str) -> RunError {
-        let exc = SimpleException::new_msg(
-            ExcType::ImportError,
-            format!("cannot import name '{name}' from '{module_name}' (unknown location)"),
-        );
-        RunError::Exc(ExceptionRaise {
-            exc,
-            frame: None,
-            snippet_frame: None,
-            object: None,
-            hide_caret: true,
-        })
+    fn cannot_import_name(name: &str, module_name: &str, origin: Option<&str>) -> RunError {
+        let origin = origin.unwrap_or("unknown location");
+        import_error_without_caret(format!("cannot import name '{name}' from '{module_name}' ({origin})"))
+    }
+
+    /// The `RuntimeError` for a host answering anything but an `import` call
+    /// with a module file.
+    #[must_use]
+    fn module_file_for_non_import() -> RunError {
+        SimpleException::new_msg(
+            ExcType::RuntimeError,
+            "only an import can be answered with a module file",
+        )
+        .into()
+    }
+
+    /// The `ImportError` for `from module import name` while `module`'s body is
+    /// still running, CPython's hint at a circular import.
+    #[must_use]
+    fn cannot_import_name_partial(name: &str, module_name: &str, origin: &str) -> RunError {
+        import_error_without_caret(format!(
+            "cannot import name '{name}' from partially initialized module '{module_name}' \
+             (most likely due to a circular import) ({origin})"
+        ))
     }
 
     /// Creates a ValueError when an integer is too large to convert to a decimal string.
@@ -2609,7 +2691,7 @@ impl ExcTypeExt for ExcType {
                 ExceptionObject {
                     simple,
                     args: Some(args),
-                    generator_stop_cause: None,
+                    chain: None,
                 },
             )))));
         }
@@ -2643,6 +2725,21 @@ pub(crate) struct SimpleException {
     /// through catch/re-raise so it reaches the public `MontyException` when
     /// the exception escapes the sandbox.
     data: ExcData,
+}
+
+/// An exception's `__cause__`, `__context__` and `__suppress_context__`.
+///
+/// Both references are owned by the heap-resident exception and released by its
+/// `py_dec_ref_ids` and traced by the exception child walker. Context links
+/// that would loop are cut when attached, as CPython cuts them.
+#[derive(Debug, Default, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ExceptionChain {
+    /// Owned: set by `raise ... from`.
+    cause: Option<HeapId>,
+    /// Owned: the exception being handled when this one was raised.
+    context: Option<HeapId>,
+    /// Set by `raise ... from`, hiding the context in a chained traceback.
+    suppress_context: bool,
 }
 
 impl fmt::Display for SimpleException {
@@ -2761,13 +2858,12 @@ impl SimpleException {
 /// constructor/completion arguments and the original PEP 479 exception.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ExceptionObject {
+    #[serde(default)]
+    pub(crate) chain: Option<Box<ExceptionChain>>,
     #[serde(flatten)]
     pub(crate) simple: SimpleException,
     #[serde(default)]
     pub(crate) args: Option<Value>,
-    /// Owned original exception for PEP 479 identity checks.
-    #[serde(default)]
-    pub(crate) generator_stop_cause: Option<Value>,
 }
 
 impl From<SimpleException> for ExceptionObject {
@@ -2775,7 +2871,7 @@ impl From<SimpleException> for ExceptionObject {
         Self {
             simple,
             args: None,
-            generator_stop_cause: None,
+            chain: None,
         }
     }
 }
@@ -2788,12 +2884,49 @@ impl Deref for ExceptionObject {
 }
 
 impl ExceptionObject {
+    /// The `__cause__`, borrowed.
+    pub(crate) fn cause(&self) -> Option<HeapId> {
+        self.chain.as_ref().and_then(|chain| chain.cause)
+    }
+
+    /// The `__context__`, borrowed.
+    pub(crate) fn context(&self) -> Option<HeapId> {
+        self.chain.as_ref().and_then(|chain| chain.context)
+    }
+
+    /// `__suppress_context__`: whether this exception was raised with `from`.
+    pub(crate) fn suppress_context(&self) -> bool {
+        self.chain.as_ref().is_some_and(|chain| chain.suppress_context)
+    }
+
+    /// Replaces the cause with an owned reference and sets `__suppress_context__`,
+    /// returning the previous owned cause for the caller to release.
+    pub(crate) fn set_cause(&mut self, cause: Option<HeapId>) -> Option<HeapId> {
+        let chain = self.chain.get_or_insert_default();
+        chain.suppress_context = true;
+        mem::replace(&mut chain.cause, cause)
+    }
+
+    /// Replaces the context with an owned reference, returning the previous owned
+    /// context for the caller to release.
+    pub(crate) fn set_context(&mut self, context: Option<HeapId>) -> Option<HeapId> {
+        mem::replace(&mut self.chain.get_or_insert_default().context, context)
+    }
+
+    /// Both owned chain references, for `py_dec_ref_ids`.
+    pub(crate) fn owned_chain_ids(&self) -> impl Iterator<Item = HeapId> {
+        self.chain
+            .iter()
+            .flat_map(|chain| chain.cause.into_iter().chain(chain.context))
+    }
+
     /// Visit each owned edge once; containers supply their own element edges.
     pub(crate) fn for_each_child_id(&self, mut visit: impl FnMut(HeapId)) {
-        for edge in [&self.args, &self.generator_stop_cause] {
-            if let Some(Value::Ref(id)) = edge {
-                visit(*id);
-            }
+        for id in self.owned_chain_ids() {
+            visit(id);
+        }
+        if let Some(Value::Ref(id)) = &self.args {
+            visit(*id);
         }
     }
 }
@@ -2802,7 +2935,7 @@ impl HeapItem for ExceptionObject {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.for_each_child_id(|id| stack.push(id));
         #[cfg(feature = "memory-model-checks")]
-        for value in [&mut self.args, &mut self.generator_stop_cause].into_iter().flatten() {
+        if let Some(value) = &mut self.args {
             value.dec_ref_forget();
         }
     }
@@ -2884,6 +3017,9 @@ impl<'h> HeapRead<'h, ExceptionObject> {
     pub(crate) fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
         let object = self.get(vm.heap);
         match attr.as_str(vm.interns) {
+            "__cause__" => Some(CallResult::Value(chained_value(object.cause(), vm))),
+            "__context__" => Some(CallResult::Value(chained_value(object.context(), vm))),
+            "__suppress_context__" => Some(CallResult::Value(Value::Bool(object.suppress_context()))),
             "args" => {
                 if let Some(args) = &object.args {
                     return Some(CallResult::Value(args.clone_with_heap(vm.heap)));
@@ -2898,6 +3034,17 @@ impl<'h> HeapRead<'h, ExceptionObject> {
             "value" if object.exc_type() == ExcType::StopIteration => Some(CallResult::Value(self.stop_value(vm))),
             _ => None,
         }
+    }
+}
+
+/// A new reference to a chained exception, or `None`.
+fn chained_value(id: Option<HeapId>, vm: &VM<'_>) -> Value {
+    match id {
+        Some(id) => {
+            vm.heap.inc_ref(id);
+            Value::Ref(id)
+        }
+        None => Value::None,
     }
 }
 
@@ -2954,17 +3101,15 @@ impl ExceptionRaise {
     /// this sets its name instead of creating a new parent. This happens when the error
     /// is raised from a namespace lookup - the initial frame has the position but not
     /// the function name, which gets filled in as the error propagates.
-    pub(crate) fn add_caller_frame(&mut self, position: CodeRange, name: StringId) {
-        self.add_caller_frame_inner(position, name, false);
-    }
-
-    fn add_caller_frame_inner(&mut self, position: CodeRange, name: StringId, hide_caret: bool) {
+    ///
+    /// `hide_caret` omits the added frame's carets, as CPython does under an
+    /// `import` whose module body raised; a nameless frame keeps its own.
+    pub(crate) fn add_caller_frame(&mut self, position: CodeRange, name: StringId, hide_caret: bool) {
         if let Some(ref mut frame) = self.frame {
             // If innermost frame has no name, set it instead of adding a parent
             // This handles errors from namespace lookups which create nameless frames
             if frame.frame_name.is_none() {
                 frame.frame_name = Some(name);
-                frame.hide_caret = hide_caret;
                 return;
             }
             // Find the outermost frame (the one with no parent) and add the new frame as its parent
@@ -3024,8 +3169,10 @@ impl ExceptionRaise {
                     let sm_idx = if let Some(i) = cache.iter().position(|(k, _)| *k == fname_id) {
                         i
                     } else {
-                        let src =
-                            eval_source.unwrap_or_else(|| source_for(interns.get_filename(fname_id)).unwrap_or(""));
+                        // An imported file also carries its own source, but shows its lines.
+                        let src = eval_source
+                            .or_else(|| interns.file_source(fname_id))
+                            .unwrap_or_else(|| source_for(interns.get_filename(fname_id)).unwrap_or(""));
                         cache.push((fname_id, SourceMap::new(src)));
                         cache.len() - 1
                     };
@@ -3282,6 +3429,17 @@ impl<C: ContainsHeap> DropWithContext<C> for RunError {
 /// CPython's `ModuleNotFoundError` message for `module_name`.
 fn no_module_named(module_name: &str) -> String {
     format!("No module named '{module_name}'")
+}
+
+/// An `ImportError` shown without carets, as CPython shows import errors.
+fn import_error_without_caret(msg: String) -> RunError {
+    RunError::Exc(ExceptionRaise {
+        exc: SimpleException::new_msg(ExcType::ImportError, msg),
+        object: None,
+        frame: None,
+        snippet_frame: None,
+        hide_caret: true,
+    })
 }
 
 /// Formats a list of parameter names for error messages, matching CPython's

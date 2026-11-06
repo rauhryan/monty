@@ -22,7 +22,7 @@ use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErr
 
 use crate::{
     args::{ArgValues, KwargsValues},
-    bytecode::{FrameExit, VM, VMSnapshot},
+    bytecode::{FrameExit, ModuleCache, VM, VMSnapshot},
     defer_drop,
     exception_private::{ExcTypeExt, RunError},
     heap::{DropWithContext, Heap, HeapData, HeapReader},
@@ -89,6 +89,14 @@ pub struct MontyRepl {
     /// The session's `random` state, carried between snippets like the
     /// globals so a `random.seed()` in one feed governs the draws of the next.
     random: SessionRandom,
+    /// Modules imported from files, carried between snippets like the globals
+    /// so each file runs once per session.
+    #[serde(default)]
+    modules: ModuleCache,
+    /// Whether a feed has run `from __future__ import annotations`, which then
+    /// applies to every later feed, as in CPython's interactive mode.
+    #[serde(default)]
+    future_annotations: bool,
     /// Persistent heap across snippets.
     heap: Heap,
     /// Persistent global variable values across snippets.
@@ -100,11 +108,6 @@ pub struct MontyRepl {
 }
 
 impl MontyRepl {
-    /// The session heap and interns, for a dump upgrade of an idle session.
-    pub(crate) fn heap_and_interns(&mut self) -> (&mut Heap, &Interns) {
-        (&mut self.heap, &self.interns)
-    }
-
     /// Creates an empty REPL session with no code parsed or executed.
     ///
     /// All code execution is driven through [`feed_run`](Self::feed_run) or [`feed_start`](Self::feed_start). This separates
@@ -124,6 +127,8 @@ impl MontyRepl {
             os_policy: Arc::new(OsPolicy::default()),
             cwd: Arc::from(DEFAULT_CWD),
             random: SessionRandom::default(),
+            modules: ModuleCache::default(),
+            future_annotations: false,
             heap,
             globals: Vec::new(),
         }
@@ -155,8 +160,14 @@ impl MontyRepl {
     /// [`MontyRun::with_os_policy`](crate::MontyRun::with_os_policy).
     #[must_use]
     pub fn with_os_policy(mut self, os_policy: OsPolicy) -> Self {
-        self.os_policy = Arc::new(os_policy);
+        self.set_os_policy(os_policy);
         self
+    }
+
+    /// Replaces the session's OS-call policies in place, for a host restoring
+    /// a dump under its own policy (see [`ReplProgress::set_os_policy`]).
+    pub fn set_os_policy(&mut self, os_policy: OsPolicy) {
+        self.os_policy = Arc::new(os_policy);
     }
 
     /// Switches the sandbox working directory (initially `/`).
@@ -258,6 +269,7 @@ impl MontyRepl {
             script_name: &this.script_name,
             cwd: &this.cwd,
             os_policy: &this.os_policy,
+            future_annotations: this.future_annotations,
         };
         let mut executor = match Executor::new_repl_snippet(
             code,
@@ -271,6 +283,7 @@ impl MontyRepl {
             Ok(exec) => exec,
             Err(error) => return Err(Box::new(ReplStartError { repl: this, error })),
         };
+        this.future_annotations = executor.program.module_code.future_annotations();
 
         this.ensure_globals_size(executor.namespace_size());
 
@@ -288,10 +301,17 @@ impl MontyRepl {
                 );
 
                 vm.random = mem::take(&mut this.random);
+                vm.modules = mem::take(&mut this.modules);
 
                 // Inject inputs with VM alive
                 if let Err(error) = inject_inputs_into_vm(&executor.program, input_values, &input_ids, &mut vm) {
-                    reclaim_vm_state(&mut this.globals, &mut this.cwd, &mut this.random, &mut vm);
+                    reclaim_vm_state(
+                        &mut this.globals,
+                        &mut this.cwd,
+                        &mut this.random,
+                        &mut this.modules,
+                        &mut vm,
+                    );
                     return Err(error);
                 }
 
@@ -304,7 +324,13 @@ impl MontyRepl {
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
-                    reclaim_vm_state(&mut this.globals, &mut this.cwd, &mut this.random, &mut vm);
+                    reclaim_vm_state(
+                        &mut this.globals,
+                        &mut this.cwd,
+                        &mut this.random,
+                        &mut this.modules,
+                        &mut vm,
+                    );
                     None
                 };
                 Ok((converted, vm_state))
@@ -355,6 +381,7 @@ impl MontyRepl {
             script_name: &self.script_name,
             cwd: &self.cwd,
             os_policy: &self.os_policy,
+            future_annotations: self.future_annotations,
         };
         let mut executor = Executor::new_repl_snippet(
             code,
@@ -365,6 +392,7 @@ impl MontyRepl {
             self.options,
             session,
         )?;
+        self.future_annotations = executor.program.module_code.future_annotations();
 
         self.ensure_globals_size(executor.namespace_size());
 
@@ -382,9 +410,16 @@ impl MontyRepl {
                 );
 
                 vm.random = mem::take(&mut self.random);
+                vm.modules = mem::take(&mut self.modules);
 
                 if let Err(e) = inject_inputs_into_vm(&executor.program, input_values, &input_ids, &mut vm) {
-                    reclaim_vm_state(&mut self.globals, &mut self.cwd, &mut self.random, &mut vm);
+                    reclaim_vm_state(
+                        &mut self.globals,
+                        &mut self.cwd,
+                        &mut self.random,
+                        &mut self.modules,
+                        &mut vm,
+                    );
                     return Err(e);
                 }
 
@@ -397,7 +432,13 @@ impl MontyRepl {
                 });
 
                 // Reclaim globals (and any directory change or seed) before cleanup.
-                reclaim_vm_state(&mut self.globals, &mut self.cwd, &mut self.random, &mut vm);
+                reclaim_vm_state(
+                    &mut self.globals,
+                    &mut self.cwd,
+                    &mut self.random,
+                    &mut self.modules,
+                    &mut vm,
+                );
                 Ok(result)
             },
         );
@@ -476,6 +517,7 @@ impl MontyRepl {
                 script_name: &self.script_name,
                 cwd: &self.cwd,
                 os_policy: &self.os_policy,
+                future_annotations: self.future_annotations,
             },
         )?;
         self.sources.insert(input_script_name, executor.program.code.clone());
@@ -496,6 +538,7 @@ impl MontyRepl {
                 );
 
                 vm.random = mem::take(&mut self.random);
+                vm.modules = mem::take(&mut self.modules);
                 let result = match convert_args(args, vm) {
                     Ok(args) => {
                         let (args, kwargs) = args.into_parts();
@@ -510,7 +553,7 @@ impl MontyRepl {
                         loop {
                             run_result = match run_result {
                                 Ok(FrameExit::Return(value)) => {
-                                    break MontyObject::export(value, vm).map_err(|e| {
+                                    break vm.export_on_clock(|vm| MontyObject::export(value, vm)).map_err(|e| {
                                         e.into_run_error(vm).into_python_exception(
                                             vm.interns,
                                             |fname| self.sources.get(fname).map(|source| &**source),
@@ -551,6 +594,7 @@ impl MontyRepl {
                 let args_slot = executor.program.input_slots[0].index();
                 mem::replace(&mut globals[args_slot], Value::Undefined).drop_with(vm);
                 self.random = mem::take(&mut vm.random);
+                self.modules = mem::take(&mut vm.modules);
                 self.globals = globals;
                 if let Some(cwd) = vm.take_changed_cwd() {
                     self.cwd = Arc::from(cwd);
@@ -703,22 +747,6 @@ pub struct ReplStartError {
 }
 
 impl ReplProgress {
-    /// The session heap and the interns its values refer to, for a dump upgrade.
-    /// While a snippet is in flight the executor holds the session's interns.
-    pub(crate) fn heap_and_interns(&mut self) -> (&mut Heap, &Interns) {
-        match self {
-            Self::FunctionCall(ReplFunctionCall { snapshot, .. })
-            | Self::OsCall(ReplOsCall { snapshot, .. })
-            | Self::NameLookup(ReplNameLookup { snapshot, .. }) => {
-                (&mut snapshot.repl.heap, &snapshot.executor.tables.interns)
-            }
-            Self::ResolveFutures(ReplResolveFutures { repl, executor, .. }) => {
-                (&mut repl.heap, &executor.tables.interns)
-            }
-            Self::Complete { repl, .. } => repl.heap_and_interns(),
-        }
-    }
-
     /// Consumes the progress and returns the [`ReplFunctionCall`] struct.
     #[must_use]
     pub fn into_function_call(self) -> Option<ReplFunctionCall> {
@@ -796,6 +824,22 @@ impl ReplProgress {
             Self::ResolveFutures(state) => state.repl.tracker_mut(),
             Self::NameLookup(lookup) => lookup.snapshot.repl.tracker_mut(),
             Self::Complete { repl, .. } => repl.tracker_mut(),
+        }
+    }
+
+    /// Replaces the OS-call policies of the session and of a suspended snippet.
+    ///
+    /// A dump carries the policy it was taken under; hosts restoring it call this
+    /// so the restoring side's clock, zone, sleep and entropy policy governs every
+    /// later call. A call already suspended keeps the shape it was issued with.
+    pub fn set_os_policy(&mut self, os_policy: OsPolicy) {
+        let os_policy = Arc::new(os_policy);
+        match self {
+            Self::FunctionCall(call) => call.snapshot.set_os_policy(os_policy),
+            Self::OsCall(call) => call.snapshot.set_os_policy(os_policy),
+            Self::ResolveFutures(state) => state.set_os_policy(os_policy),
+            Self::NameLookup(lookup) => lookup.snapshot.set_os_policy(os_policy),
+            Self::Complete { repl, .. } => repl.os_policy = os_policy,
         }
     }
 }
@@ -1037,7 +1081,13 @@ impl ReplNameLookup {
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
-                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+                    reclaim_vm_state(
+                        &mut repl.globals,
+                        &mut repl.cwd,
+                        &mut repl.random,
+                        &mut repl.modules,
+                        &mut vm,
+                    );
                     None
                 };
                 (converted, vm_state)
@@ -1069,6 +1119,12 @@ pub struct ReplResolveFutures {
 }
 
 impl ReplResolveFutures {
+    /// Points the session and the blocked snippet's program at `os_policy`,
+    /// as [`ReplSnapshot`] does for the other suspensions.
+    fn set_os_policy(&mut self, os_policy: Arc<OsPolicy>) {
+        set_session_os_policy(&mut self.repl, &mut self.executor, os_policy);
+    }
+
     /// Extracts the REPL session, restoring globals from the suspended VM state.
     ///
     /// As with the other REPL snapshot types, globals live inside the VM
@@ -1086,10 +1142,11 @@ impl ReplResolveFutures {
             vm_state,
             ..
         } = self;
-        let (globals, cwd, random) = vm_state.abandon(&mut repl.heap);
-        repl.globals = globals;
-        repl.cwd = Arc::from(cwd);
-        repl.random = random;
+        let state = vm_state.abandon(&mut repl.heap);
+        repl.globals = state.globals;
+        repl.cwd = Arc::from(state.cwd);
+        repl.random = state.random;
+        repl.modules = state.modules;
         repl.commit_executor(executor);
         repl
     }
@@ -1180,7 +1237,13 @@ impl ReplResolveFutures {
                 );
 
                 if let Err(error) = validation {
-                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+                    reclaim_vm_state(
+                        &mut repl.globals,
+                        &mut repl.cwd,
+                        &mut repl.random,
+                        &mut repl.modules,
+                        &mut vm,
+                    );
                     return Err(error);
                 }
 
@@ -1198,7 +1261,13 @@ impl ReplResolveFutures {
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
-                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+                    reclaim_vm_state(
+                        &mut repl.globals,
+                        &mut repl.cwd,
+                        &mut repl.random,
+                        &mut repl.modules,
+                        &mut vm,
+                    );
                     None
                 };
                 Ok((converted, vm_state))
@@ -1331,7 +1400,13 @@ fn abort_restored(
                 repl.sources.get(fname).map(|source| &**source)
             });
             // Uncatchable exceptions cannot suspend, so no snapshot is needed.
-            reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+            reclaim_vm_state(
+                &mut repl.globals,
+                &mut repl.cwd,
+                &mut repl.random,
+                &mut repl.modules,
+                &mut vm,
+            );
             converted
         },
     );
@@ -1352,6 +1427,12 @@ pub(crate) struct ReplSnapshot {
 }
 
 impl ReplSnapshot {
+    /// Points both the session and the suspended snippet's program at `os_policy`,
+    /// which a resumed VM reads from the program.
+    fn set_os_policy(&mut self, os_policy: Arc<OsPolicy>) {
+        set_session_os_policy(&mut self.repl, &mut self.executor, os_policy);
+    }
+
     /// Raises `exc` uncatchably at the suspension point.
     fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
         let Self {
@@ -1375,10 +1456,11 @@ impl ReplSnapshot {
             executor,
             vm_state,
         } = self;
-        let (globals, cwd, random) = vm_state.abandon(&mut repl.heap);
-        repl.globals = globals;
-        repl.cwd = Arc::from(cwd);
-        repl.random = random;
+        let state = vm_state.abandon(&mut repl.heap);
+        repl.globals = state.globals;
+        repl.cwd = Arc::from(state.cwd);
+        repl.random = state.random;
+        repl.modules = state.modules;
         repl.commit_executor(executor);
         repl
     }
@@ -1428,7 +1510,13 @@ impl ReplSnapshot {
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
-                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+                    reclaim_vm_state(
+                        &mut repl.globals,
+                        &mut repl.cwd,
+                        &mut repl.random,
+                        &mut repl.modules,
+                        &mut vm,
+                    );
                     None
                 };
                 (converted, vm_state)
@@ -1443,15 +1531,22 @@ impl ReplSnapshot {
 // ---------------------------------------------------------------------------
 
 /// Reclaims what outlives a snippet from its finished VM: the globals, the
-/// `random` generator, and the working directory when the snippet (or the
-/// snapshot it resumed from) owns one, so an `os.chdir` or a `random.seed()`
-/// persists into later feeds like the globals do.
-fn reclaim_vm_state(globals: &mut Vec<Value>, cwd: &mut Arc<str>, random: &mut SessionRandom, vm: &mut VM<'_>) {
+/// `random` generator, the file modules, and the working directory when the
+/// snippet (or the snapshot it resumed from) owns one, so an `os.chdir`, a
+/// `random.seed()` or an import persists into later feeds like the globals do.
+fn reclaim_vm_state(
+    globals: &mut Vec<Value>,
+    cwd: &mut Arc<str>,
+    random: &mut SessionRandom,
+    modules: &mut ModuleCache,
+    vm: &mut VM<'_>,
+) {
     *globals = vm.take_globals();
     if let Some(changed) = vm.take_changed_cwd() {
         *cwd = Arc::from(changed);
     }
     *random = mem::take(&mut vm.random);
+    *modules = mem::take(&mut vm.modules);
 }
 
 /// Injects input values into the VM's global namespace slots.
@@ -1609,6 +1704,13 @@ fn is_callable(value: &Value, heap: &Heap) -> bool {
         ),
         _ => false,
     }
+}
+
+/// Gives a suspended session and its snippet's program the same `os_policy`;
+/// the resumed VM reads the program's copy, later snippets the session's.
+fn set_session_os_policy(repl: &mut MontyRepl, executor: &mut Executor, os_policy: Arc<OsPolicy>) {
+    executor.program.os_policy = Arc::clone(&os_policy);
+    repl.os_policy = os_policy;
 }
 
 #[cfg(test)]
@@ -1830,7 +1932,13 @@ mod compatibility11_tests {
                     PrintWriter::Disabled,
                 );
                 vm.ownership_probe_gather_delivery(cancel);
-                reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+                reclaim_vm_state(
+                    &mut repl.globals,
+                    &mut repl.cwd,
+                    &mut repl.random,
+                    &mut repl.modules,
+                    &mut vm,
+                );
             });
         }
     }
@@ -1875,7 +1983,13 @@ mod compatibility11_tests {
                 PrintWriter::Disabled,
             );
             vm.ownership_probe_join_delivery();
-            reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+            reclaim_vm_state(
+                &mut repl.globals,
+                &mut repl.cwd,
+                &mut repl.random,
+                &mut repl.modules,
+                &mut vm,
+            );
         });
     }
 
@@ -1975,7 +2089,13 @@ entry()._native1()
                 let result = vm.resume_with_resolved_futures(vec![]);
                 let converted =
                     convert_frame_exit(result, &mut vm, |fname| repl.sources.get(fname).map(|source| &**source));
-                reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+                reclaim_vm_state(
+                    &mut repl.globals,
+                    &mut repl.cwd,
+                    &mut repl.random,
+                    &mut repl.modules,
+                    &mut vm,
+                );
                 converted
             });
             let progress = build_repl_progress(converted, None, executor, repl).unwrap();

@@ -8,11 +8,46 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import baseline
 import guard
 import run
 
 
 class RunnerTests(unittest.TestCase):
+    def test_baseline_census_distinguishes_handler_roles(self):
+        preserved = {'value': {'C': 1}, 'error': {}, 'unwinding': False}
+        state = {
+            'vm_state': {
+                'exception_stack': [preserved, {'C': 2}],
+                'scheduler': {'tasks': {'1': {'exception_stack': [preserved | {'unwinding': True}]}}},
+            }
+        }
+        counts = baseline.census(state)
+        self.assertEqual(counts['active_internal'], 1)
+        self.assertEqual(counts['active_handled'], 1)
+        self.assertEqual(counts['parked_unwinding'], 1)
+        self.assertEqual(counts['active_unwinding'], 0)
+        with self.assertRaisesRegex(ValueError, 'missing baseline state'):
+            baseline.require_state(counts, {'minimum': {'active_unwinding': 1}})
+        with self.assertRaisesRegex(ValueError, 'wrong baseline state'):
+            baseline.require_state(counts, {'equal': {'idle': True}})
+
+    def test_baseline_refuses_changed_producer_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'snapshots').mkdir()
+            items = {}
+            for index in range(6):
+                path = root / 'snapshots' / f'{index}.bin'
+                path.write_bytes(b'MONTY\0' + (40).to_bytes(2, 'little'))
+                items[str(index)] = {'file': str(path.relative_to(root)), 'sha256': run.digest(path)}
+            manifest = root / 'baseline.json'
+            manifest.write_text(json.dumps({'schema': 1, 'format': 40, 'snapshots': items}))
+            baseline.load_manifest(manifest)
+            (root / 'snapshots/0.bin').write_bytes(b'changed')
+            with self.assertRaisesRegex(ValueError, 'baseline snapshot changed'):
+                baseline.load_manifest(manifest)
+
     def test_budget_boundaries(self):
         guard.require_budget({'free': 10 * guard.GIB, 'combined': 8 * guard.GIB})
         for measured in (

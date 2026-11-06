@@ -30,7 +30,7 @@ fn old_clients_are_rejected_at_cancellation_type_boundary() {
         assert!(protocol_v6::check_protocol_version(version).is_ok());
         assert!(check_protocol_version(version).is_err());
     }
-    for version in [0, 4, 7, 8, 9, PROTOCOL_VERSION + 1] {
+    for version in [0, 4, 7, 8, 9, 10, PROTOCOL_VERSION + 1] {
         assert!(check_protocol_version(version).is_err());
     }
 }

@@ -381,6 +381,7 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
 fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
     pb::Configure {
         script_name: request.script_name,
+        execution_clock: Some(pb::ExecutionClock::Wall as i32),
         limits: request.limits.map(|limits| pb::ResourceLimits {
             max_feed_duration_micros: limits.max_feed_duration_micros,
             max_turn_duration_micros: limits.max_turn_duration_micros,
@@ -485,6 +486,10 @@ fn call_result_from_component(result: CallResult) -> pb::ExtFunctionResult {
         CallResult::PendingFuture(call_id) => pb::ext_function_result::Kind::Future(call_id),
         CallResult::NotFound(name) => pb::ext_function_result::Kind::NotFound(name),
         CallResult::NotHandled => pb::ext_function_result::Kind::NotHandled(pb::Unit {}),
+        CallResult::ModuleFile(file) => pb::ext_function_result::Kind::ModuleFile(pb::ModuleFile {
+            path: file.path,
+            source: file.source,
+        }),
     };
     pb::ExtFunctionResult { kind: Some(kind) }
 }
@@ -504,6 +509,8 @@ fn raised_exception_from_component(error: RaisedError) -> pb::RaisedException {
 fn event_from_proto(event: pb::ChildEvent) -> Event {
     match event.kind {
         Some(pb::child_event::Kind::Print(_)) => invalid_event("Print event bypassed segment expansion"),
+        // a serving relay's liveness probe; a child never sends one
+        Some(pb::child_event::Kind::Ping(_)) => invalid_event("Ping event is a relay's, never a child's"),
         Some(pb::child_event::Kind::FunctionCall(call)) => {
             let object_id = call.object_id.map(|uuid| uuid.to_string());
             let position = component_source_range(call.position.unwrap_or_else(monty_types::SourceRange::unknown));

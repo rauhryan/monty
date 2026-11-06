@@ -122,7 +122,13 @@ fn ownership_queue_fifo_reservation_cancel() {
                 PrintWriter::Disabled,
             );
             vm.ownership_probe_queue_waiter(put);
-            reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+            reclaim_vm_state(
+                &mut repl.globals,
+                &mut repl.cwd,
+                &mut repl.random,
+                &mut repl.modules,
+                &mut vm,
+            );
         });
     }
 }
@@ -167,7 +173,13 @@ fn ownership_queue_public_fifo_reservation_cancel() {
                 PrintWriter::Disabled,
             );
             vm.ownership_probe_queue_waiter(put);
-            reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+            reclaim_vm_state(
+                &mut repl.globals,
+                &mut repl.cwd,
+                &mut repl.random,
+                &mut repl.modules,
+                &mut vm,
+            );
         });
     }
 }

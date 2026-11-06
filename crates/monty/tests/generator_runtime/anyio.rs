@@ -274,7 +274,17 @@ fn native_async_anyio_group_scope_snapshot_ownership() {
             PrintWriter::Disabled,
         )
         .unwrap();
-        let baseline = repl.heap_entry_count();
+        let retained_roots = source == include_str!("../fixtures/concurrency/cancel_scopes/cleanup-error.py");
+        // This fixture deliberately roots an exception/args/list cycle globally.
+        // Upstream chaining adds a reachable cancellation context to that object.
+        // Release the three original objects as well before checking abandonment;
+        // every chained exception must then be collected, not excused by a count.
+        let baseline = repl.heap_entry_count() - if retained_roots { 3 } else { 0 };
+        let collect = if retained_roots {
+            "assert error.args[0] is cycle\nassert error.__context__ is None or isinstance(error.__context__, asyncio.CancelledError)\nerror = cycle = None\npulse = []\npulse = None"
+        } else {
+            "pulse = []\npulse = None"
+        };
         let mut progress = repl
             .feed_start("asyncio.run(main())", vec![], PrintWriter::Disabled)
             .unwrap();
@@ -288,9 +298,7 @@ fn native_async_anyio_group_scope_snapshot_ownership() {
                     panic!("suspended")
                 };
                 let mut abandoned = copy.into_repl();
-                abandoned
-                    .feed_run("pulse = []\npulse = None", vec![], PrintWriter::Disabled)
-                    .unwrap();
+                abandoned.feed_run(collect, vec![], PrintWriter::Disabled).unwrap();
                 assert_eq!(
                     abandoned.heap_entry_count(),
                     baseline,
@@ -298,9 +306,7 @@ fn native_async_anyio_group_scope_snapshot_ownership() {
                 );
             }
             let mut abandoned = progress.into_repl();
-            abandoned
-                .feed_run("pulse = []\npulse = None", vec![], PrintWriter::Disabled)
-                .unwrap();
+            abandoned.feed_run(collect, vec![], PrintWriter::Disabled).unwrap();
             assert_eq!(
                 abandoned.heap_entry_count(),
                 baseline,
@@ -329,8 +335,7 @@ fn native_async_anyio_group_scope_snapshot_ownership() {
             };
         }
         let (mut repl, _) = progress.into_complete().unwrap();
-        repl.feed_run("pulse = []\npulse = None", vec![], PrintWriter::Disabled)
-            .unwrap();
+        repl.feed_run(collect, vec![], PrintWriter::Disabled).unwrap();
         assert_eq!(
             repl.heap_entry_count(),
             baseline,

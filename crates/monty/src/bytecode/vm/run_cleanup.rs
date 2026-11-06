@@ -30,8 +30,7 @@ impl VM<'_> {
             .current_frame
             .code
             .native_cleanup_entries
-            .as_ref()
-            .is_some_and(|entries| entries.contains(&u32::try_from(self.instruction_ip).expect("instruction offset")))
+            .contains(&u32::try_from(self.instruction_ip).expect("instruction offset"))
         {
             return None;
         }
