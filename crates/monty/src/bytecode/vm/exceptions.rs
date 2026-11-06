@@ -13,7 +13,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::{StaticStrings, StringId},
     types::{LazyHeapSet, PyTrait, Type},
     value::Value,
@@ -583,7 +583,11 @@ impl VM<'_> {
                     unreachable!("catchable generator error")
                 };
                 let replacement = this.create_exception_value(exc);
-                mem::replace(exc_value, replacement).drop_with(this);
+                let original = mem::replace(exc_value, replacement);
+                let Some(HeapReadOutput::Exception(object)) = exc_value.read_heap(this) else {
+                    unreachable!("PEP 479 replacement")
+                };
+                object.get_mut(this.heap).generator_stop_cause = Some(original);
             }
 
             // Get the caller's call-site offset before popping frame.
@@ -593,7 +597,18 @@ impl VM<'_> {
             // Synchronous evaluation stops unwinding here, but its caller still
             // belongs in the traceback when the error crosses that boundary.
             let was_generator = this.current_frame.generator_activation.is_some();
+            let closed = error.is_catchable(ExcType::GeneratorExit)
+                && this
+                    .current_frame
+                    .generator_activation
+                    .as_ref()
+                    .is_some_and(|a| a.return_route == super::generator::GeneratorReturn::Close && !a.delegated);
             let should_return = this.pop_frame();
+            if closed {
+                error.drop_with(this);
+                this.push(Value::None);
+                return ExceptionHandlingResult::Caught;
+            }
             if was_generator && let Some(offset) = call_offset {
                 this.instruction_ip = offset as usize;
             }

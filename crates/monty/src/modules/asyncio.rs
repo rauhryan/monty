@@ -32,7 +32,7 @@ use crate::{
         time::{HostSleep, host_sleep},
     },
     os_dispatch::PostConversionEffect,
-    types::Module,
+    types::{Module, PyTrait},
     value::{EitherStr, Value},
 };
 
@@ -64,6 +64,8 @@ pub(crate) enum AsyncioFunctions {
     QueueSize,
     QueueEmpty,
     QueueFull,
+    QueueTaskDone,
+    QueueJoin,
 }
 
 /// Creates the `asyncio` module and allocates it on the heap.
@@ -142,6 +144,19 @@ pub(crate) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues
             let queue = args.get_one_arg("get", vm.heap)?;
             defer_drop!(queue, vm);
             let operation = vm.new_queue_operation(queue, None)?;
+            vm.frozen_awaitable(FrozenFunction::QueueOperation, vec![operation], false)
+                .map(CallResult::Value)
+        }
+        AsyncioFunctions::QueueTaskDone => {
+            let queue = args.get_one_arg("task_done", vm.heap)?;
+            defer_drop!(queue, vm);
+            vm.queue_task_done(queue)?;
+            Ok(CallResult::Value(Value::None))
+        }
+        AsyncioFunctions::QueueJoin => {
+            let queue = args.get_one_arg("join", vm.heap)?;
+            defer_drop!(queue, vm);
+            let operation = vm.new_queue_join(queue)?;
             vm.frozen_awaitable(FrozenFunction::QueueOperation, vec![operation], false)
                 .map(CallResult::Value)
         }
@@ -332,7 +347,7 @@ fn run(heap: &mut Heap, args: ArgValues) -> RunResult<CallResult> {
 /// 2. External futures are tracked for resolution by the host
 /// 3. The current task blocks until all items complete
 /// 4. Results are collected in order and returned as a list
-/// 5. On any task failure, sibling tasks are cancelled and the exception propagates
+/// 5. Child failures either propagate or fill result slots, according to return_exceptions.
 ///
 /// # Arguments
 /// * `heap` - The heap for allocating the GatherFuture
@@ -341,12 +356,13 @@ fn run(heap: &mut Heap, args: ArgValues) -> RunResult<CallResult> {
 /// # Errors
 /// Returns `TypeError` if any argument is not awaitable.
 pub(crate) fn gather(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    // TODO: support keyword arguments (e.g. return_exceptions); for now any
-    // kwarg is rejected up front by the macro's `kwargs_not_supported_yet`
-    // flag with a `NotImplementedError: gather() does not yet support keyword
-    // arguments` (CPython would have given a TypeError naming the bad kwarg).
-    let GatherArgs { awaitables } = GatherArgs::from_args(args, vm)?;
+    let GatherArgs {
+        awaitables,
+        return_exceptions,
+    } = GatherArgs::from_args(args, vm)?;
     defer_drop_mut!(awaitables, vm);
+    defer_drop!(return_exceptions, vm);
+    let return_exceptions = return_exceptions.py_bool(vm)?;
 
     // Validate every argument before transferring any references to the gather,
     // so an invalid later argument needs no raw-HeapId rollback.
@@ -378,23 +394,20 @@ pub(crate) fn gather(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         .drain(..)
         .map(|arg| arg.into_ref_id().expect("validated gather awaitable is heap-backed"))
         .collect();
-    let gather_future = GatherFuture::new(items);
+    let mut gather_future = GatherFuture::new(items);
+    gather_future.return_exceptions = return_exceptions;
     let id = vm.heap.allocate(HeapData::GatherFuture(Box::new(gather_future)));
     Ok(Value::Ref(id))
 }
 
-/// `asyncio.gather(*awaitables)` — variadic positional, no kwargs accepted.
-///
-/// `kwargs_not_supported_yet` rejects any kwarg with the macro's
-/// "not yet implemented" `NotImplementedError`, replacing the previous
-/// `TypeError: gather() takes no keyword arguments` from `into_pos_only`.
-/// When CPython's `return_exceptions=False` is wired up this becomes a
-/// regular `kw_only` slot and the flag goes away.
+/// Bind the public keyword-only collection policy.
 #[derive(FromArgs)]
-#[from_args(name = "gather", kwargs_not_supported_yet)]
+#[from_args(name = "gather", style = def)]
 struct GatherArgs {
     #[from_args(varargs)]
     awaitables: Vec<Value>,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    return_exceptions: Value,
 }
 
 /// Public constructor supports the ordinary positional/keyword maxsize binding.

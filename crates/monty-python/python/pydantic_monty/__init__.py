@@ -252,6 +252,7 @@ ExcType = Literal[
     'Exception',
     'BaseException',
     'asyncio.CancelledError',
+    'GeneratorExit',
     'SystemExit',
     'KeyboardInterrupt',
     'ArithmeticError',

@@ -5,6 +5,9 @@
 #[path = "generator_runtime/generators.rs"]
 mod generators;
 
+#[path = "generator_runtime/composition.rs"]
+mod composition;
+
 #[path = "generator_runtime/structured_cleanup.rs"]
 mod structured_cleanup;
 

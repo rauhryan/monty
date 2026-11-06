@@ -1279,6 +1279,10 @@ pub enum StaticStrings {
     Func,
     /// Module name for `import functools`.
     Functools,
+    /// Synchronous generator context manager module.
+    Contextlib,
+    /// Generator context manager decorator.
+    Contextmanager,
     /// `math.gamma()` function.
     Gamma,
     /// `random.gammavariate()` function.
@@ -2852,6 +2856,9 @@ pub(crate) struct Interns {
     functions: Entries<Box<Function>>,
     /// Installed internal implementations by identity, ordered for stable dump bytes.
     frozen_functions: RefCell<BTreeMap<FrozenFunction, FunctionId>>,
+    /// Nested implementation functions hidden with their factory.
+    #[serde(default)]
+    frozen_nested: RefCell<Vec<FunctionId>>,
     eval_sources: Entries<Arc<str>>,
     #[serde(skip)]
     string_id_by_name: RefCell<AHashMap<String, StringId>>,
@@ -2877,6 +2884,9 @@ struct InternsWire {
     functions: Entries<Box<Function>>,
     #[serde(default)]
     frozen_functions: RefCell<BTreeMap<FrozenFunction, FunctionId>>,
+    /// Nested implementation functions hidden with their factory.
+    #[serde(default)]
+    frozen_nested: RefCell<Vec<FunctionId>>,
     eval_sources: Entries<Arc<str>>,
 }
 
@@ -2905,6 +2915,7 @@ impl TryFrom<InternsWire> for Interns {
             long_ints: wire.long_ints,
             functions: wire.functions,
             frozen_functions: wire.frozen_functions,
+            frozen_nested: wire.frozen_nested,
             eval_sources: wire.eval_sources,
             string_id_by_name: RefCell::new(string_id_by_name),
             static_string_ids: RefCell::new(static_string_ids),
@@ -2931,6 +2942,7 @@ impl Interns {
             long_ints: Entries::default(),
             functions: Entries::default(),
             frozen_functions: RefCell::default(),
+            frozen_nested: RefCell::default(),
             eval_sources: Entries::default(),
             string_id_by_name: RefCell::default(),
             static_string_ids: RefCell::default(),
@@ -2947,6 +2959,7 @@ impl Interns {
             long_ints: Entries::default(),
             functions: Entries::default(),
             frozen_functions: RefCell::default(),
+            frozen_nested: RefCell::default(),
             eval_sources: Entries::default(),
             string_id_by_name: RefCell::new(AHashMap::with_capacity(capacity)),
             static_string_ids: RefCell::new(AHashMap::with_capacity(CORE_STATIC_STRINGS.len())),
@@ -3046,13 +3059,21 @@ impl Interns {
     }
 
     /// Records an admitted implementation after its compilation overlay is committed.
-    pub(crate) fn set_frozen_function(&self, function: FrozenFunction, id: FunctionId) {
+    pub(crate) fn set_frozen_function(&self, function: FrozenFunction, id: FunctionId, nested: Vec<FunctionId>) {
         self.frozen_functions.borrow_mut().insert(function, id);
+        self.frozen_nested.borrow_mut().extend(nested);
     }
 
     /// Identifies implementation frames hidden from tracebacks and namespace introspection.
     pub(crate) fn is_internal_function(&self, id: FunctionId) -> bool {
         self.frozen_functions.borrow().values().any(|&function| function == id)
+            || self.frozen_nested.borrow().contains(&id)
+    }
+
+    /// Only directly installed native helper frames skip recursion admission.
+    /// Nested functions use ordinary calls; generator activations reserve depth.
+    pub(crate) fn is_uncharged_function(&self, id: FunctionId) -> bool {
+        self.frozen_functions.borrow().values().any(|&function| function == id) && !self.get_function(id).is_generator
     }
 
     /// Finds canonical text already interned, excluding snippet filename IDs.

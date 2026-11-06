@@ -206,5 +206,376 @@
     ],
     "result": "ok",
     "source": "authored_cancellation/scopes.py"
+  },
+  "api_extensions/gather": {
+    "source": "api_extensions/gather.py",
+    "steps": [
+      [
+        [
+          "success"
+        ],
+        [
+          "success"
+        ]
+      ],
+      [
+        [
+          "later"
+        ],
+        [
+          "later"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "success": "ok"
+      },
+      {
+        "later": "ok"
+      }
+    ],
+    "result": "ok"
+  },
+  "api_extensions/generators": {
+    "source": "api_extensions/generators.py",
+    "steps": [
+      [
+        "call",
+        "iteration"
+      ],
+      [
+        [],
+        [
+          "iteration"
+        ]
+      ],
+      [
+        "call",
+        "iteration-again"
+      ],
+      [
+        [],
+        [
+          "iteration-again"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "$ack": true
+      },
+      {
+        "iteration": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "iteration-again": "ok"
+      }
+    ],
+    "result": "ok",
+    "step": true
+  },
+  "api_extensions/close": {
+    "source": "api_extensions/close.py",
+    "steps": [
+      [
+        "call",
+        "close"
+      ],
+      [
+        [],
+        [
+          "close"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "$ack": true
+      },
+      {
+        "close": "ok"
+      }
+    ],
+    "result": "ok",
+    "step": true
+  },
+  "api_extensions/queue_join": {
+    "source": "api_extensions/queue_join.py",
+    "steps": [
+      [
+        [
+          "control",
+          "work"
+        ],
+        [
+          "control",
+          "work"
+        ]
+      ],
+      [
+        [],
+        [
+          "work"
+        ]
+      ],
+      [
+        [
+          "put-control"
+        ],
+        [
+          "put-control"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "control": "ok"
+      },
+      {
+        "work": "ok"
+      },
+      {
+        "put-control": "ok"
+      }
+    ],
+    "result": "ok"
+  },
+  "api_extensions/gather_cancel": {
+    "source": "api_extensions/gather_cancel.py",
+    "steps": [
+      [
+        [
+          "control"
+        ],
+        [
+          "control"
+        ]
+      ],
+      [
+        [
+          "cleanup"
+        ],
+        [
+          "cleanup"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "control": "ok"
+      },
+      {
+        "cleanup": "ok"
+      }
+    ],
+    "result": "ok"
+  },
+  "api_extensions/gather_host_cancel": {
+    "steps": [
+      [
+        [
+          "body"
+        ],
+        [
+          "body"
+        ]
+      ],
+      [
+        [
+          "cleanup"
+        ],
+        [
+          "cleanup"
+        ]
+      ],
+      [
+        [],
+        [
+          "cleanup"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "$cancel": "FIRST"
+      },
+      {
+        "$cancel": "SECOND"
+      },
+      {
+        "cleanup": "ok"
+      }
+    ],
+    "cancelled": "FIRST",
+    "source": "api_extensions/gather_host_cancel.py",
+    "terminal": {
+      "status": "cancelled",
+      "reason": "FIRST",
+      "value": "\"suppressed\"",
+      "error": null,
+      "interrupted_error": null,
+      "value_export_error": null
+    }
+  },
+  "generator_composition/suspension": {
+    "source": "generator_composition/suspension.py",
+    "step": true,
+    "steps": [
+      [
+        "call",
+        "collect-list"
+      ],
+      [
+        [],
+        [
+          "collect-list"
+        ]
+      ],
+      [
+        "call",
+        "collect-tuple"
+      ],
+      [
+        [],
+        [
+          "collect-tuple"
+        ]
+      ],
+      [
+        "call",
+        "throwing-iter"
+      ],
+      [
+        "call",
+        "throwing-next"
+      ],
+      [
+        [],
+        [
+          "throwing-iter",
+          "throwing-next"
+        ]
+      ],
+      [
+        "call",
+        "throwing-throw"
+      ],
+      [
+        [],
+        [
+          "throwing-throw"
+        ]
+      ],
+      [
+        "call",
+        "closing-iter"
+      ],
+      [
+        "call",
+        "closing-next"
+      ],
+      [
+        "call",
+        "closing-close"
+      ],
+      [
+        [],
+        [
+          "closing-close",
+          "closing-iter",
+          "closing-next"
+        ]
+      ],
+      [
+        "call",
+        "enter"
+      ],
+      [
+        "call",
+        "exit"
+      ],
+      [
+        [],
+        [
+          "enter",
+          "exit"
+        ]
+      ],
+      [
+        "call",
+        "cause"
+      ],
+      [
+        [],
+        [
+          "cause"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "$ack": true
+      },
+      {
+        "collect-list": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "collect-tuple": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "$ack": true
+      },
+      {
+        "throwing-iter": "ok",
+        "throwing-next": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "throwing-throw": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "$ack": true
+      },
+      {
+        "$ack": true
+      },
+      {
+        "closing-iter": "ok",
+        "closing-next": "ok",
+        "closing-close": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "$ack": true
+      },
+      {
+        "enter": "ok",
+        "exit": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "cause": "ok"
+      }
+    ],
+    "result": "ok"
   }
 }

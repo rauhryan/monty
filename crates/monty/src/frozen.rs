@@ -13,7 +13,7 @@ use crate::{
     bytecode::{CallResult, Compiler, VM},
     exception_private::RunResult,
     intern::{CompileInterns, FunctionId, Interns},
-    modules::functools,
+    modules::{contextlib, functools},
     name_map::NameMap,
     parse::parse_with_interner,
     prepare::prepare_with_existing_names,
@@ -51,15 +51,25 @@ pub(crate) enum FrozenFunction {
     /// Return a default when a suspendable user `__next__` method is exhausted.
     #[serde(rename = "builtins.next_default")]
     NextDefault,
+    /// Collect a generator on ordinary suspendable frames.
+    #[serde(rename = "builtins.collect_generator")]
+    CollectGenerator,
+    /// Adapt an ordinary iterator to generator delegation.
+    #[serde(rename = "generator.delegate_iterable")]
+    DelegateIterable,
+    /// Factory for synchronous generator context managers.
+    #[serde(rename = "contextlib.contextmanager")]
+    Contextmanager,
 }
 
 impl FrozenFunction {
     /// Prepares an unpublished implementation using this session's intern IDs.
     /// The caller publishes the overlay before installing its frame.
-    pub(crate) fn compile(self, interns: &Interns) -> RunResult<(FunctionId, CompileInterns<'_>)> {
+    pub(crate) fn compile(self, interns: &Interns) -> RunResult<(FunctionId, CompileInterns<'_>, Vec<FunctionId>)> {
         let source = self.source();
         let mut overlay = CompileInterns::new(interns);
-        let index = overlay.functions_len();
+        let start = overlay.functions_len();
+
         let mut globals = NameMap::new();
         let nodes =
             parse_with_interner(source, "<monty-frozen>", &mut overlay).map_err(|e| e.into_run_error(source))?;
@@ -67,18 +77,18 @@ impl FrozenFunction {
         Compiler::compile_module(&nodes, &mut overlay, &globals, CompileOptions::default())
             .map_err(|e| e.into_run_error(source))?;
         assert_eq!(
-            overlay.functions_len(),
-            index + 1,
-            "frozen source must define one function"
-        );
-        assert_eq!(
             globals.len(),
             1,
             "frozen source must take its dependencies as arguments"
         );
-        // Successful compilation checked the bytecode's function-ID limit.
-        let id = FunctionId::from_index(u16::try_from(index).expect("compiled function ID fits u16"));
-        Ok((id, overlay))
+        // Nested definitions compile before their enclosing function, so the
+        // single top-level entry is last. Compilation checked the ID limit.
+        let id =
+            FunctionId::from_index(u16::try_from(overlay.functions_len() - 1).expect("compiled function ID fits u16"));
+        let nested = (start..overlay.functions_len() - 1)
+            .map(|index| FunctionId::from_index(u16::try_from(index).expect("compiled function ID fits u16")))
+            .collect();
+        Ok((id, overlay, nested))
     }
 
     /// Selects one self-contained function; dependencies arrive as arguments, not globals.
@@ -99,6 +109,9 @@ impl FrozenFunction {
             Self::Iter => iter::ITER_SOURCE,
             Self::LruCacheMiss => lru_cache::CACHE_MISS_SOURCE,
             Self::NextDefault => next::NEXT_DEFAULT_SOURCE,
+            Self::CollectGenerator => iter::COLLECT_GENERATOR_SOURCE,
+            Self::DelegateIterable => iter::DELEGATE_ITERABLE_SOURCE,
+            Self::Contextmanager => contextlib::CONTEXTMANAGER_SOURCE,
         }
     }
 }
@@ -114,11 +127,14 @@ pub(crate) enum FrozenFunctions {
     Store,
     /// Check the result returned by a user `__iter__` method.
     ValidateIterator,
+    /// Compare the retained PEP 479 cause by identity.
+    GeneratorStopCause,
 }
 
 /// Dispatches private helpers using the same argument ownership rules as public natives.
 pub(crate) fn call_helper(function: FrozenFunctions, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
     match function {
+        FrozenFunctions::GeneratorStopCause => contextlib::stop_cause(args, vm).map(CallResult::Value),
         FrozenFunctions::GetIter => iter::call_get_iter(args, vm),
         FrozenFunctions::Store => lru_cache::call_store(args, vm).map(CallResult::Value),
         FrozenFunctions::ValidateIterator => iter::call_validate_iterator(args, vm).map(CallResult::Value),

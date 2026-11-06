@@ -37,7 +37,8 @@ pub mod worker;
 /// ignore. Version 8 requires policy7 catchable delivery and bounded interrupted
 /// diagnostics. Cancellation-aware parents declare version 8 without downgrade.
 // Version 9 requires the dedicated asyncio.CancelledError wire type.
-pub const PROTOCOL_VERSION: u32 = 9;
+// Version 10 adds GeneratorExit; older peers cannot decode this exception type.
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
 ///
@@ -53,8 +54,8 @@ pub const PROTOCOL_VERSION: u32 = 9;
 /// send a budget nothing enforces, and a version 4 child would accept the new
 /// budgets and ignore them. Neither side can be told apart from a working one,
 /// so both are refused.
-// Older peers cannot represent the new cancellation exception contract.
-pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 9;
+// Older peers cannot represent GeneratorExit or the cancellation exception contract.
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 10;
 
 /// How long the child holds buffered `print()` output before emitting it as a
 /// `Print` event, when [`pb::Configure::print_flush_interval_ms`] says nothing.

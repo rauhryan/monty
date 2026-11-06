@@ -9,13 +9,9 @@ The public module surface includes `run`, `gather`, `sleep`, `create_task`, `Tas
 
 - `asyncio.run(coro)` — runs a coroutine to completion. Returns the value
     the coroutine `return`s, or re-raises an exception from it.
-- `asyncio.gather(*awaitables)` — runs awaitables concurrently and returns
-    a list of results. Always behaves as `return_exceptions=False`.
-    Any keyword argument is rejected with
-    `NotImplementedError: gather() does not yet support keyword arguments`,
-    where CPython raises
-    `TypeError: gather() got an unexpected keyword argument 'X'` because
-    `return_exceptions` is a real kwarg there.
+- `asyncio.gather(*awaitables, return_exceptions=False)` — runs awaitables concurrently and returns
+    a list of results in argument order. With `return_exceptions=True`, catchable child failures
+    are returned as exception objects. Host termination and resource-limit errors remain terminal.
 - `asyncio.sleep(delay, result=None)` — waits as the session's `sleep` setting
     says, then produces `result`. See
     [below](#asynciosleep-waits-at-the-call-not-at-the-await).
@@ -349,7 +345,7 @@ The thin experimental Scope binding supports deferred async cleanup in LIFO orde
 
 ## Public Queue subset
 
-`asyncio.Queue(maxsize=0)` supplies `await put(item)`, `await get()`, `qsize()`,
+`asyncio.Queue(maxsize=0)` supplies `await put(item)`, `await get()`, `task_done()`, `await join()`, `qsize()`,
 `empty()`, `full()` and read-only `maxsize`. Construction accepts signed-64-bit integers
 and booleans; positive sizes are limited to 4294967295 on native and Wasm.
 Nonpositive sizes are unbounded, subject to session memory limits. Boolean
@@ -360,7 +356,7 @@ Queue type identity, generic subscripting and introspection parity are unsupport
 
 Public put/get return lazy single-use coroutines and compose with gather,
 create_task and TaskGroup without an experimental scope. Unlike CPython, even
-an immediately eligible operation cooperates with the scheduler. Values and
+an immediately eligible put/get or zero-work `join()` cooperates with the scheduler. Values and
 waiters are FIFO within each side; eligible getters take precedence over putters.
 Waking reserves permission; inspection still reports committed contents until
 activation commits delivery. Cancellation before delivery revokes the reservation:
@@ -369,7 +365,7 @@ after delivery does not undo the transfer. Cancellation uses the platform's
 cancellation contract described above, including protected cleanup and sticky host
 cancellation.
 
-`put_nowait`, `get_nowait`, `task_done`, `join`, `shutdown`, QueueEmpty and QueueFull
+`put_nowait`, `get_nowait`, `shutdown`, QueueEmpty and QueueFull
 are not supplied. Method signatures/error wording and the object's reported type
 are not complete stdlib parity. Queues may be reused across sequential runs after
 run-owned Tasks drain. A stored, unawaited operation belongs to its eventual
@@ -409,7 +405,7 @@ coroutines directly. Direct `await`, public Tasks and supported task groups use
 the ordinary `asyncio.run` entry without a dialect import or private entry method.
 Ordinary `try/finally` and `async with` participate in protected host cancellation cleanup. Public `asyncio.TaskGroup` has the bounded subset above; experimental scopes retain
 their separate cancel-on-exit semantics.
-General coroutine introspection and `return_exceptions` remain unsupported.
+General coroutine introspection remains unsupported.
 
 The playground also supplies `sandbox.ask`, `echo`, `random`, `sample`, `decision`,
 `document_create`, `document_read`, `document_edit`, `present_choices`, and
@@ -419,4 +415,4 @@ host validates the request against its installed contracts before performing any
 operation. Randomness and human replies are supplied and journaled by the host.
 They are not Python standard-library functions.
 
-Cancellation exception snapshots require dump version 36; earlier dumps are rejected because captured ValueError handlers have different semantics.
+Snapshots require dump version 37; earlier queue snapshots cannot reconstruct unfinished-work accounting.

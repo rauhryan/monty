@@ -8,7 +8,8 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropWithContext, Heap, HeapData, HeapId},
+    frozen::FrozenFunction,
+    heap::{DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     intern::{Interns, StaticStrings, StringId},
     modules::{
         ModuleFunctions, collections, csv,
@@ -18,8 +19,8 @@ use crate::{
     },
     py_value::PyValue,
     types::{
-        Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range, Set, Slice,
-        Str, TimeZone, Tuple,
+        BuiltinType, Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range,
+        Set, Slice, Str, TimeZone, Tuple,
         bytes::{bytes_fromhex, bytes_repr},
         complex, date, datetime, decimal,
         dict::{DictKind, dict_fromkeys},
@@ -802,9 +803,24 @@ impl Type {
 
     /// Calls this type as a constructor (e.g., `list(x)`, `int(x)`).
     ///
-    /// Iterator acquisition may suspend in user code; other constructors complete natively.
+    /// Iterator acquisition and generator collection may suspend in user code.
     pub(crate) fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-        if self == Self::Iterator {
+        if matches!(self, Self::List | Self::Tuple)
+            && args
+                .first_positional()
+                .is_some_and(|value| matches!(value.read_heap(vm), Some(HeapReadOutput::Generator(_))))
+        {
+            let name = if self == Self::List { "list" } else { "tuple" };
+            let generator = args.get_zero_one_arg(name, vm.heap)?.expect("first argument checked");
+            vm.call_frozen_exact(
+                FrozenFunction::CollectGenerator,
+                [
+                    generator,
+                    Value::Bool(self == Self::Tuple),
+                    Value::Builtin(Builtins::Type(BuiltinType::Tuple)),
+                ],
+            )
+        } else if self == Self::Iterator {
             builtin_iter(vm, args)
         } else {
             self.call_native(vm, args).map(CallResult::Value)

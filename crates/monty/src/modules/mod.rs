@@ -20,6 +20,7 @@ pub(crate) mod base64;
 pub(crate) mod binascii;
 pub(crate) mod bisect;
 pub(crate) mod collections;
+pub(crate) mod contextlib;
 pub(crate) mod copy;
 pub(crate) mod csv;
 pub(crate) mod dataclasses;
@@ -83,6 +84,8 @@ pub(crate) enum StandardLib {
     Collections,
     /// The `functools` module providing reduction, partial application, and caching.
     Functools,
+    /// Synchronous generator context managers.
+    Contextlib,
     /// The `base64` module providing the base64/base32/base16 codecs.
     Base64,
     /// The `binascii` module providing binary-to-ASCII conversions, CRC32,
@@ -134,6 +137,7 @@ impl StandardLib {
             StaticStrings::Itertools => Some(Self::Itertools),
             StaticStrings::Dataclasses => Some(Self::Dataclasses),
             StaticStrings::Collections => Some(Self::Collections),
+            StaticStrings::Contextlib => Some(Self::Contextlib),
             StaticStrings::Functools => Some(Self::Functools),
             StaticStrings::Base64 => Some(Self::Base64),
             StaticStrings::Binascii => Some(Self::Binascii),
@@ -178,6 +182,7 @@ impl StandardLib {
             Self::Itertools => itertools::create_module(vm),
             Self::Dataclasses => dataclasses::create_module(vm),
             Self::Collections => collections::create_module(vm),
+            Self::Contextlib => contextlib::create_module(vm),
             Self::Functools => functools::create_module(vm),
             Self::Base64 => base64::create_module(vm),
             Self::Binascii => binascii::create_module(vm),
@@ -217,6 +222,7 @@ pub(crate) enum ModuleFunctions {
     Itertools(itertools::ItertoolsFunctions),
     Dataclasses(dataclasses::DataclassesFunctions),
     Functools(functools::FunctoolsFunctions),
+    Contextmanager,
     Base64(base64::Base64Functions),
     Binascii(binascii::BinasciiFunctions),
     Random(random::RandomFunctions),
@@ -259,6 +265,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Unicodedata(func) => write!(f, "{func}"),
             Self::Itertools(func) => write!(f, "{func}"),
             Self::Dataclasses(func) => write!(f, "{func}"),
+            Self::Contextmanager => write!(f, "contextmanager"),
             Self::Functools(func) => write!(f, "{func}"),
             Self::Base64(func) => write!(f, "{func}"),
             Self::Binascii(func) => write!(f, "{func}"),
@@ -300,6 +307,7 @@ impl ModuleFunctions {
             Self::Unicodedata(functions) => unicodedata::call(vm, functions, args).map(CallResult::Value),
             Self::Itertools(functions) => itertools::call(vm, functions, args).map(CallResult::Value),
             Self::Dataclasses(functions) => dataclasses::call(vm, functions, args).map(CallResult::Value),
+            Self::Contextmanager => contextlib::call(vm, args),
             Self::Functools(functions) => functools::call(vm, functions, args),
             Self::Base64(functions) => base64::call(vm, functions, args).map(CallResult::Value),
             Self::Binascii(functions) => binascii::call(vm, functions, args).map(CallResult::Value),

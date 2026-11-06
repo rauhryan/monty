@@ -177,3 +177,53 @@ pub fn collect_iterable_bounded(value: &Value, limit: usize, vm: &mut VM<'_>) ->
     }
     Ok(items_guard.into_inner())
 }
+
+/// Collection advances through the outer VM loop, so generator calls may suspend.
+pub(crate) const COLLECT_GENERATOR_SOURCE: &str = r"
+def __monty_collect_generator(generator, as_tuple, tuple_):
+    result = []
+    for item in generator:
+        result.append(item)
+    if as_tuple:
+        return tuple_(result)
+    return result
+";
+
+/// PEP 380 delegation for iterables whose iterator is not itself a generator.
+/// Each protocol call uses an ordinary frame and retains its exception identity.
+pub(crate) const DELEGATE_ITERABLE_SOURCE: &str = r"
+def __monty_delegate(iterable, iter_, next_, getattr_, stop_, exit_, base_, attribute_):
+    iterator = iter_(iterable)
+    try:
+        value = next_(iterator)
+    except stop_ as error:
+        return error.value
+    while True:
+        try:
+            sent = yield value
+        except exit_:
+            try:
+                close = getattr_(iterator, 'close')
+            except attribute_:
+                pass
+            else:
+                close()
+            raise
+        except base_ as error:
+            try:
+                throw = getattr_(iterator, 'throw')
+            except attribute_:
+                raise error
+            try:
+                value = throw(error)
+            except stop_ as done:
+                return done.value
+        else:
+            try:
+                if sent is None:
+                    value = next_(iterator)
+                else:
+                    value = iterator.send(sent)
+            except stop_ as done:
+                return done.value
+";

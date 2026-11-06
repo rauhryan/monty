@@ -140,6 +140,7 @@ fn ownership_export_poison_depth_and_cached_error_cycles() {
             vm.heap.dec_ref(id);
         }
         let mut typed_gather = GatherFuture {
+            return_exceptions: false,
             items: vec![],
             state: GatherState::Failed(error.clone_with_heap(vm.heap)),
         };
@@ -172,6 +173,7 @@ fn ownership_export_poison_depth_and_cached_error_cycles() {
             "cache owns one error; absent awaiter owns none"
         );
         let gather = Value::Ref(vm.heap.allocate(HeapData::GatherFuture(Box::new(GatherFuture {
+            return_exceptions: false,
             items: vec![],
             state: GatherState::Failed(error.clone_with_heap(vm.heap)),
         }))));
@@ -201,6 +203,7 @@ fn ownership_export_poison_depth_and_cached_error_cycles() {
             state: ExternalFutureState::Failed(ExcType::value_error("legacy")),
         }))));
         let legacy_gather = Value::Ref(vm.heap.allocate(HeapData::GatherFuture(Box::new(GatherFuture {
+            return_exceptions: false,
             items: vec![],
             state: GatherState::Failed(ExcType::value_error("legacy")),
         }))));

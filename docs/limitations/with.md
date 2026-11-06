@@ -34,8 +34,7 @@ For async context-manager limitations, see [asyncio.md](asyncio.md#async-def-awa
 
 ## Not supported
 
-- **`contextlib`** (`@contextmanager`, `ExitStack`, etc.) — the module is not
-    available; only the language-level `with` statement is.
+- **`contextlib.ExitStack` and async helpers** remain unavailable; see [contextlib.md](contextlib.md).
 
 ## Behavioural divergences
 

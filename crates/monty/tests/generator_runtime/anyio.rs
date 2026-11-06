@@ -208,7 +208,8 @@ async def main():
         cuts += 1;
         assert!(cuts <= 8);
         let bytes = dump("scope.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
-        assert_eq!(&bytes[..8], b"MONTY\0\x24\x00");
+        assert_eq!(&bytes[..6], b"MONTY\0");
+        assert_eq!(&bytes[6..8], &monty::DUMP_VERSION.to_le_bytes());
         for _ in 0..2 {
             let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
                 panic!("suspended")

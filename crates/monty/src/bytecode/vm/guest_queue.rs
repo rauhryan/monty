@@ -32,6 +32,8 @@ impl VM<'_> {
             values: VecDeque::new(),
             getters: VecDeque::new(),
             putters: VecDeque::new(),
+            joiners: VecDeque::new(),
+            unfinished: 0,
             reserved: None,
         });
         Ok(Value::Ref(
@@ -73,6 +75,8 @@ impl VM<'_> {
         self.heap.inc_ref(*id);
         let mut future = ExternalFuture::new_pending(CallId::new(u32::MAX), None);
         future.queue_op = Some(QueueOperation {
+            join: false,
+            join_ready: false,
             queue: Some(*id),
             put: put.map(|v| v.clone_with_heap(self.heap)),
             started: false,
@@ -81,6 +85,39 @@ impl VM<'_> {
         Ok(Value::Ref(
             self.heap.allocate(HeapData::ExternalFuture(Box::new(future))),
         ))
+    }
+
+    /// Join is lazy like put/get; creating it neither registers a waiter nor observes zero.
+    pub(crate) fn new_queue_join(&mut self, queue: &Value) -> RunResult<Value> {
+        let value = self.new_queue_operation(queue, None)?;
+        let Value::Ref(id) = &value else { unreachable!() };
+        let HeapReadOutput::ExternalFuture(future) = self.heap.read(*id) else {
+            unreachable!()
+        };
+        future.get_mut(self.heap).queue_op.as_mut().expect("operation").join = true;
+        Ok(value)
+    }
+
+    /// A completed get does not acknowledge work; only this explicit call does.
+    pub(crate) fn queue_task_done(&mut self, queue: &Value) -> RunResult<()> {
+        let Value::Ref(id) = queue else {
+            return Err(ExcType::type_error("Queue receiver required"));
+        };
+        let HeapReadOutput::ExternalFuture(future) = self.heap.read(*id) else {
+            return Err(ExcType::type_error("Queue receiver required"));
+        };
+        let queue = future
+            .get_mut(self.heap)
+            .queue
+            .as_mut()
+            .ok_or_else(|| ExcType::type_error("Queue receiver required"))?;
+        if queue.unfinished == 0 {
+            return Err(ExcType::value_error("task_done() called too many times"));
+        }
+        queue.unfinished -= 1;
+        drop(future);
+        self.pump_queue(*id);
+        Ok(())
     }
 
     /// Admit direct task awaits only; coroutine wrappers can participate in gather.
@@ -104,17 +141,26 @@ impl VM<'_> {
         };
         let queue = op.queue.expect("new operation owns queue");
         let put = op.put.is_some();
+        let join = op.join;
         let HeapReadOutput::ExternalFuture(q) = self.heap.read(queue) else {
             unreachable!()
         };
         let state = q.get(self.heap).queue.as_ref().expect("queue token");
-        let waiters = if put { &state.putters } else { &state.getters };
+        let waiters = if join {
+            &state.joiners
+        } else if put {
+            &state.putters
+        } else {
+            &state.getters
+        };
         self.heap
             .tracker
             .check_growth(waiters.len(), waiters.capacity(), size_of::<HeapId>())?;
         self.heap.inc_ref(id); // queue waiter root
         let state = q.get_mut(self.heap).queue.as_mut().expect("queue token");
-        if put {
+        if join {
+            state.joiners.push_back(id);
+        } else if put {
             state.putters.push_back(id);
         } else {
             state.getters.push_back(id);
@@ -163,6 +209,10 @@ impl VM<'_> {
                     unreachable!()
                 };
                 let q = q.queue.as_ref().expect("queue");
+                if q.unfinished == u64::MAX {
+                    self.cancel_queue_operation(task);
+                    return Err(ExcType::value_error("queue unfinished task count overflow"));
+                }
                 if let Err(error) =
                     self.heap
                         .tracker
@@ -196,6 +246,21 @@ impl Scheduler {
             unreachable!()
         };
         let state = q.get_mut(heap).queue.as_mut().expect("queue");
+        let join_count = if state.unfinished == 0 { state.joiners.len() } else { 0 };
+        for index in 0..join_count {
+            let id = q.get(heap).queue.as_ref().expect("queue").joiners[index];
+            let HeapReadOutput::ExternalFuture(future) = heap.read(id) else {
+                unreachable!()
+            };
+            let op = future.get_mut(heap).queue_op.as_mut().expect("join");
+            if !op.join_ready {
+                op.join_ready = true;
+                let task = op.task.expect("join task");
+                drop(future);
+                self.make_ready(task, Ok(()), heap);
+            }
+        }
+        let state = q.get_mut(heap).queue.as_mut().expect("queue");
         if state.reserved.is_some() {
             return;
         }
@@ -226,6 +291,8 @@ pub(super) fn finish_queue_operation(id: HeapId, commit: bool, heap: &mut HeapRe
     let op = f.get_mut(heap).queue_op.as_mut().expect("operation");
     let queue = op.queue.take().expect("live operation owns queue");
     let put = op.put.take();
+    let join = op.join;
+    let join_ready = op.join_ready;
     op.task = None;
     f.get_mut(heap).state = ExternalFutureState::Resolved(Value::None);
     drop(f);
@@ -234,12 +301,18 @@ pub(super) fn finish_queue_operation(id: HeapId, commit: bool, heap: &mut HeapRe
     };
     let state = q.get_mut(heap).queue.as_mut().expect("queue");
     if commit {
-        assert_eq!(state.reserved, Some(id));
+        if join {
+            assert!(join_ready);
+        } else {
+            assert_eq!(state.reserved, Some(id));
+        }
     }
     if state.reserved == Some(id) {
         state.reserved = None;
     }
-    let waiters = if put.is_some() {
+    let waiters = if join {
+        &mut state.joiners
+    } else if put.is_some() {
         &mut state.putters
     } else {
         &mut state.getters
@@ -247,7 +320,10 @@ pub(super) fn finish_queue_operation(id: HeapId, commit: bool, heap: &mut HeapRe
     let index = waiters.iter().position(|v| *v == id).expect("registered waiter");
     waiters.remove(index);
     let (result, abandoned) = if commit {
-        if let Some(value) = put {
+        if join {
+            (Value::None, None)
+        } else if let Some(value) = put {
+            state.unfinished += 1;
             state.values.push_back(value);
             (Value::None, None)
         } else {
@@ -344,6 +420,8 @@ impl VM<'_> {
             "qsize" => AsyncioFunctions::QueueSize,
             "empty" => AsyncioFunctions::QueueEmpty,
             "full" => AsyncioFunctions::QueueFull,
+            "task_done" => AsyncioFunctions::QueueTaskDone,
+            "join" => AsyncioFunctions::QueueJoin,
             _ => return None,
         };
         self.heap.inc_ref(id);
@@ -365,6 +443,8 @@ impl VM<'_> {
             "qsize" => AsyncioFunctions::QueueSize,
             "empty" => AsyncioFunctions::QueueEmpty,
             "full" => AsyncioFunctions::QueueFull,
+            "task_done" => AsyncioFunctions::QueueTaskDone,
+            "join" => AsyncioFunctions::QueueJoin,
             name => {
                 args.drop_with(self);
                 return Err(ExcType::attribute_error("Queue", name));

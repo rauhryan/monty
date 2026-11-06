@@ -51,6 +51,8 @@ pub(crate) enum CallResult {
     },
     /// Experimental native entry: yields in this generator/delegates await futures.
     NativeGenerator(Value),
+    /// Explicit synchronous generator cleanup.
+    CloseGenerator(Value),
     /// External function call requested - VM should pause and return to caller.
     /// The `EitherStr` is the name of the external function (interned or heap-owned).
     External(EitherStr, ArgValues),
@@ -170,7 +172,10 @@ impl CallResult {
 impl<C: ContainsHeap> DropWithContext<C> for CallResult {
     fn drop_with(self, heap: &mut C) {
         match self {
-            Self::Value(value) | Self::AwaitValue(value) | Self::NativeGenerator(value) => value.drop_with(heap),
+            Self::Value(value)
+            | Self::AwaitValue(value)
+            | Self::NativeGenerator(value)
+            | Self::CloseGenerator(value) => value.drop_with(heap),
             Self::External(_, args) | Self::MethodCall { args, .. } => {
                 args.drop_with(heap);
             }
@@ -497,7 +502,7 @@ impl<'h> VM<'h> {
                 result.drop_with(self);
                 return error;
             }
-            CallResult::ResumeGenerator { .. } | CallResult::NativeGenerator(_) => {
+            CallResult::ResumeGenerator { .. } | CallResult::NativeGenerator(_) | CallResult::CloseGenerator(_) => {
                 ExcType::not_implemented("cannot resume generator in a synchronous Rust callback")
             }
             CallResult::AwaitValue(_) => ExcType::not_implemented("cannot await a value in this synchronous context"),
@@ -867,12 +872,15 @@ impl<'h> VM<'h> {
         let id = if let Some(id) = interns.frozen_function(function) {
             id
         } else {
-            let (id, overlay) = function.compile(interns)?;
+            let (id, overlay, nested) = function.compile(interns)?;
             overlay.commit();
-            interns.set_frozen_function(function, id);
+            interns.set_frozen_function(function, id, nested);
             id
         };
-        let (args, vm) = guard.into_parts();
+        let (mut args, vm) = guard.into_parts();
+        let func = interns.get_function(id);
+        assert!(func.free_var_slots.is_empty());
+        vm.install_closure_cells(func, &[], &mut args);
         let data = if generator {
             HeapData::Generator(Box::new(super::Generator::new(id, args, None)))
         } else {
@@ -895,25 +903,26 @@ impl<'h> VM<'h> {
             vm.admit_native_code(&interns.get_function(id).code)?;
             (id, None)
         } else {
-            let (id, overlay) = function.compile(interns)?;
+            let (id, overlay, nested) = function.compile(interns)?;
             vm.admit_native_code(&overlay.get_function(id).code)?;
-            (id, Some(overlay))
+            (id, Some((overlay, nested)))
         };
         // No fallible operation or Python execution may intervene between publication and frame installation.
-        if let Some(overlay) = overlay {
+        if let Some((overlay, nested)) = overlay {
             overlay.commit();
-            interns.set_frozen_function(function, function_id);
+            interns.set_frozen_function(function, function_id, nested);
         }
         let (args, vm) = args_guard.into_parts();
         let func = interns.get_function(function_id);
         assert_eq!(func.signature.exact_positional_count(), Some(N));
-        assert!(func.cell_var_slots.is_empty() && func.free_var_slots.is_empty());
+        assert!(func.free_var_slots.is_empty());
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("frozen function namespace exceeds u16");
         assert!(namespace_size >= N, "frozen function has too few local slots");
         let stack_base = vm.stack.len();
-        vm.stack.extend(args);
-        vm.stack.resize_with(stack_base + namespace_size, || Value::Undefined);
+        let mut namespace = Vec::from(args);
+        vm.install_closure_cells(func, &[], &mut namespace);
+        vm.stack.extend(namespace);
         let frame = CallFrame::new_function(
             &func.code,
             stack_base,

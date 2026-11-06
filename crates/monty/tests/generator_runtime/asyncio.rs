@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 
 use monty::{Dump, ReplProgress, Session, SessionRef, dump};
-use monty_types::{ExcType, ExtFunctionResult, MontyObject, PrintWriter};
+use monty_types::{ExcType, ExtFunctionResult, MontyException, MontyObject, PrintWriter};
 
-use super::support::{checked_run, new_repl};
+use super::support::{check_public_fixture_snapshots, checked_run, new_repl};
 
 /// Public authoring acceptance: real imports, variadic starred gathering and
 /// snapshot-owned host requests, with no authored bridge calls.
@@ -1308,7 +1308,7 @@ fn native_async_public_queue_snapshot_ownership() {
         ),
         (
             "misuse-reawait",
-            include_str!("../fixtures/concurrency/public_queues/misuse-reawait.py"),
+            include_str!("../fixtures/concurrency/api_extensions/queue_surface.py"),
             vec!["checked"],
         ),
         (
@@ -1465,66 +1465,62 @@ fn public_authored_cancellation_snapshot_ownership() {
         include_str!("../fixtures/concurrency/authored_cancellation/groups.py"),
         include_str!("../fixtures/concurrency/authored_cancellation/scopes.py"),
     ] {
-        let definitions = source.strip_suffix("asyncio.run(main())\n").expect("entry");
-        let mut repl = new_repl();
-        repl.feed_run(
-            definitions,
-            vec![("exchange".into(), MontyObject::function("exchange", None))],
+        check_public_fixture_snapshots(source);
+    }
+}
+
+/// Check live heaps after completion and original/restored disposal at every cut.
+#[test]
+fn public_api_extensions_snapshot_ownership() {
+    for source in [
+        include_str!("../fixtures/concurrency/api_extensions/gather.py"),
+        include_str!("../fixtures/concurrency/api_extensions/generators.py"),
+        include_str!("../fixtures/concurrency/api_extensions/queue_join.py"),
+        include_str!("../fixtures/concurrency/api_extensions/close.py"),
+        include_str!("../fixtures/concurrency/api_extensions/gather_cancel.py"),
+    ] {
+        check_public_fixture_snapshots(source);
+    }
+}
+
+/// A collected external failure must not become a second error at group exit,
+/// even when another operand keeps the gather pending across a restore.
+#[test]
+fn collected_host_failure_is_consumed() {
+    let mut progress = new_repl().feed_start(
+        "import asyncio\nasync def main():\n    async with asyncio.TaskGroup():\n        values = await asyncio.gather(exchange('failure'), exchange('success'), return_exceptions=True)\n        assert isinstance(values[0], ValueError)\n        assert str(values[0]) == 'host failure'\n        assert values[1] == 'ok'\n    return 'ok'\nasyncio.run(main())",
+        vec![("exchange".into(), MontyObject::function("exchange", None))], PrintWriter::Disabled,
+    ).unwrap();
+    let mut calls = HashMap::new();
+    while let ReplProgress::FunctionCall(call) = progress {
+        calls.insert(call.args.arg(0).unwrap().as_str().unwrap().to_owned(), call.call_id);
+        progress = call.resume_pending(PrintWriter::Disabled).unwrap();
+    }
+    progress = progress
+        .into_resolve_futures()
+        .unwrap()
+        .resume(
+            vec![(
+                calls["failure"],
+                ExtFunctionResult::Error(MontyException::new(ExcType::ValueError, Some("host failure".into()))),
+            )],
             PrintWriter::Disabled,
         )
         .unwrap();
-        let baseline = repl.heap_entry_count();
-        for _ in 0..3 {
-            let mut progress = repl
-                .feed_start("asyncio.run(main())", vec![], PrintWriter::Disabled)
-                .unwrap();
-            let mut cuts = 0;
-            while !matches!(progress, ReplProgress::Complete { .. }) {
-                cuts += 1;
-                assert!(cuts <= 6);
-                let bytes = dump("authored.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
-                for _ in 0..2 {
-                    let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
-                        panic!("suspended")
-                    };
-                    let mut abandoned = copy.into_repl();
-                    abandoned
-                        .feed_run("pulse = []\npulse = None", vec![], PrintWriter::Disabled)
-                        .unwrap();
-                    assert_eq!(abandoned.heap_entry_count(), baseline, "restored cut {cuts}");
-                }
-                let mut abandoned = progress.into_repl();
-                abandoned
-                    .feed_run("pulse = []\npulse = None", vec![], PrintWriter::Disabled)
-                    .unwrap();
-                assert_eq!(abandoned.heap_entry_count(), baseline, "original cut {cuts}");
-                let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
-                    panic!("suspended")
-                };
-                progress = if matches!(*copy, ReplProgress::FunctionCall(_)) {
-                    copy.into_function_call()
-                        .unwrap()
-                        .resume_pending(PrintWriter::Disabled)
-                        .unwrap()
-                } else {
-                    let pending = copy.into_resolve_futures().unwrap();
-                    let ids = pending.pending_call_ids().to_vec();
-                    pending
-                        .resume(
-                            ids.into_iter()
-                                .map(|id| (id, ExtFunctionResult::Return(MontyObject::string("ok"))))
-                                .collect(),
-                            PrintWriter::Disabled,
-                        )
-                        .unwrap()
-                };
-            }
-            let (completed, output) = progress.into_complete().unwrap();
-            assert_eq!(output, MontyObject::string("\"ok\""));
-            repl = completed;
-            repl.feed_run("pulse = []\npulse = None", vec![], PrintWriter::Disabled)
-                .unwrap();
-            assert_eq!(repl.heap_entry_count(), baseline, "completed history: {source}");
-        }
-    }
+    let bytes = dump("collected.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+    drop(progress.into_repl());
+    let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
+        panic!("pending gather")
+    };
+    let (_, output) = copy
+        .into_resolve_futures()
+        .unwrap()
+        .resume(
+            vec![(calls["success"], ExtFunctionResult::Return(MontyObject::string("ok")))],
+            PrintWriter::Disabled,
+        )
+        .unwrap()
+        .into_complete()
+        .unwrap();
+    assert_eq!(output, MontyObject::string("ok"));
 }

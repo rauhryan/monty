@@ -26,10 +26,11 @@ python3 tools/concurrency/run.py run --output playground/concurrency-check-1
 ```
 
 Use a new output directory each time. `run` builds the native example and actual
-Wasm component, then replays 14 programs on each backend. Every real suspension
+Wasm component, then replays 21 programs on each backend. Every real suspension
 cut is independently restored twice and disposed; the original bytes are checked
 and the full trace must equal uninterrupted execution. Results, raw commands,
 snapshots, input/artifact hashes and build receipts are saved under the output.
+Generator loop, close and composition cases also capture active host-call frames before acknowledgement.
 A source/artifact change requires a new build, not repinning an old association.
 
 Build and replay can also be separate:
@@ -43,8 +44,9 @@ python3 tools/concurrency/run.py verify \
 
 The public-async oracle retains the original frozen expectations; its source
 hashes pin the fixtures after their one-time Ruff formatting.
-Six additional cases cover cancellation exception identity, host terminal
-cancellation and authored cancellation. The strict comparator rejects duplicate
+Additional cases cover cancellation exception identity, host terminal
+cancellation, authored cancellation, gather result collection, generator loops and
+closure, queue work completion, iterable delegation and synchronous context-manager cleanup. The strict comparator rejects duplicate
 JSON keys, nonfinite values, type-coerced equality and mismatched restore traces.
 The runner tests also exercise lock contention, evidence overwrite, budget limits
 and source/artifact/receipt drift.
@@ -58,9 +60,8 @@ census. Python fixture bodies are test data, not importable modules. Their
 `pyproject.toml` to keep host-injected names and source fragments stable.
 
 The `generator_runtime` target groups its tests under
-`crates/monty/tests/generator_runtime/`: generators, structured cleanup, native
-cancellation, asyncio and AnyIO. Two shared helpers construct a REPL and check
-live heap ownership. Test bodies and fixture inputs stay with their owning behavior.
+`crates/monty/tests/generator_runtime/`: generators, composition, structured cleanup, native
+cancellation, asyncio and AnyIO. Shared helpers construct a REPL, check live ownership and exercise snapshot disposal. Test bodies and fixture inputs stay with their owning behavior.
 
 Run the native ownership and compatibility suites without historical exclusions:
 

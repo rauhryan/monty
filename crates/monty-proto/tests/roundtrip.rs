@@ -449,9 +449,11 @@ fn exceptions_round_trip_with_traceback() {
 
 #[test]
 fn exception_without_traceback_round_trips() {
-    let exc = MontyException::new(ExcType::TypeError, None);
-    let back = MontyException::try_from(pb::RaisedException::from(&exc)).unwrap();
-    assert_eq!(back, exc);
+    for exc_type in [ExcType::TypeError, ExcType::GeneratorExit] {
+        let exc = MontyException::new(exc_type, None);
+        let back = MontyException::try_from(pb::RaisedException::from(&exc)).unwrap();
+        assert_eq!(back, exc);
+    }
 }
 
 /// Builds a wire `UnicodeDecodeError` whose payload fields a byzantine child

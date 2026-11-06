@@ -1210,6 +1210,10 @@ impl<'h> VM<'h> {
                 return Ok(None);
             }
             CallResult::FramePushed => return Ok(None),
+            CallResult::CloseGenerator(generator) => {
+                self.close_generator(generator)?;
+                return Ok(None);
+            }
             CallResult::NativeGenerator(generator) => {
                 self.activate_native_generator(generator)?;
                 return Ok(None);
@@ -1791,6 +1795,12 @@ impl<'h> VM<'h> {
                     let Value::Ref(heap_id) = *self.peek() else {
                         return Err(RunError::internal("ForIter: expected iterator ref on stack"));
                     };
+                    if matches!(self.heap.get(heap_id), HeapData::Generator(_)) {
+                        let generator = self.peek().clone_with_heap(self.heap);
+                        let end = self.current_frame.ip.wrapping_add_signed(isize::from(offset));
+                        try_catch!(self, self.advance_generator_loop(generator, end));
+                        continue;
+                    }
                     let mut iter = self.heap.read(heap_id);
                     // A file nobody has read yet has no buffer to slice: load it from
                     // the host, then re-dispatch this instruction against the buffer.
@@ -2576,7 +2586,11 @@ impl<'h> VM<'h> {
     ///
     /// Returns `true` if this frame indicated evaluation should stop when popped.
     pub(super) fn pop_frame(&mut self) -> bool {
-        let is_frozen = self.current_frame_is_frozen();
+        // Generator activation reserves recursion even for an internal adapter.
+        let is_frozen = self
+            .current_frame
+            .function_id
+            .is_some_and(|id| self.interns.is_uncharged_function(id));
         let caller = self.suspended_frames.pop().expect("cannot pop the root frame");
         let frame = mem::replace(&mut self.current_frame, caller);
         let should_return = frame.should_return;
@@ -2593,6 +2607,11 @@ impl<'h> VM<'h> {
     /// Releases what a finished frame owns: its stack region and namespace.
     #[inline]
     fn cleanup_frame_state(&mut self, frame: CallFrame<'_>) {
+        // A swallowed generator-close signal must not remain as the caller's
+        // active exception. Suspended generators have already moved these owners.
+        self.exception_stack
+            .drain(frame.exception_stack_base()..)
+            .drop_with(self.heap);
         // Clean up frame's stack region (locals + operand stack, which now
         // includes any in-flight comprehension variables — the operand-stack
         // drain naturally covers them).

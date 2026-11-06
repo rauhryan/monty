@@ -1,5 +1,7 @@
 //! Generator state, delegation, exceptions and live ownership.
 
+use std::time::Duration;
+
 use monty::{Dump, MontyRun, ReplProgress, Session, SessionRef, dump};
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyUuid, PrintWriter, ResourceLimits,
@@ -1297,4 +1299,143 @@ seen.clear()
 None
 "
     )
+}
+
+/// Explicit closure may suppress GeneratorExit, return a value, or replace it;
+/// none of these routes should retain the activation or its delegated pins.
+#[test]
+fn explicit_close_and_loop_errors() {
+    let output = checked_run(
+        r"
+token = []
+def returns():
+    try:
+        yield token
+    except GeneratorExit:
+        return token
+g = returns()
+assert next(g) is token
+assert g.close() is token
+assert g.close() is None
+def replaces():
+    try:
+        yield token
+    finally:
+        raise ValueError('cleanup')
+def outer(child):
+    try:
+        yield from child
+    except ValueError as error:
+        assert str(error) == 'cleanup'
+        return token
+g = outer(replaces())
+assert next(g) is token
+assert g.close() is token
+def exits():
+    yield token
+    raise StopIteration('body')
+try:
+    for value in exits():
+        assert value is token
+except RuntimeError as error:
+    assert str(error) == 'generator raised StopIteration'
+else:
+    assert False
+def raising():
+    yield token
+    raise ValueError('body')
+try:
+    for value in raising():
+        pass
+except ValueError as error:
+    assert str(error) == 'body'
+else:
+    assert False
+g = value = returns = replaces = outer = exits = raising = None
+None
+",
+    );
+    assert_eq!(output.counts["token"], 1);
+}
+
+/// A synchronous host cut can capture an active loop or explicit close, not just
+/// a generator already parked at yield. Restore must retain that return route.
+#[test]
+fn active_loop_and_close_restore() {
+    for entry in [
+        "for value in gen:\n    assert value is token\nelse:\n    done = True",
+        "next(gen)\nassert gen.close() is None\ndone = True",
+    ] {
+        let mut repl = new_repl();
+        repl.feed_run("token = []\ndef make():\n    try:\n        host()\n        yield token\n    finally:\n        host()\ngen = make()", vec![("host".into(), MontyObject::function("host", None))], PrintWriter::Disabled).unwrap();
+        let mut progress = repl.feed_start(entry, vec![], PrintWriter::Disabled).unwrap();
+        let mut cuts = 0;
+        while let ReplProgress::FunctionCall(call) = progress {
+            cuts += 1;
+            let cut = ReplProgress::FunctionCall(call);
+            let bytes = dump("active.py", None, &[], SessionRef::Suspended(&cut)).unwrap();
+            drop(cut.into_repl());
+            let Session::Suspended(copy) = Dump::load(&bytes).unwrap().state else {
+                panic!("cut")
+            };
+            progress = copy
+                .into_function_call()
+                .unwrap()
+                .resume(MontyObject::none(), PrintWriter::Disabled)
+                .unwrap();
+        }
+        assert_eq!(cuts, 2);
+        let (mut repl, _) = progress.into_complete().unwrap();
+        repl.feed_run(
+            "assert done\nassert next(gen, 'end') == 'end'\ngen = make = None",
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+    }
+}
+
+/// Collection and explicit cleanup cannot turn terminal execution limits into values.
+#[test]
+fn api_extensions_preserve_execution_limits() {
+    for source in [
+        "import asyncio\nasync def busy():\n    while True:\n        pass\nasync def main():\n    await asyncio.gather(busy(), return_exceptions=True)\n    assert False, 'limit swallowed'\nasyncio.run(main())",
+        "def values():\n    while True:\n        yield 1\nfor item in values():\n    pass",
+        "def values():\n    try:\n        yield 1\n    finally:\n        while True:\n            pass\ngen = values()\nnext(gen)\ngen.close()",
+    ] {
+        let mut run = MontyRun::new(source.to_owned(), "limits.py", vec![], CompileOptions::default()).unwrap();
+        let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+        let error = run
+            .run(vec![], ResourceTracker::new(limits), PrintWriter::Disabled)
+            .unwrap_err();
+        assert_eq!(error.exc_type(), ExcType::TimeoutError, "{source}");
+    }
+}
+
+/// Closing a suspended except block cannot replace an enclosing finally's exception.
+#[test]
+fn close_preserves_callers_active_exception() {
+    checked_run(
+        r"
+def generator():
+    try:
+        yield 1
+    except ValueError:
+        yield 2
+gen = generator()
+next(gen)
+gen.throw(ValueError('inner'))
+original = RuntimeError('outer')
+try:
+    try:
+        raise original
+    finally:
+        gen.close()
+except RuntimeError as caught:
+    assert caught is original
+else:
+    assert False
+None
+",
+    );
 }

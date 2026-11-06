@@ -2609,6 +2609,7 @@ impl ExcTypeExt for ExcType {
                 ExceptionObject {
                     simple,
                     args: Some(args),
+                    generator_stop_cause: None,
                 },
             )))));
         }
@@ -2756,19 +2757,26 @@ impl SimpleException {
     }
 }
 
-/// Guest exception identity. Metadata stays heap-free; the optional tuple is
-/// one owning edge and retains the exact constructor/completion arguments.
+/// Guest exception identity. Metadata stays heap-free; owned edges retain
+/// constructor/completion arguments and the original PEP 479 exception.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ExceptionObject {
     #[serde(flatten)]
     pub(crate) simple: SimpleException,
     #[serde(default)]
     pub(crate) args: Option<Value>,
+    /// Owned original exception for PEP 479 identity checks.
+    #[serde(default)]
+    pub(crate) generator_stop_cause: Option<Value>,
 }
 
 impl From<SimpleException> for ExceptionObject {
     fn from(simple: SimpleException) -> Self {
-        Self { simple, args: None }
+        Self {
+            simple,
+            args: None,
+            generator_stop_cause: None,
+        }
     }
 }
 
@@ -2780,10 +2788,12 @@ impl Deref for ExceptionObject {
 }
 
 impl ExceptionObject {
-    /// Visit the args tuple once; its own walker supplies the element edges.
+    /// Visit each owned edge once; containers supply their own element edges.
     pub(crate) fn for_each_child_id(&self, mut visit: impl FnMut(HeapId)) {
-        if let Some(Value::Ref(id)) = &self.args {
-            visit(*id);
+        for edge in [&self.args, &self.generator_stop_cause] {
+            if let Some(Value::Ref(id)) = edge {
+                visit(*id);
+            }
         }
     }
 }
@@ -2792,8 +2802,8 @@ impl HeapItem for ExceptionObject {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.for_each_child_id(|id| stack.push(id));
         #[cfg(feature = "memory-model-checks")]
-        if let Some(args) = &mut self.args {
-            args.dec_ref_forget();
+        for value in [&mut self.args, &mut self.generator_stop_cause].into_iter().flatten() {
+            value.dec_ref_forget();
         }
     }
 }

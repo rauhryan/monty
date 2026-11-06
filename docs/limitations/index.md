@@ -55,8 +55,8 @@ They exist for development and for agents debugging code that runs on Monty; mos
 
 **Missing in other ways:**
 
-- Generator functions support direct `next`, `send`, `throw` and delegation to
-    generators, but lack general iteration and `close`. Generator expressions
+- Generator functions support `next`, `send`, `throw`, explicit `close`, `for` loops and delegation to
+    iterables; `list` and `tuple` collect generators, while other native consumers remain unsupported. Generator expressions
     still materialise to a list; see [language.md](language.md#generator-functions).
 
 - User-defined exception classes.
@@ -84,6 +84,7 @@ The following modules are present:
 | `binascii`    | [base64.md](base64.md)           |
 | `bisect`      | [bisect.md](bisect.md)           |
 | `collections` | [collections.md](collections.md) |
+| `contextlib`  | [contextlib.md](contextlib.md)   |
 | `copy`        | [copy.md](copy.md)               |
 | `csv`         | [csv.md](csv.md)                 |
 | `dataclasses` | [dataclasses.md](dataclasses.md) |
@@ -112,7 +113,7 @@ algorithm, and `tomllib` its whole three-name surface.
 The absent names are missing from the module namespace rather than stubbed, so they fail type checking as well as
 raising `AttributeError` at runtime.
 
-Notably absent: `enum`, `contextlib`, `io`, `string`, `struct`, `operator`,
+Notably absent: `enum`, `io`, `string`, `struct`, `operator`,
 `inspect`, `logging`, `traceback`, `uuid`, `urllib`.
 Some of those are absent by design — `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes` would breach
 the sandbox — and others are simply not implemented yet.

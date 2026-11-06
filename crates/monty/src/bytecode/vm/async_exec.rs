@@ -8,6 +8,7 @@
 
 use std::{mem, task::Poll};
 
+use ahash::AHashMap;
 use monty_types::{InvalidInputError, MontyException, ResourceError, ResourceTracker};
 use smallvec::{SmallVec, smallvec};
 
@@ -240,7 +241,24 @@ impl<'h> VM<'h> {
                         }
                     }
                 }
-                Err(err) => break Err(err),
+                Err(mut err) => {
+                    err.materialize_object(self.heap);
+                    loop {
+                        let failed = stack.pop().expect("failed commit");
+                        let (child_id, slot) = (failed.gather, failed.parent_slot);
+                        self.unwind_gather_commits(vec![failed], &err);
+                        let Some(parent) = stack.last_mut() else { break };
+                        if self.gather_collects_error(parent.gather, &err) {
+                            let value = self.gather_error_value(&mut err);
+                            parent.resume_after_child(child_id, slot.expect("nested slot"), Poll::Ready(value));
+                            break;
+                        }
+                    }
+                    if stack.is_empty() {
+                        break Err(err);
+                    }
+                    err.drop_with(self);
+                }
             }
         };
 
@@ -267,6 +285,7 @@ impl<'h> VM<'h> {
             next: 0,
             results: (0..item_count).map(|_| None).collect(),
             pending_children: PendingChildren::new(),
+            settled_children: AHashMap::new(),
         }
     }
 
@@ -279,119 +298,171 @@ impl<'h> VM<'h> {
     /// committed. Any error leaves the items handled so far in `frame`, which
     /// [`Self::unwind_gather_commits`] settles.
     fn step_gather_commit(&mut self, frame: &mut GatherCommit) -> Result<Option<GatherCommit>, RunError> {
+        while frame.next < frame.results.len() {
+            self.heap.tracker.check_memory_time_every(frame.next)?;
+            match self.step_gather_item(frame) {
+                Ok(Some(child)) => return Ok(Some(child)),
+                Ok(None) => {}
+                Err(mut error) => {
+                    if !self.gather_collects_error(frame.gather, &error) {
+                        return Err(error);
+                    }
+                    let value = self.gather_error_value(&mut error);
+                    error.drop_with(self);
+                    let HeapData::GatherFuture(gather) = self.heap.get(frame.gather) else {
+                        unreachable!()
+                    };
+                    frame.settled_children.insert(gather.items[frame.next], frame.next);
+                    frame.results[frame.next] = Some(value);
+                    frame.next += 1;
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Commit one operand; a catchable operand failure can fill just its own slot.
+    fn step_gather_item(&mut self, frame: &mut GatherCommit) -> Result<Option<GatherCommit>, RunError> {
         let lifetime = self.gather_lifetime_context();
         let HeapReadOutput::GatherFuture(gather) = self.heap.read(frame.gather) else {
-            panic!("gather commit frame id is not a GatherFuture")
+            unreachable!("gather commit frame")
         };
         let gather_id = frame.gather;
+        let idx = frame.next;
+        let item_id = gather.get(self.heap).items[idx];
+        if let Some(&previous) = frame.settled_children.get(&item_id) {
+            frame.results[idx] = Some(
+                frame.results[previous]
+                    .as_ref()
+                    .expect("settled slot")
+                    .clone_with_heap(self.heap),
+            );
+            frame.next += 1;
+            return Ok(None);
+        }
+        if let Some(slots) = frame.pending_children.get_mut(&item_id) {
+            // Dedup: We've already registered this item in this commit pass —
+            // this is a duplicate item (e.g. `gather(coro, coro)`). Just
+            // append the new slot index to the existing entry.
+            slots.push(idx);
+            frame.next += 1;
+            return Ok(None);
+        }
 
-        while frame.next < frame.results.len() {
-            let idx = frame.next;
-            let item_id = gather.get(self.heap).items[idx];
-            if let Some(slots) = frame.pending_children.get_mut(&item_id) {
-                // Dedup: We've already registered this item in this commit pass —
-                // this is a duplicate item (e.g. `gather(coro, coro)`). Just
-                // append the new slot index to the existing entry.
-                slots.push(idx);
-                frame.next += 1;
-                continue;
-            }
-
-            let poll = match self.heap.read(item_id) {
-                HeapReadOutput::Coroutine(coro) => {
-                    // Reject reuse up-front: either the coroutine is no longer
-                    // `New`, or another gather already spawned it (`spawn`
-                    // returns `Ok(None)`).
-                    if coro.get(self.heap).state != CoroutineState::New {
-                        return Err(ExcType::cannot_reuse_already_awaited_coroutine());
-                    }
-                    let Some(child) = self.scheduler.spawn(self.heap, item_id, Some(gather_id)) else {
-                        return Err(ExcType::cannot_reuse_already_awaited_coroutine());
-                    };
-                    if let Some((owner, protected)) = lifetime {
-                        self.scheduler.get_task_mut(owner).gather_children.push(child);
-                        let group = self.scheduler.get_task_mut(owner).group_parent;
-                        let task = self.scheduler.get_task_mut(child);
-                        task.group_parent = group;
-                        task.lifetime_parent = Some(owner);
-                        task.gather_protected = protected;
-                        task.cleanup_parent_frame = (!protected).then_some(self.suspended_frames.len());
-                    }
-                    Poll::Pending
+        let poll = match self.heap.read(item_id) {
+            HeapReadOutput::Coroutine(coro) => {
+                // Reject reuse up-front: either the coroutine is no longer
+                // `New`, or another gather already spawned it (`spawn`
+                // returns `Ok(None)`).
+                if coro.get(self.heap).state != CoroutineState::New {
+                    return Err(ExcType::cannot_reuse_already_awaited_coroutine());
                 }
-                HeapReadOutput::ExternalFuture(fut) => {
+                let Some(child) = self.scheduler.spawn(self.heap, item_id, Some(gather_id)) else {
+                    return Err(ExcType::cannot_reuse_already_awaited_coroutine());
+                };
+                if let Some((owner, protected)) = lifetime {
+                    self.scheduler.get_task_mut(owner).gather_children.push(child);
+                    let group = self.scheduler.get_task_mut(owner).group_parent;
+                    let task = self.scheduler.get_task_mut(child);
+                    task.group_parent = group;
+                    task.lifetime_parent = Some(owner);
+                    task.gather_protected = protected;
+                    task.cleanup_parent_frame = (!protected).then_some(self.suspended_frames.len());
+                }
+                Poll::Pending
+            }
+            HeapReadOutput::ExternalFuture(fut) => {
+                self.heap.inc_ref(gather_id);
+                let sub_awaiter = Awaiter::GatherSlot {
+                    gather: gather_id,
+                    source: item_id,
+                };
+                let poll = self.await_external_future(&fut, sub_awaiter)?;
+                if poll.is_pending()
+                    && let Some((owner, true)) = lifetime
+                    && let Some(task) = fut.get(self.heap).public_task.as_ref().and_then(|task| task.task)
+                {
+                    let waits = self.scheduler.public_gather_waits.entry(owner).or_default();
+                    if !waits.contains(&task) {
+                        waits.push(task);
+                    }
+                }
+                if poll.is_pending()
+                    && fut.get(self.heap).public_task.is_none()
+                    && let Some((owner, _)) = lifetime
+                {
+                    let call = fut.get(self.heap).call_id;
+                    self.scheduler.gather_externals.insert(call, owner);
+                    if lifetime.is_some_and(|(_, protected)| !protected) {
+                        self.scheduler
+                            .get_task_mut(owner)
+                            .cleanup_externals
+                            .push((call, self.suspended_frames.len()));
+                    }
+                    if let Some(group) = self.scheduler.get_task_mut(owner).group_parent {
+                        let HeapReadOutput::ExternalFuture(group) = self.heap.read(group) else {
+                            unreachable!()
+                        };
+                        group
+                            .get_mut(self.heap)
+                            .task_group
+                            .as_mut()
+                            .expect("group")
+                            .externals
+                            .push(call);
+                    }
+                }
+                poll
+            }
+            HeapReadOutput::GatherFuture(child_gather) => {
+                if let Some(value) = poll_settled_gather(&child_gather, self.heap)? {
+                    Poll::Ready(value)
+                } else {
+                    drop(child_gather);
+                    // Both the inc_ref and the awaiter that owns it are
+                    // handed to the nested frame, which releases them when
+                    // it settles; until then nothing is committed for this
+                    // slot, so an error above needs no cleanup here.
                     self.heap.inc_ref(gather_id);
                     let sub_awaiter = Awaiter::GatherSlot {
                         gather: gather_id,
                         source: item_id,
                     };
-                    let poll = self.await_external_future(&fut, sub_awaiter)?;
-                    if poll.is_pending()
-                        && let Some((owner, true)) = lifetime
-                        && let Some(task) = fut.get(self.heap).public_task.as_ref().and_then(|task| task.task)
-                    {
-                        let waits = self.scheduler.public_gather_waits.entry(owner).or_default();
-                        if !waits.contains(&task) {
-                            waits.push(task);
-                        }
-                    }
-                    if poll.is_pending()
-                        && fut.get(self.heap).public_task.is_none()
-                        && let Some((owner, _)) = lifetime
-                    {
-                        let call = fut.get(self.heap).call_id;
-                        self.scheduler.gather_externals.insert(call, owner);
-                        if lifetime.is_some_and(|(_, protected)| !protected) {
-                            self.scheduler
-                                .get_task_mut(owner)
-                                .cleanup_externals
-                                .push((call, self.suspended_frames.len()));
-                        }
-                        if let Some(group) = self.scheduler.get_task_mut(owner).group_parent {
-                            let HeapReadOutput::ExternalFuture(group) = self.heap.read(group) else {
-                                unreachable!()
-                            };
-                            group
-                                .get_mut(self.heap)
-                                .task_group
-                                .as_mut()
-                                .expect("group")
-                                .externals
-                                .push(call);
-                        }
-                    }
-                    poll
-                }
-                HeapReadOutput::GatherFuture(child_gather) => {
-                    if let Some(value) = poll_settled_gather(&child_gather, self.heap)? {
-                        Poll::Ready(value)
-                    } else {
-                        drop(child_gather);
-                        // Both the inc_ref and the awaiter that owns it are
-                        // handed to the nested frame, which releases them when
-                        // it settles; until then nothing is committed for this
-                        // slot, so an error above needs no cleanup here.
-                        self.heap.inc_ref(gather_id);
-                        let sub_awaiter = Awaiter::GatherSlot {
-                            gather: gather_id,
-                            source: item_id,
-                        };
-                        return Ok(Some(self.open_gather_commit(item_id, sub_awaiter, Some(idx))));
-                    }
-                }
-                _ => panic!("gather item is not a Coroutine, ExternalFuture, or GatherFuture"),
-            };
-
-            match poll {
-                Poll::Ready(value) => frame.results[idx] = Some(value),
-                Poll::Pending => {
-                    frame.pending_children.insert(item_id, smallvec![idx]);
+                    return Ok(Some(self.open_gather_commit(item_id, sub_awaiter, Some(idx))));
                 }
             }
-            frame.next += 1;
+            _ => panic!("gather item is not a Coroutine, ExternalFuture, or GatherFuture"),
+        };
+
+        match poll {
+            Poll::Ready(value) => {
+                frame.settled_children.insert(item_id, idx);
+                frame.results[idx] = Some(value);
+            }
+            Poll::Pending => {
+                frame.pending_children.insert(item_id, smallvec![idx]);
+            }
         }
 
+        frame.next += 1;
         Ok(None)
+    }
+
+    fn gather_collects_error(&self, id: HeapId, error: &RunError) -> bool {
+        matches!(error, RunError::Exc(_))
+            && matches!(self.heap.get(id), HeapData::GatherFuture(g) if g.return_exceptions)
+    }
+
+    fn gather_error_value(&mut self, error: &mut RunError) -> Value {
+        error.materialize_object(self.heap);
+        let RunError::Exc(exception) = error else {
+            unreachable!("catchable gather failure")
+        };
+        exception
+            .object
+            .as_ref()
+            .expect("materialized exception")
+            .clone_with_heap(self.heap)
     }
 
     /// Every ordinary gather installs durable lifetime links, even if its first
@@ -702,12 +773,38 @@ impl<'h> VM<'h> {
     fn unreceived_gather_error(&self, task_id: TaskId, error: &RunError) -> Option<Value> {
         let task = self.scheduler.task(task_id)?;
         task.lifetime_parent?;
+        if self.gather_chain_collects(task.awaiter.as_ref()) {
+            return None;
+        }
         let RunError::Exc(error) = error else { return None };
         let value = error.object.as_ref()?;
         if matches!((&task.child_cancel_signal, value), (Some(Value::Ref(a)), Value::Ref(b)) if a == b) {
             None
         } else {
             Some(value.clone_with_heap(self.heap))
+        }
+    }
+
+    /// Determine consumption before delivery mutates any gather in the chain.
+    fn gather_chain_collects(&self, awaiter: Option<&Awaiter>) -> bool {
+        let mut id = match awaiter {
+            Some(Awaiter::GatherSlot { gather, .. }) => *gather,
+            _ => return false,
+        };
+        loop {
+            let HeapData::GatherFuture(gather) = self.heap.get(id) else {
+                unreachable!()
+            };
+            let Some(waiting) = gather.as_awaited() else {
+                return false;
+            };
+            if gather.return_exceptions {
+                return true;
+            }
+            match &waiting.awaiter {
+                Awaiter::GatherSlot { gather, .. } => id = *gather,
+                Awaiter::Task(_) => return false,
+            }
         }
     }
 
@@ -1080,6 +1177,12 @@ impl<'h> VM<'h> {
             let next = match awaiter {
                 Awaiter::Task(t) => break *t,
                 Awaiter::GatherSlot { gather, .. } => {
+                    if this.gather_collects_error(*gather, &error) {
+                        let value = this.gather_error_value(&mut error);
+                        error.drop_with(this);
+                        let awaiter = mem::replace(awaiter, Awaiter::Task(TaskId::default()));
+                        return this.deliver_awaiter_success(awaiter, value);
+                    }
                     let HeapReadOutput::GatherFuture(gather) = this.heap.read(*gather) else {
                         panic!("Awaiter::GatherSlot gather id is not a GatherFuture")
                     };
@@ -1160,7 +1263,7 @@ impl<'h> VM<'h> {
                 .cleanup_externals
                 .retain(|(call, _)| *call != CallId::new(call_id));
         }
-        let retained = if owner.is_some() {
+        let mut retained = if owner.is_some() {
             if let RunError::Exc(exc) = &error {
                 exc.object.as_ref().map(|v| v.clone_with_heap(this.heap))
             } else {
@@ -1176,6 +1279,9 @@ impl<'h> VM<'h> {
                 panic!("fail_future: future was already resolved")
             }
         };
+        if this.gather_chain_collects(awaiter.as_ref()) {
+            retained.take().drop_with(this);
+        }
         // A failed sleep never produces its result.
         let sleep_result = fut.get_mut(this.heap).sleep_result.take();
         drop(fut);
@@ -1601,6 +1707,8 @@ struct GatherCommit {
     results: Vec<Option<Value>>,
     /// Children committed but not yet settled → the slots they fill.
     pending_children: PendingChildren,
+    /// Synchronously settled duplicates reuse the same value or exception object.
+    settled_children: AHashMap<HeapId, usize>,
 }
 
 impl GatherCommit {
@@ -1612,7 +1720,10 @@ impl GatherCommit {
     /// resolution reaches this gather through [`HeapReadMut::resolve_child`].
     fn resume_after_child(&mut self, child: HeapId, slot: usize, poll: Poll<Value>) {
         match poll {
-            Poll::Ready(value) => self.results[slot] = Some(value),
+            Poll::Ready(value) => {
+                self.settled_children.insert(child, slot);
+                self.results[slot] = Some(value);
+            }
             Poll::Pending => {
                 self.pending_children.insert(child, smallvec![slot]);
             }

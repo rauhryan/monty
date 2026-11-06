@@ -81,11 +81,14 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 // Version 35 persists task/run-owned lexical cancellation origins and ancestry.
 // Version 36 changes cancellation from ValueError to asyncio.CancelledError.
 // Older captured handlers cannot be silently reinterpreted under this contract.
-pub const DUMP_VERSION: u16 = 36;
+// Version 37 adds gather collection, generator return routes and queue work accounting.
+// Older queues cannot reconstruct the number of unacknowledged, already consumed items.
+// Version 38 retains PEP 479 cause identity and nested frozen implementations.
+pub const DUMP_VERSION: u16 = 38;
 
 /// The oldest dump version this build loads. `Dump::load` runs `dump_upgrade`
 /// over an older dump, rebuilding what the newer versions changed.
-pub const MIN_SUPPORTED_DUMP_VERSION: u16 = 36;
+pub const MIN_SUPPORTED_DUMP_VERSION: u16 = 37;
 
 // The supported range must be non-empty, and must exclude zero
 const _: () = assert!(MIN_SUPPORTED_DUMP_VERSION >= 1);

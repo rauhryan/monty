@@ -32,15 +32,13 @@ before any code runs. Other restrictions are described in their feature sections
 ## Generator functions
 
 Synchronous generator functions support direct `next(g[, default])`, `g.send(value)`,
-`g.throw(exception)` and nested delegation to other generator functions.
+`g.throw(exception)`, explicit `g.close()`, `for` loops, `list(g)`, `tuple(g)` and iterable delegation.
 
-- `yield from` currently requires a generator delegate; other iterables raise `NotImplementedError`.
 - `throw` accepts one exception instance or built-in exception class. The legacy
     multiple-argument throw form is unavailable.
-- `close`, `__next__`, saved method attributes such as `resume = g.send`,
+- `__next__`, saved method attributes such as `resume = g.send`,
     and generator inspection attributes are unavailable.
-- `for`, comprehensions, collection constructors and native iterator consumers
-    cannot advance these generators.
+- Other collection constructors and native iterator consumers cannot advance these generators.
 - Generator lambdas and async generators are rejected with `SyntaxError`.
 - Releasing a generator, including one suspended in `try/finally`, does not run
     guest cleanup.

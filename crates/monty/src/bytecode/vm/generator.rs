@@ -9,14 +9,15 @@ use std::{collections::HashSet, mem};
 use super::{CallFrame, CallResult, CaughtException, SerializedFrame, VM, stack_index};
 use crate::{
     args::{ArgValues, FromArgs},
-    builtins::Builtins,
+    builtins::{Builtins, BuiltinsFunctions},
     exception_private::{ExcType, ExcTypeExt, ExceptionObject, RunError, RunResult, SimpleException},
+    frozen::FrozenFunction,
     heap::{
         ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput,
         HeapReader,
     },
     intern::FunctionId,
-    types::{PyTrait, Type, allocate_tuple},
+    types::{BuiltinType, PyTrait, Type, allocate_tuple},
     value::{EitherStr, Value},
 };
 
@@ -47,17 +48,31 @@ struct SavedGenerator {
     pub(super) delegating: bool,
 }
 
+/// Where normal generator exhaustion returns; persisted across host suspension.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(super) enum GeneratorReturn {
+    #[default]
+    Next,
+    Native,
+    ForIter {
+        end: usize,
+    },
+    Close,
+}
+
 /// Persisted return route on the generator's live frame, including its sole pin.
 /// Task parking and host snapshots transfer this together with the frame.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct GeneratorActivation {
     generator: Value,
+    #[serde(default)]
+    pub(super) return_route: GeneratorReturn,
     /// Opt-in native entry/delegate: Yield awaits on the existing Task/Scheduler.
     #[serde(default)]
     pub(super) native: bool,
     default: Option<Value>,
     #[serde(default)]
-    delegated: bool,
+    pub(super) delegated: bool,
     #[serde(default)]
     pub(super) delegating: bool,
 }
@@ -179,6 +194,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Generator> {
         if name.as_str(vm.interns) == "_native1" {
             args.check_zero_args("_native1", vm.heap)?;
             Ok(CallResult::NativeGenerator(self.clone_value(vm.heap)))
+        } else if name.as_str(vm.interns) == "close" {
+            args.check_zero_args("close", vm.heap)?;
+            Ok(CallResult::CloseGenerator(self.clone_value(vm.heap)))
         } else if matches!(name.as_str(vm.interns), "send" | "throw") {
             let throwing = name.as_str(vm.interns) == "throw";
             let mut value = if throwing {
@@ -222,12 +240,29 @@ impl VM<'_> {
         default: Option<Value>,
         throwing: bool,
     ) -> RunResult<()> {
-        self.activate_generator_route(generator, input, default, throwing, false, false)
+        self.activate_generator_route(generator, input, default, throwing, false, GeneratorReturn::Next)
     }
 
     /// Explicit experiment entry; ordinary send/throw/await retain their semantics.
     pub(super) fn activate_native_generator(&mut self, generator: Value) -> RunResult<()> {
-        self.activate_generator_route(generator, Value::None, None, false, false, true)
+        self.activate_generator_route(generator, Value::None, None, false, false, GeneratorReturn::Native)
+    }
+
+    /// Advance a loop iterator on the outer VM dispatch loop.
+    pub(super) fn advance_generator_loop(&mut self, generator: Value, end: usize) -> RunResult<()> {
+        self.activate_generator_route(
+            generator,
+            Value::None,
+            None,
+            false,
+            false,
+            GeneratorReturn::ForIter { end },
+        )
+    }
+
+    pub(super) fn close_generator(&mut self, generator: Value) -> RunResult<()> {
+        let signal = ExcType::GeneratorExit.call(self, ArgValues::Empty)?;
+        self.activate_generator_route(generator, signal, None, true, false, GeneratorReturn::Close)
     }
 
     fn activate_generator_route(
@@ -237,7 +272,7 @@ impl VM<'_> {
         default: Option<Value>,
         throwing: bool,
         delegated: bool,
-        native: bool,
+        return_route: GeneratorReturn,
     ) -> RunResult<()> {
         let mut request = DropGuard::new((generator, (input, default)), self);
         let ((generator, (input, _)), vm) = request.as_parts_mut();
@@ -292,7 +327,7 @@ impl VM<'_> {
             }
         }
         let ((generator, (input, default)), vm) = request.into_parts();
-        vm.activate_generator_admitted(generator, input, default, throwing, delegated, native)
+        vm.activate_generator_admitted(generator, input, default, throwing, delegated, return_route)
     }
 
     /// Install the already-reserved frames without Rust run-loop reentry.
@@ -303,8 +338,9 @@ impl VM<'_> {
         mut default: Option<Value>,
         throwing: bool,
         mut delegated: bool,
-        native: bool,
+        mut return_route: GeneratorReturn,
     ) -> RunResult<()> {
+        let native = return_route == GeneratorReturn::Native;
         loop {
             let Value::Ref(id) = &generator else {
                 unreachable!("generator request")
@@ -336,6 +372,26 @@ impl VM<'_> {
                     globals.map(Value::Ref).drop_with(self);
                 }
                 generator.drop_with(self);
+                if return_route == GeneratorReturn::Close {
+                    default.drop_with(self);
+                    if delegated {
+                        let error = self.make_exception(&input, false);
+                        return match self.handle_exception_with_value(error, Some(input)) {
+                            Some(error) => Err(error),
+                            None => Ok(()),
+                        };
+                    }
+                    input.drop_with(self);
+                    self.push(Value::None);
+                    return Ok(());
+                }
+                if let GeneratorReturn::ForIter { end } = return_route {
+                    input.drop_with(self);
+                    default.drop_with(self);
+                    self.pop().drop_with(self);
+                    self.current_frame.ip = end;
+                    return Ok(());
+                }
                 if throwing {
                     default.drop_with(self);
                     if delegated && matches!(input.py_type(self), Type::Exception(ExcType::StopIteration)) {
@@ -426,6 +482,7 @@ impl VM<'_> {
             };
             frame.generator_activation = Some(GeneratorActivation {
                 generator,
+                return_route,
                 native,
                 default,
                 delegated,
@@ -437,6 +494,13 @@ impl VM<'_> {
                 generator = self.peek().clone_with_heap(self.heap);
                 default = None;
                 delegated = true;
+                if return_route != GeneratorReturn::Close {
+                    return_route = if native {
+                        GeneratorReturn::Native
+                    } else {
+                        GeneratorReturn::Next
+                    };
+                }
                 continue;
             }
             if throwing {
@@ -461,9 +525,24 @@ impl VM<'_> {
     pub(super) fn delegate_generator(&mut self) -> RunResult<()> {
         let delegate = self.peek();
         if !matches!(delegate.read_heap(self), Some(HeapReadOutput::Generator(_))) {
-            return Err(ExcType::not_implemented("yield from currently requires a generator delegate").into());
+            let iterable = self.pop();
+            let adapter = self.frozen_awaitable(
+                FrozenFunction::DelegateIterable,
+                vec![
+                    iterable,
+                    Value::Builtin(Builtins::Type(BuiltinType::Iterator)),
+                    Value::Builtin(Builtins::Function(BuiltinsFunctions::Next)),
+                    Value::Builtin(Builtins::Function(BuiltinsFunctions::Getattr)),
+                    Value::Builtin(Builtins::ExcType(ExcType::StopIteration)),
+                    Value::Builtin(Builtins::ExcType(ExcType::GeneratorExit)),
+                    Value::Builtin(Builtins::ExcType(ExcType::BaseException)),
+                    Value::Builtin(Builtins::ExcType(ExcType::AttributeError)),
+                ],
+                true,
+            )?;
+            self.push(adapter);
         }
-        let generator = delegate.clone_with_heap(self.heap);
+        let generator = self.peek().clone_with_heap(self.heap);
         self.current_frame
             .generator_activation
             .as_mut()
@@ -475,7 +554,18 @@ impl VM<'_> {
             .as_ref()
             .expect("generator parent")
             .native;
-        if let Err(error) = self.activate_generator_route(generator, Value::None, None, false, true, native) {
+        if let Err(error) = self.activate_generator_route(
+            generator,
+            Value::None,
+            None,
+            false,
+            true,
+            if native {
+                GeneratorReturn::Native
+            } else {
+                GeneratorReturn::Next
+            },
+        ) {
             self.current_frame
                 .generator_activation
                 .as_mut()
@@ -531,10 +621,18 @@ impl VM<'_> {
                 };
                 object.get_mut(self.heap).state = GeneratorState::Suspended { segment };
             }
-            self.push(yielded);
+            let closing = activation.return_route == GeneratorReturn::Close;
+            if closing {
+                yielded.drop_with(self);
+            } else {
+                self.push(yielded);
+            }
             // Do not use activation.drop_with: it closes a *running* activation.
             activation.generator.drop_with(self);
             activation.default.drop_with(self);
+            if closing {
+                return Err(SimpleException::new_msg(ExcType::RuntimeError, "generator ignored GeneratorExit").into());
+            }
             if !activation.delegated {
                 return Ok(());
             }
@@ -550,11 +648,28 @@ impl VM<'_> {
         let default = activation.default.take();
         let delegated = activation.delegated;
         let native = activation.native;
+        let return_route = activation.return_route;
         let caller_ip = this.current_frame.call_offset.expect("generator caller") as usize;
         activation.drop_with(this);
         this.pop_frame();
         this.instruction_ip = caller_ip;
         let (value, this) = completion.into_parts();
+        if return_route == GeneratorReturn::Close {
+            default.drop_with(this);
+            if delegated {
+                value.drop_with(this);
+                return Err(SimpleException::new_none(ExcType::GeneratorExit).into());
+            }
+            this.push(value);
+            return Ok(());
+        }
+        if let GeneratorReturn::ForIter { end } = return_route {
+            value.drop_with(this);
+            default.drop_with(this);
+            this.pop().drop_with(this);
+            this.current_frame.ip = end;
+            return Ok(());
+        }
         if delegated {
             this.complete_delegation(value);
             default.drop_with(this);
@@ -585,6 +700,7 @@ impl VM<'_> {
         let object = Value::Ref(self.heap.allocate(HeapData::Exception(Box::new(ExceptionObject {
             simple: SimpleException::new_none(ExcType::StopIteration),
             args: Some(args),
+            generator_stop_cause: None,
         }))));
         let error = self.make_exception(&object, false);
         object.drop_with(self);

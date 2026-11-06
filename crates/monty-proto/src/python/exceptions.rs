@@ -29,6 +29,7 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
         ExcType::Exception => exceptions::PyException::new_err(msg),
         ExcType::BaseException => exceptions::PyBaseException::new_err(msg),
         ExcType::SystemExit => exceptions::PySystemExit::new_err(msg),
+        ExcType::GeneratorExit => exceptions::PyGeneratorExit::new_err(msg),
         ExcType::CancelledError => {
             match py
                 .import("asyncio")
@@ -361,6 +362,9 @@ pub fn exc_to_monty_node(exc: &Bound<'_, exceptions::PyBaseException>) -> MontyN
 /// NOTE: order matters here as some exceptions are subclasses of others!
 /// In general we group exceptions by their type hierarchy to improve performance.
 fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
+    if exceptions::PyGeneratorExit::type_check(exc) {
+        return ExcType::GeneratorExit;
+    }
     if let Ok(class) = exc.py().import("asyncio").and_then(|m| m.getattr("CancelledError"))
         && exc.is_instance(&class).unwrap_or(false)
     {

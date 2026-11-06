@@ -2,8 +2,7 @@
 //!
 //! The dump codec names every field and variant, so a data-layout change made
 //! after a dump was written must still load it. Two tests pin that property:
-//! a checked-in dump written by an earlier build of the current
-//! `DUMP_VERSION`, and a synthetic old/new type pair round-tripped through the
+//! a checked-in dump written by an earlier compatible build, and a synthetic old/new type pair round-tripped through the
 //! codec itself.
 
 use std::{
@@ -20,6 +19,8 @@ use serde::{Deserialize, Serialize};
 
 /// Environment variable that rewrites the fixture instead of checking it.
 const UPDATE_FIXTURE: &str = "UPDATE_DUMP_FIXTURE";
+/// Keep genuine older bytes while additive changes remain compatible.
+const FIXTURE_VERSION: u16 = 37;
 
 /// Builds the state the fixture holds: the common heap types, live iterators,
 /// functions, classes and a cycle, ahead of a suspension on a host call whose
@@ -232,7 +233,7 @@ assert add5(2) == 7
 (result, c.value)
 ";
 
-/// A dump written by an earlier build at this `DUMP_VERSION` still loads and
+/// A dump written by an earlier supported build still loads and
 /// runs. Failing here means a data-layout change broke older dumps: add a
 /// `#[serde(alias)]` or `#[serde(default)]`, or bump `DUMP_VERSION` and
 /// regenerate with `UPDATE_DUMP_FIXTURE=1 cargo test -p monty --test dump_compat`.
@@ -244,7 +245,7 @@ fn fixture_dump_loads_and_resumes() {
 /// Header-only protocol probes: unsupported versions must fail before CBOR decoding.
 #[test]
 fn unsupported_versions_are_rejected_before_payload() {
-    assert_eq!(MIN_SUPPORTED_DUMP_VERSION, 36);
+    assert_eq!(MIN_SUPPORTED_DUMP_VERSION, 37);
     for version in 0..MIN_SUPPORTED_DUMP_VERSION {
         let mut header = b"MONTY\0".to_vec();
         header.extend_from_slice(&version.to_le_bytes());
@@ -341,6 +342,10 @@ asyncio.run(main())
 
 fn check_fixture_dump(path: &Path) {
     if env::var_os(UPDATE_FIXTURE).is_some() && path == fixture_path() {
+        assert_eq!(
+            FIXTURE_VERSION, DUMP_VERSION,
+            "never overwrite a historical fixture; select a new current fixture first"
+        );
         let mut repl = MontyRepl::new("fixture.py", ResourceTracker::default(), CompileOptions::default());
         repl.feed_run(FIXTURE_STATE, vec![], PrintWriter::Stdout).unwrap();
         let mut progress = repl.feed_start(FIXTURE_CALL, vec![], PrintWriter::Stdout).unwrap();
@@ -369,7 +374,7 @@ fn check_fixture_dump(path: &Path) {
             path.display()
         )
     });
-    let loaded = Dump::load(&bytes).expect("a fixture at the current DUMP_VERSION loads");
+    let loaded = Dump::load(&bytes).expect("a fixture within the supported version range loads");
     assert_eq!(loaded.script_name, "fixture.py");
     assert!(loaded.type_check.is_none());
     let Session::Suspended(progress) = loaded.state else {
@@ -479,12 +484,11 @@ fn persisted_key_hashes_are_stable() {
     assert_snapshot!(hashes.py_repr(), @"(-7376904247260835724, -8418895208483869890, -7578619387304540654, -6751866591645121981, -8097107109803033201, 2456456309100923238, -5014982954702616963, 2858064283329581446)");
 }
 
-/// The fixture for the current `DUMP_VERSION`; the name carries the version so
-/// a bump preserves the historical file rather than silently overwriting it.
+/// The retained compatibility anchor; additive changes do not require another binary.
 fn fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
-        .join(format!("dump_v{DUMP_VERSION}.bin"))
+        .join(format!("dump_v{FIXTURE_VERSION}.bin"))
 }
 
 /// A record as an older build wrote it.
@@ -618,13 +622,14 @@ asyncio.run(main())
 }
 
 /// These genuine producers represent upstream state and the incompatible
-/// cancellation signal immediately before the current format. Never regenerate.
+/// cancellation signal before queue accounting. Never regenerate.
 #[test]
 fn historical_snapshots_are_rejected() {
-    assert_eq!(MIN_SUPPORTED_DUMP_VERSION, 36);
+    assert_eq!(MIN_SUPPORTED_DUMP_VERSION, 37);
     for (bytes, version) in [
         (include_bytes!("fixtures/dump_v14.bin").as_slice(), 14),
         (include_bytes!("fixtures/anyio_scope_v35.bin").as_slice(), 35),
+        (include_bytes!("fixtures/dump_v36.bin").as_slice(), 36),
     ] {
         assert_eq!(&bytes[..6], b"MONTY\0");
         assert_eq!(u16::from_le_bytes([bytes[6], bytes[7]]), version);

@@ -9,7 +9,7 @@ these built-ins; `raise MyClass()` on a plain user class raises
 
 ## Implemented exception classes
 
-`BaseException`, `Exception`, `SystemExit`, `KeyboardInterrupt`,
+`BaseException`, `Exception`, `SystemExit`, `KeyboardInterrupt`, `GeneratorExit`,
 `ArithmeticError`, `OverflowError`, `ZeroDivisionError`, `LookupError`,
 `IndexError`, `KeyError`, `RuntimeError`, `NotImplementedError`,
 `RecursionError`, `AttributeError`, `FrozenInstanceError`, `NameError`,
@@ -26,7 +26,7 @@ both `OSError` and `ValueError`, matching CPython's dual parentage).
 ## Exception classes NOT implemented
 
 `Warning` and all its subclasses (`DeprecationWarning`, etc.),
-`BufferError`, `EOFError`, `FloatingPointError`, `GeneratorExit`,
+`BufferError`, `EOFError`, `FloatingPointError`,
 `ConnectionError` and subclasses (`ConnectionAbortedError`,
 `ConnectionRefusedError`, `ConnectionResetError`,
 `BrokenPipeError`), `BlockingIOError`, `ChildProcessError`,

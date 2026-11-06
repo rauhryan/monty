@@ -273,12 +273,17 @@ pub(crate) struct GuestQueue {
     pub values: VecDeque<Value>,
     pub getters: VecDeque<HeapId>,
     pub putters: VecDeque<HeapId>,
+    pub joiners: VecDeque<HeapId>,
+    pub unfinished: u64,
     pub reserved: Option<HeapId>,
 }
 
 /// An operation owns its queue and optional put value until delivery/cancellation.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct QueueOperation {
+    pub join: bool,
+    /// Once zero was observed, subsequent puts do not revoke this join wake.
+    pub join_ready: bool,
     pub queue: Option<HeapId>,
     pub put: Option<Value>,
     pub started: bool,
@@ -314,7 +319,7 @@ impl ExternalFuture {
             for value in &mut q.values {
                 value.py_dec_ref_ids(stack);
             }
-            stack.extend(q.getters.iter().chain(&q.putters).copied());
+            stack.extend(q.getters.iter().chain(&q.putters).chain(&q.joiners).copied());
         }
         if let Some(op) = &mut self.queue_op {
             if let Some(id) = op.queue {
@@ -364,7 +369,7 @@ impl ExternalFuture {
                     visit(*id);
                 }
             }
-            for id in q.getters.iter().chain(&q.putters) {
+            for id in q.getters.iter().chain(&q.putters).chain(&q.joiners) {
                 visit(*id);
             }
         }
@@ -495,6 +500,9 @@ impl<C: ContainsHeap> DropWithContext<C> for Awaiter {
 /// require a list of waiters and is left as future work.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct GatherFuture {
+    /// Collect catchable child failures as ordered result values.
+    #[serde(default)]
+    pub return_exceptions: bool,
     /// Heap ids of items to gather. Each id points to an awaitable
     /// `HeapData` entry (currently `Coroutine` or `ExternalFuture`); the
     /// kind is recovered with `heap.read(id)` at gather-await time.
@@ -570,6 +578,7 @@ impl GatherFuture {
         Self {
             items,
             state: GatherState::Pending,
+            return_exceptions: false,
         }
     }
 
