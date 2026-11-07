@@ -64,7 +64,7 @@ RULES: list[tuple[str, Category]] = [
     ('**/package.json', OTHER),
     ('**/package-lock.json', OTHER),
     ('**/tsconfig*.json', OTHER),
-    ('Cargo.lock', OTHER),
+    ('**/Cargo.lock', OTHER),
     ('uv.lock', OTHER),
     ('clippy.toml', OTHER),
     ('Makefile', OTHER),
@@ -104,6 +104,10 @@ RULES: list[tuple[str, Category]] = [
     ('limitations', DOCS),
     ('mkdocs.yml', DOCS),
     ('examples/**', DOCS),
+    # Fork verification harnesses and their retained research history.
+    ('tools/concurrency/**', TEST),
+    ('tools/coroutines/**', TEST),
+    ('playground/coroutine-baseline/**', TEST),
     # shipped code: every other crate's `src/`, `build.rs`, bindings, schemas and the type stubs compiled in
     ('crates/*/src/**', PRODUCTION),
     ('crates/*/build.rs', PRODUCTION),
