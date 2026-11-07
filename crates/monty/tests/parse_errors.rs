@@ -243,17 +243,14 @@ fn undefined_future_import_returns_syntax_error() {
 }
 
 #[test]
-fn async_with_statement_returns_not_implemented_error() {
-    // Plain `with` is supported (see `test_cases/with__all.py`); only `async with`
-    // is still rejected at parse time.
-    let result = MontyRun::new(
-        "async def f():\n    async with open('f') as g: pass\n".to_owned(),
+fn async_with_statement_compiles() {
+    MontyRun::new(
+        "async def f(manager):\n    async with manager as value: pass\n".to_owned(),
         "test.py",
         vec![],
         CompileOptions::default(),
-    );
-    let err = result.expect_err("expected parse error");
-    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    )
+    .expect("async with is supported");
 }
 
 #[test]
