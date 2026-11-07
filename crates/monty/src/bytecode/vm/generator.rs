@@ -515,6 +515,19 @@ impl VM<'_> {
         }
     }
 
+    /// Wraps a custom loop iterator once, retaining it on ordinary generator frames.
+    pub(super) fn loop_iterator(&mut self, iterator: Value) -> RunResult<Value> {
+        self.frozen_awaitable(
+            FrozenFunction::ForIterator,
+            vec![
+                iterator,
+                Value::Builtin(Builtins::Function(BuiltinsFunctions::Next)),
+                Value::Builtin(Builtins::ExcType(ExcType::StopIteration)),
+            ],
+            true,
+        )
+    }
+
     /// The delegate occupies one owning operand slot in the parent. Child
     /// activations carry only their pin and the persisted return-route flag.
     pub(super) fn delegate_generator(&mut self) -> RunResult<()> {

@@ -81,7 +81,7 @@ def preflight():
         for name, case in json.loads((frozen / 'contract.json').read_text())['cases'].items()
     }
     cases.update(replay.strict_json((ROOT / 'cases.json').read_text()))
-    replay.check(len(cases) == 23, 'unexpected case inventory')
+    replay.check(len(cases) == 25, 'unexpected case inventory')
     for name, case in cases.items():
         replay.check(
             len(case['steps']) == len(case['batches']) > 0,

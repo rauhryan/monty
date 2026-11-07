@@ -33,8 +33,10 @@ linting so these test inputs remain stable, including host-injected names.
 
 - `upstream_merge`: exception chaining across tasks, generator PEP 479 causes and annotation helpers.
 
+- `iterator_loop`: custom iterator acquisition and advancement, active host cuts, exhaustion, exceptions and cancellation.
+
 New fixtures follow the same one-time formatting and routine Ruff exclusion policy.
-The maintained replay inventory contains 22 programs; additional source fixtures support native semantic and ownership tests.
+The maintained replay inventory contains 25 programs; additional source fixtures support native semantic and ownership tests.
 
 Keep genuine serialized fixtures in the parent directory unchanged. This source
 fixture directory does not replace version rejection or compatibility tests.

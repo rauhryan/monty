@@ -46,6 +46,9 @@ pub(crate) enum FrozenFunction {
     /// Validate the result of a suspendable user `__iter__` method.
     #[serde(rename = "builtins.iter")]
     Iter,
+    /// Advance a custom iterator for a loop without repeating iterator acquisition.
+    #[serde(rename = "builtins.for_iterator")]
+    ForIterator,
     /// Store a cached call's result only after it returns successfully.
     #[serde(rename = "functools._lru_cache_miss")]
     LruCacheMiss,
@@ -118,6 +121,7 @@ impl FrozenFunction {
             Self::HostContinuation => "async def _bridge(continuation):\n    return continuation._native1()\n",
             Self::FunctoolsReduce => functools::REDUCE_SOURCE,
             Self::Iter => iter::ITER_SOURCE,
+            Self::ForIterator => iter::FOR_ITERATOR_SOURCE,
             Self::LruCacheMiss => lru_cache::CACHE_MISS_SOURCE,
             Self::NextDefault => next::NEXT_DEFAULT_SOURCE,
             Self::CollectGenerator => iter::COLLECT_GENERATOR_SOURCE,

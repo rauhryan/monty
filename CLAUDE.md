@@ -279,7 +279,8 @@ Compatible source-body changes do not require a bump; restored sessions retain t
 This pre-release fork makes no cross-version snapshot compatibility promise.
 Prefer a format/minimum-version bump over migration machinery or redundant runtime representations.
 Current-format snapshots must still restore faithfully, including independently resumed and abandoned states.
-Historical binaries test rejection and must remain unchanged; current round-trip tests generate state in memory.
+Historical rejection binaries and the frozen v40 compatibility baseline must remain unchanged.
+The current writer uses format 41 and reads v40 without conversion; current round-trip tests generate state in memory.
 Retained binary fixtures and their purposes are listed in `crates/monty/tests/fixtures/README.md`.
 Never regenerate a historical rejection fixture with the current serializer.
 

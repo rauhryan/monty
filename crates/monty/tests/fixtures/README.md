@@ -10,7 +10,7 @@ Behavioral snapshot tests create current state in memory, serialize it, and inde
 | `dump_v14.bin`        | Reject a genuine upstream snapshot below the supported minimum.                            | Upstream dataclass change, `9000dc6c`.                                          |
 | `anyio_scope_v35.bin` | Reject genuine suspended state retaining the old cancellation signal and an active shield. | AnyIO scope change, `e5077481`.                                                 |
 
-The current format and minimum supported version are both 40.
+The current format is 41; the minimum supported version is 40.
 Experimental snapshots have no cross-version compatibility guarantee.
 Historical files deliberately retain their original bytes; never regenerate them with the current serializer.
 The suite checks every older version header and representative future versions without a binary per version.

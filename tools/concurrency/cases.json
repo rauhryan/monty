@@ -648,5 +648,161 @@
       }
     ],
     "result": "ok"
+  },
+  "iterator_loop/suspension": {
+    "source": "iterator_loop/suspension.py",
+    "step": true,
+    "steps": [
+      [
+        "call",
+        "loop-iter"
+      ],
+      [
+        "call",
+        "loop-next-1"
+      ],
+      [
+        "call",
+        "loop-next-2"
+      ],
+      [
+        [],
+        [
+          "loop-iter",
+          "loop-next-1",
+          "loop-next-2"
+        ]
+      ],
+      [
+        "call",
+        "comp-iter"
+      ],
+      [
+        "call",
+        "comp-next-1"
+      ],
+      [
+        "call",
+        "comp-next-2"
+      ],
+      [
+        [],
+        [
+          "comp-iter",
+          "comp-next-1",
+          "comp-next-2"
+        ]
+      ],
+      [
+        "call",
+        "invalid-iter"
+      ],
+      [
+        [],
+        [
+          "invalid-iter"
+        ]
+      ],
+      [
+        "call",
+        "failing-next"
+      ],
+      [
+        [],
+        [
+          "failing-next"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "$ack": true
+      },
+      {
+        "$ack": true
+      },
+      {
+        "$ack": true
+      },
+      {
+        "loop-iter": "ok",
+        "loop-next-1": "ok",
+        "loop-next-2": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "$ack": true
+      },
+      {
+        "$ack": true
+      },
+      {
+        "comp-iter": "ok",
+        "comp-next-1": "ok",
+        "comp-next-2": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "invalid-iter": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "failing-next": "ok"
+      }
+    ],
+    "result": "ok"
+  },
+  "iterator_loop/cancellation": {
+    "steps": [
+      [
+        [
+          "body"
+        ],
+        [
+          "body"
+        ]
+      ],
+      [
+        [
+          "cleanup"
+        ],
+        [
+          "cleanup"
+        ]
+      ],
+      [
+        [],
+        [
+          "cleanup"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "$cancel": "FIRST"
+      },
+      {
+        "$cancel": "SECOND"
+      },
+      {
+        "cleanup": "ok"
+      }
+    ],
+    "cancelled": "FIRST",
+    "source": "iterator_loop/cancellation.py",
+    "terminal": {
+      "status": "cancelled",
+      "reason": "FIRST",
+      "value": "\"suppressed\"",
+      "error": null,
+      "interrupted_error": null,
+      "value_export_error": null
+    }
   }
 }

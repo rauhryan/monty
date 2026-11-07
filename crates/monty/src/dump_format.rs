@@ -83,11 +83,12 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 // Version 38 retains PEP 479 cause identity and nested frozen implementations.
 // Version 39 adds RaiseFrom, inline strings, module namespaces and annotation state.
 // Version 40 removes experimental migration and private cancellation/contextmanager compatibility.
-pub const DUMP_VERSION: u16 = 40;
+// Version 41 adds the frozen custom-iterator loop adapter; v40 state loads unchanged.
+pub const DUMP_VERSION: u16 = 41;
 
 /// Experimental snapshots have no cross-version compatibility guarantee.
-/// This build accepts only its current format.
-pub const MIN_SUPPORTED_DUMP_VERSION: u16 = DUMP_VERSION;
+/// This build also accepts the frozen v40 baseline without conversion.
+pub const MIN_SUPPORTED_DUMP_VERSION: u16 = 40;
 
 // The supported range must be non-empty, and must exclude zero
 const _: () = assert!(MIN_SUPPORTED_DUMP_VERSION >= 1);

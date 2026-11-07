@@ -1,4 +1,4 @@
-//! Current snapshot round trips and explicit rejection of historical formats.
+//! Current and frozen v40 snapshot round trips, plus rejection of older formats.
 
 use insta::assert_snapshot;
 use monty::{
@@ -72,7 +72,7 @@ fn current_dump_loads_and_resumes() {
 /// Header-only protocol probes: unsupported versions must fail before CBOR decoding.
 #[test]
 fn unsupported_versions_are_rejected_before_payload() {
-    assert_eq!(MIN_SUPPORTED_DUMP_VERSION, DUMP_VERSION);
+    assert_eq!((MIN_SUPPORTED_DUMP_VERSION, DUMP_VERSION), (40, 41));
     for version in 0..MIN_SUPPORTED_DUMP_VERSION {
         let mut header = b"MONTY\0".to_vec();
         header.extend_from_slice(&version.to_le_bytes());
@@ -94,6 +94,36 @@ fn unsupported_versions_are_rejected_before_payload() {
                 max_supported: DUMP_VERSION,
             }
         );
+    }
+}
+
+/// Genuine v40 state loads without migration and re-dumps with the current header.
+#[test]
+fn frozen_v40_redumps_as_current_format() {
+    for bytes in [
+        include_bytes!("fixtures/baseline_v40/snapshots/idle.bin").as_slice(),
+        include_bytes!("fixtures/baseline_v40/snapshots/handled.bin").as_slice(),
+        include_bytes!("fixtures/baseline_v40/snapshots/unwinding.bin").as_slice(),
+        include_bytes!("fixtures/baseline_v40/snapshots/internal.bin").as_slice(),
+        include_bytes!("fixtures/baseline_v40/snapshots/queue.bin").as_slice(),
+        include_bytes!("fixtures/baseline_v40/snapshots/host.bin").as_slice(),
+    ] {
+        assert_eq!(&bytes[..8], b"MONTY\0\x28\0");
+        let loaded = Dump::load(bytes).unwrap();
+        let state = match &loaded.state {
+            Session::Idle(repl) => SessionRef::Idle(repl),
+            Session::Suspended(progress) => SessionRef::Suspended(progress),
+            Session::Running(progress) => SessionRef::Running(progress),
+        };
+        let current = dump("baseline.py", None, &[], state).unwrap();
+        assert_eq!(u16::from_le_bytes([current[6], current[7]]), DUMP_VERSION);
+        for state in [loaded.state, Dump::load(&current).unwrap().state] {
+            match state {
+                Session::Idle(repl) => drop(repl),
+                Session::Suspended(progress) => drop(progress.into_repl()),
+                Session::Running(_) => unreachable!("the frozen baseline contains REPL states"),
+            }
+        }
     }
 }
 
@@ -433,7 +463,7 @@ asyncio.run(main())
 /// cancellation signal before queue accounting. Never regenerate.
 #[test]
 fn historical_snapshots_are_rejected() {
-    assert_eq!(MIN_SUPPORTED_DUMP_VERSION, DUMP_VERSION);
+    assert_eq!((MIN_SUPPORTED_DUMP_VERSION, DUMP_VERSION), (40, 41));
     for (bytes, version) in [
         (include_bytes!("fixtures/dump_v14.bin").as_slice(), 14),
         (include_bytes!("fixtures/anyio_scope_v35.bin").as_slice(), 35),

@@ -8,6 +8,9 @@ mod generators;
 #[path = "generator_runtime/composition.rs"]
 mod composition;
 
+#[path = "generator_runtime/iterator_loop.rs"]
+mod iterator_loop;
+
 #[path = "generator_runtime/structured_cleanup.rs"]
 mod structured_cleanup;
 

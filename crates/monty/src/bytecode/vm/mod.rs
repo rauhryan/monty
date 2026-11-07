@@ -1820,12 +1820,9 @@ impl<'h> VM<'h> {
                 // Iteration - route through exception handling
                 Opcode::GetIter => {
                     let value = self.pop();
-                    let iterator = value.py_iter(self).and_then(|call| call.require_synchronous(self));
+                    let iterator = value.py_iter(self);
                     value.drop_with(self);
-                    match iterator {
-                        Ok(iterator) => self.push(iterator),
-                        Err(e) => catch!(self, e),
-                    }
+                    handle_call_result!(self, iterator);
                 }
                 Opcode::ForIter => {
                     let offset = self.current_frame.fetch_i16();
@@ -1833,8 +1830,24 @@ impl<'h> VM<'h> {
                     let Value::Ref(heap_id) = *self.peek() else {
                         return Err(RunError::internal("ForIter: expected iterator ref on stack"));
                     };
-                    if matches!(self.heap.get(heap_id), HeapData::Generator(_)) {
-                        let generator = self.peek().clone_with_heap(self.heap);
+                    let generator = match self.heap.get(heap_id) {
+                        HeapData::Instance(_) => {
+                            let iterator = self.pop();
+                            let adapter = match self.loop_iterator(iterator) {
+                                Ok(adapter) => adapter,
+                                Err(error) => {
+                                    catch!(self, error);
+                                    continue;
+                                }
+                            };
+                            let generator = adapter.clone_with_heap(self.heap);
+                            self.push(adapter);
+                            Some(generator)
+                        }
+                        HeapData::Generator(_) => Some(self.peek().clone_with_heap(self.heap)),
+                        _ => None,
+                    };
+                    if let Some(generator) = generator {
                         let end = self.current_frame.ip.wrapping_add_signed(isize::from(offset));
                         try_catch!(self, self.advance_generator_loop(generator, end));
                         continue;

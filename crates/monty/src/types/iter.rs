@@ -22,6 +22,19 @@ def __monty_iter(object, get_iter, validate):
     return validate(get_iter(object))
 ";
 
+/// Advances an already acquired custom iterator through ordinary VM calls.
+/// The loop body executes outside the exhaustion handler and no close is forwarded.
+pub(crate) const FOR_ITERATOR_SOURCE: &str = r"
+def __monty_for_iterator(iterator, next_, stop_iteration):
+    while True:
+        try:
+            item = next_(iterator)
+        except stop_iteration:
+            return
+        yield item
+        item = None
+";
+
 /// Invokes the user protocol without re-entering the instance's validation frame.
 pub(crate) fn call_get_iter(args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let object = args.get_one_arg("get_iter", vm.heap)?;

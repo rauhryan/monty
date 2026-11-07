@@ -9,11 +9,12 @@ import guard
 import replay
 
 ROOT = Path(__file__).resolve().parent
-FORMAT = 40
+FORMAT = 41
+SUPPORTED_FORMATS = (40, 41)
 
 
 def census(state):
-    """Inspect the producer's serialized v40 state without adding VM hooks."""
+    """Inspect the shared v40/v41 state layout without adding VM hooks."""
     counts = {f'{place}_{role}': 0 for place in ('active', 'parked') for role in ('handled', 'unwinding', 'internal')}
     counts.update(idle='Idle' in state, draining_groups=0, empty_queues=0, active_shields=0, cancelled_scopes=0)
     counts['host_cancellations'] = []
@@ -68,14 +69,14 @@ def require_state(actual, requirements):
 
 def load_manifest(path):
     manifest = replay.strict_json(path.read_text())
-    replay.check(manifest['schema'] == 1 and manifest['format'] == FORMAT, 'unsupported baseline manifest')
+    replay.check(manifest['schema'] == 1 and manifest['format'] in SUPPORTED_FORMATS, 'unsupported baseline manifest')
     replay.check(len(manifest['snapshots']) == 6, 'incomplete baseline inventory')
     for item in manifest['snapshots'].values():
         snapshot = path.parent / item['file']
         replay.check(snapshot.parent.resolve() == (path.parent / 'snapshots').resolve(), 'snapshot outside inventory')
         replay.check(replay.digest(snapshot) == item['sha256'], 'baseline snapshot changed')
         header = snapshot.read_bytes()[:8]
-        replay.check(header == b'MONTY\0' + FORMAT.to_bytes(2, 'little'), 'wrong producer snapshot version')
+        replay.check(header == b'MONTY\0' + manifest['format'].to_bytes(2, 'little'), 'wrong producer snapshot version')
     return manifest
 
 
