@@ -1289,7 +1289,7 @@ fn v6_resume_decoder_drops_cancellation_negative_control() {
             ..Default::default()
         };
         let old = resume_futures_v6::ResumeFutures::decode(current.encode_to_vec().as_slice()).unwrap();
-        assert!(old.encode_to_vec().is_empty());
+        assert_eq!(old.encode_to_vec(), [] as [u8; 0]);
         let lost = oracle::ResumeFutures::decode(old.encode_to_vec().as_slice()).unwrap();
         assert_eq!(lost.native_cancel, None);
     }

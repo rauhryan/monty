@@ -850,7 +850,7 @@ saved = token = child = drive = Iterable = Bad = None
 None
 ",
     );
-    assert!(output.unreachable.is_empty());
+    assert_eq!(output.unreachable, [] as [String; 0]);
 }
 
 /// A reservation failure partway through a saved delegate chain rolls back all
@@ -894,7 +894,7 @@ None
             ResourceTracker::new(ResourceLimits::default().max_recursion_depth(5)),
         )
         .unwrap();
-    assert!(output.unreachable.is_empty());
+    assert_eq!(output.unreachable, [] as [String; 0]);
     assert_eq!(output.counts["token"], 1);
 }
 
@@ -1051,7 +1051,7 @@ None
             ResourceTracker::new(ResourceLimits::default().max_recursion_depth(8)),
         )
         .unwrap();
-    assert!(output.unreachable.is_empty());
+    assert_eq!(output.unreachable, [] as [String; 0]);
     assert_eq!(
         output.heap_count, 0,
         "argument chains and formatting clones released before teardown"
