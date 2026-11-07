@@ -10,11 +10,12 @@ test.each([
     throw new Error('broken')
   },
   () => false,
-  () => '7',
+  () => '8',
   () => 0,
   () => 6,
-  () => 8,
-  () => 7.5,
+  () => 7,
+  () => 9,
+  () => 8.5,
   () => NaN,
 ])('rejects malformed capability %s', (cancellationContract) => {
   expect(() => admitCancellationContract({ cancellationContract })).toThrow()
@@ -29,7 +30,7 @@ test('admission belongs to each actual instance', () => {
   admitCancellationContract({
     cancellationContract: () => {
       calls++
-      return 7
+      return 8
     },
   })
   expect(calls).toBe(1)

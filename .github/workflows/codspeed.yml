@@ -24,7 +24,10 @@ jobs:
   build-worker:
     name: Build release worker (x86_64)
     # Adding any other label must not rerun the benchmarks; `benchmarks` follows this one.
-    if: github.event.action != 'labeled' || github.event.label.name == 'Full Codspeed'
+    # Forks opt in after registering their repository with CodSpeed.
+    if: >-
+      (github.repository == 'pydantic/monty' || vars.CODSPEED_ENABLED == 'true')
+      && (github.event.action != 'labeled' || github.event.label.name == 'Full Codspeed')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -115,7 +118,8 @@ jobs:
     name: Build release worker (aarch64)
     # Only a labelled PR, and not a rerun for some other label being added to it; `walltime` follows this one.
     if: >-
-      contains(github.event.pull_request.labels.*.name, 'Full Codspeed')
+      (github.repository == 'pydantic/monty' || vars.CODSPEED_ENABLED == 'true')
+      && contains(github.event.pull_request.labels.*.name, 'Full Codspeed')
       && (github.event.action != 'labeled' || github.event.label.name == 'Full Codspeed')
     runs-on: ubuntu-24.04-arm
     steps:

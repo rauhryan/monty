@@ -170,8 +170,8 @@ A sandbox-defined class instance arrives as a read-only [`MontyClassProxy`][pyda
 [host objects](host-objects.md#sandbox-instances).
 A builtin function or a non-data type object arrives as a [`MontyStdTypeProxy`][pydantic_monty.MontyStdTypeProxy]
 naming it, never the host's own `open` or `exec`; `type` is the one builtin function that arrives as the host class.
-Not every value crosses unchanged: unsupported sandbox values become strings, and cycles and deeply nested values
-are truncated.
+Not every value crosses unchanged: unsupported sandbox values become strings, and cycles become placeholders.
+Values exceeding the export recursion limit fail with `RecursionError`.
 See [host-value limitations](limitations/host-values.md) for conversion failures, identity rules and size caps.
 
 `typing.get_type_hints(f)` in the sandbox asks a Python host for the function's type hints, which it evaluates only then.

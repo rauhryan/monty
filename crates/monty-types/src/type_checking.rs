@@ -193,11 +193,13 @@ impl Error for ModuleStubError {}
 /// Keep in sync with the runtime's `StandardLib`.
 pub const SANDBOX_MODULE_NAMES: &[&str] = &[
     "annotationlib",
+    "anyio",
     "asyncio",
     "base64",
     "binascii",
     "bisect",
     "collections",
+    "contextlib",
     "copy",
     "csv",
     "dataclasses",
@@ -215,6 +217,7 @@ pub const SANDBOX_MODULE_NAMES: &[&str] = &[
     "posixpath",
     "random",
     "re",
+    "sandbox",
     "sys",
     "time",
     "tomllib",

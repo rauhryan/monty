@@ -7,7 +7,8 @@
 
 use monty::{Dump, MIN_SUPPORTED_DUMP_VERSION, MontyRepl, ReplProgress, SessionRef, dump};
 use monty_proto::{
-    FrameReader, PROTOCOL_VERSION, WireArena, WireFunctionCall, named_values_to_proto, pb,
+    FrameReader, MIN_SUPPORTED_PROTOCOL_VERSION, PROTOCOL_VERSION, WireArena, WireFunctionCall, named_values_to_proto,
+    pb,
     worker::{Child, HandleOutcome, dispatch_frame},
     write_frame,
 };
@@ -1052,76 +1053,14 @@ fn a_committed_import_carries_into_the_next_feed() {
     insta::assert_snapshot!(expect_typing_error(event), @r#"main.py:1:8: error[invalid-argument-type] Argument to function `sqrt` is incorrect: Expected `SupportsFloat | SupportsIndex`, found `Literal["4"]`"#);
 }
 
-/// Run cancellation through framed decoding and the production worker, including
-/// a same-batch body reply that would win if tag 3 were silently dropped.
+/// Cancellation is a BaseException signal; broad ordinary handlers must not consume it.
 #[test]
 fn protocol_native_cancel_dispatch_preserves_presence() {
     for reason in [None, Some(""), Some("HOST")] {
         let mut child = Child::default();
         let call = start_external_call(
             &mut child,
-            "from __monty_host__ import host_coroutines\ndef body():\n    try:\n        return (yield f())\n    except ValueError as error:\n        return str(error)\nbody()._native1()",
-        );
-        let request = frame_request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
-            call_id: call.call_id,
-            result: Some(pb::ExtFunctionResult {
-                kind: Some(pb::ext_function_result::Kind::Future(call.call_id)),
-            }),
-            values: None,
-        }));
-        let (bytes, _) = dispatch_frame(&mut child, &request);
-        assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::ResolveFutures(_)));
-        let mut resume = resume_futures(
-            vec![future_reply(
-                call.call_id,
-                pb::ext_function_result::Kind::ReturnValue(0),
-            )],
-            MontyObject::int(42),
-        );
-        resume.native_cancel = reason.map(str::to_owned);
-        let (bytes, outcome) = dispatch_frame(
-            &mut child,
-            &frame_request(pb::parent_request::Kind::ResumeFutures(resume)),
-        );
-        assert_eq!(outcome, HandleOutcome::Continue);
-        let expected = reason.map_or_else(
-            || MontyObject::int(42),
-            |reason| {
-                MontyObject::dict([
-                    (MontyObject::string("status"), MontyObject::string("cancelled")),
-                    (MontyObject::string("reason"), MontyObject::string(reason)),
-                    (MontyObject::string("value"), MontyObject::string(reason)),
-                    (MontyObject::string("error"), MontyObject::none()),
-                ])
-            },
-        );
-        assert_eq!(expect_complete(split_turn(&bytes).1), expected);
-    }
-}
-
-#[test]
-fn protocol_old_clients_can_configure_and_complete() {
-    for version in [5, 6] {
-        let mut child = Child::default();
-        let request = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
-            protocol_version: version,
-            ..Default::default()
-        }));
-        let (bytes, outcome) = dispatch_frame(&mut child, &request);
-        assert_eq!(outcome, HandleOutcome::Continue);
-        assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Ok(_)));
-        assert_eq!(expect_complete(feed(&mut child, "40 + 2").1), MontyObject::int(42));
-    }
-}
-
-// Policy7 counterpart; the historical four-field assertion above is preserved.
-#[test]
-fn protocol_policy7_dispatch_envelope() {
-    for reason in [None, Some(""), Some("HOST")] {
-        let mut child = Child::default();
-        let call = start_external_call(
-            &mut child,
-            "from __monty_host__ import host_coroutines\ndef body():\n    try:\n        return (yield f())\n    except ValueError as error:\n        return str(error)\nbody()._native1()",
+            "from __monty_host__ import host_coroutines\nimport asyncio\ndef body():\n    try:\n        return (yield f())\n    except Exception:\n        return 'wrong handler'\n    except asyncio.CancelledError as error:\n        return str(error)\nbody()._native1()",
         );
         let request = frame_request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: call.call_id,
@@ -1159,6 +1098,38 @@ fn protocol_policy7_dispatch_envelope() {
             },
         );
         assert_eq!(expect_complete(split_turn(&bytes).1), expected);
+    }
+}
+
+#[test]
+fn protocol_supported_clients_can_configure_and_complete() {
+    for version in MIN_SUPPORTED_PROTOCOL_VERSION..=PROTOCOL_VERSION {
+        let mut child = Child::default();
+        let request = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
+            protocol_version: version,
+            ..Default::default()
+        }));
+        let (bytes, outcome) = dispatch_frame(&mut child, &request);
+        assert_eq!(outcome, HandleOutcome::Continue);
+        assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Ok(_)));
+        assert_eq!(expect_complete(feed(&mut child, "40 + 2").1), MontyObject::int(42));
+    }
+}
+
+#[test]
+fn protocol_retired_clients_are_rejected_before_execution() {
+    for version in 0..MIN_SUPPORTED_PROTOCOL_VERSION {
+        let mut child = Child::default();
+        let request = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
+            protocol_version: version,
+            ..Default::default()
+        }));
+        let (bytes, outcome) = dispatch_frame(&mut child, &request);
+        assert_eq!(outcome, HandleOutcome::Fatal);
+        assert!(matches!(
+            decode_events(&bytes).as_slice(),
+            [pb::child_event::Kind::FatalError(_)]
+        ));
     }
 }
 

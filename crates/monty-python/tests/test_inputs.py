@@ -171,18 +171,14 @@ def test_empty_inputs(monty_run: RunMonty):
     assert monty_run('1 + 1', inputs={}) == snapshot(2)
 
 
-def test_output_past_the_export_guard_degrades_to_a_repr(monty_run: RunMonty):
-    # export recurses once per nesting level under the sandbox's recursion
-    # limit; past it the rest of the value is a `<deeply nested>` string
+def test_output_past_the_export_guard_is_rejected(session: pydantic_monty.MontySession):
+    # Export is transactional: no truncated successful value crosses the boundary.
     code = """
 x = [1]
 for _ in range(2000):
     x = [x]
 x
 """
-    result = monty_run(code)
-    assert nesting(result) == 1000
-    innermost: Any = result
-    for _ in range(1000):
-        innermost = innermost[0]
-    assert innermost == snapshot('<deeply nested>')
+    with pytest.raises(MontyRuntimeError, match='RecursionError: maximum recursion depth exceeded during host export'):
+        session.feed_run(code)
+    assert session.feed_run('x = None\n40 + 2') == 42

@@ -1,0 +1,4 @@
+# Embedded Python fixtures have byte-sensitive suffixes and source hashes.
+crates/monty/tests/fixtures/**/*.py text eol=lf
+# Retained snapshots are immutable binary data on every platform.
+*.bin binary

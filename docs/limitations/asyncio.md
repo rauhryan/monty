@@ -386,7 +386,7 @@ in an ordinary coroutine to use it with `gather`.
 
 Values and waiters are FIFO. Both immediate and blocked operations cooperate
 with the scheduler. Cancellation before delivery revokes the reservation,
-leaving a get's value in the queue and a put's value outside it. There is no
+leaving the retrieved value in the queue and the pending put value outside it. There is no
 `join`, `task_done`, `shutdown`, timeout or nonblocking API. A program whose
 remaining tasks all wait on queues can deadlock; there is no timer or implicit
 producer. Checkpoints are available at external suspension boundaries, not
