@@ -25,6 +25,7 @@ use crate::{
     heap_data::CellValue,
     intern::{FunctionId, StaticStrings, StringId},
     modules::dataclasses,
+    namespace::NamespaceId,
     os_dispatch::{PendingEffect, release_pending_effect},
     py_value::PyValue,
     resource_checks::check_estimated_size,
@@ -882,7 +883,7 @@ impl<'h> VM<'h> {
         };
         let (mut args, vm) = guard.into_parts();
         let func = interns.get_function(id);
-        assert!(func.free_var_slots.is_empty());
+        assert_eq!(func.free_var_slots, [] as [NamespaceId; 0]);
         vm.install_closure_cells(func, &[], &mut args);
         let data = if generator {
             HeapData::Generator(Box::new(super::Generator::new(id, args, None)))
@@ -916,7 +917,7 @@ impl<'h> VM<'h> {
         let (args, vm) = args_guard.into_parts();
         let func = interns.get_function(function_id);
         assert_eq!(func.signature.exact_positional_count(), Some(N));
-        assert!(func.free_var_slots.is_empty());
+        assert_eq!(func.free_var_slots, [] as [NamespaceId; 0]);
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("frozen function namespace exceeds u16");
         assert!(namespace_size >= N, "frozen function has too few local slots");
