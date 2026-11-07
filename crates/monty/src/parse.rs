@@ -412,7 +412,7 @@ pub struct Parser<'a, 'i> {
     /// Starts at MAX_NESTING_DEPTH and decrements on each nested level.
     /// When it reaches zero, we return a "Source is too deeply nested" syntax error.
     depth_remaining: u16,
-    /// None outside a supported synchronous function; nested bodies restore it.
+    /// None outside a supported function body; nested bodies restore it.
     generator_scope: Option<bool>,
     /// Explicit compiler dialect, separate from asyncio.
     host_coroutines: bool,
@@ -1197,7 +1197,7 @@ impl<'a, 'i> Parser<'a, 'i> {
         self.async_body = function.is_async;
         self.host_async_body = function.is_async && self.host_coroutines;
         if function.is_async {
-            self.generator_scope = if self.host_async_body { Some(true) } else { None };
+            self.generator_scope = Some(self.host_async_body);
         }
         let body = self.parse_statements(function.body)?;
         let is_generator = self.generator_scope.unwrap_or(false);
@@ -2067,11 +2067,8 @@ impl<'a, 'i> Parser<'a, 'i> {
             }
             AstExpr::YieldFrom(y) => {
                 let position = self.convert_range(y.range);
-                if self.host_async_body {
-                    return Err(ParseError::syntax(
-                        "async generators are unsupported in the host dialect",
-                        position,
-                    ));
+                if self.async_body {
+                    return Err(ParseError::syntax("yield from inside async function", position));
                 }
                 let Some(seen) = &mut self.generator_scope else {
                     return Err(ParseError::syntax(

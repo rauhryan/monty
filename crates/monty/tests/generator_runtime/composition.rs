@@ -119,3 +119,10 @@ fn contextmanager_cause_snapshot_ownership() {
         "../fixtures/concurrency/contextmanager_cause/suspension.py"
     ));
 }
+
+/// Closing preserves exception identity and releases resources through suspended exit calls.
+#[test]
+fn closing_semantics_and_ownership() {
+    checked_run(include_str!("../../test_cases/contextlib__closing.py"));
+    check_public_fixture_snapshots(include_str!("../fixtures/concurrency/contextlib_closing/suspension.py"));
+}

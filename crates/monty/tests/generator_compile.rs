@@ -23,7 +23,27 @@ fn yield_does_not_escape_its_lexical_function_scope() {
         "yield 1",
         "def outer():\n    class C:\n        x = (yield 1)",
         "def outer():\n    f = lambda: (yield 1)",
-        "async def outer():\n    yield 1",
+    ] {
+        let error = MontyRun::new(source.to_owned(), "generator.py", vec![], CompileOptions::default()).unwrap_err();
+        assert_eq!(error.exc_type(), ExcType::SyntaxError);
+    }
+}
+
+/// Async manager bodies share the generator continuation but cannot delegate with yield from.
+#[test]
+fn native_async_generator_boundaries() {
+    MontyRun::new(
+        "async def manager():\n    await enter()\n    yield 1\n    await leave()".to_owned(),
+        "generator.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    for source in [
+        "async def manager():\n    yield from values()",
+        "async def outer():\n    class C:\n        x = (yield 1)",
+        "async def outer():\n    f = lambda: (yield 1)",
+        "async def outer():\n    return [(yield 1) for x in [1]]",
     ] {
         let error = MontyRun::new(source.to_owned(), "generator.py", vec![], CompileOptions::default()).unwrap_err();
         assert_eq!(error.exc_type(), ExcType::SyntaxError);

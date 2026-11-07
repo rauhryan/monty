@@ -1352,6 +1352,12 @@ pub enum StaticStrings {
     Contextlib,
     /// Generator context manager decorator.
     Contextmanager,
+    /// Async generator context manager decorator.
+    Asynccontextmanager,
+    /// Resource-closing context manager.
+    Closing,
+    /// Resource accepted by contextlib.closing.
+    Thing,
     /// `math.gamma()` function.
     Gamma,
     /// `random.gammavariate()` function.

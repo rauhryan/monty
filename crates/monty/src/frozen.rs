@@ -64,6 +64,12 @@ pub(crate) enum FrozenFunction {
     /// Factory for synchronous generator context managers.
     #[serde(rename = "contextlib.contextmanager")]
     Contextmanager,
+    /// Resource-closing context manager factory.
+    #[serde(rename = "contextlib.closing")]
+    Closing,
+    /// Factory for async context managers using generator continuations.
+    #[serde(rename = "contextlib.asynccontextmanager")]
+    Asynccontextmanager,
     /// Evaluate annotations for `annotationlib.get_annotations` and `typing.get_type_hints`.
     #[serde(rename = "annotationlib.get_annotations")]
     GetAnnotations,
@@ -127,6 +133,8 @@ impl FrozenFunction {
             Self::CollectGenerator => iter::COLLECT_GENERATOR_SOURCE,
             Self::DelegateIterable => iter::DELEGATE_ITERABLE_SOURCE,
             Self::Contextmanager => contextlib::CONTEXTMANAGER_SOURCE,
+            Self::Closing => contextlib::CLOSING_SOURCE,
+            Self::Asynccontextmanager => contextlib::ASYNCCONTEXTMANAGER_SOURCE,
             Self::GetAnnotations => typing::GET_ANNOTATIONS_SOURCE,
             Self::ForwardRefEvaluate => forward_ref::EVALUATE_SOURCE,
             Self::ClassAnnotations => annotations::CLASS_ANNOTATIONS_SOURCE,

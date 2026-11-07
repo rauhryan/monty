@@ -3,6 +3,7 @@
 import argparse
 import json
 import shutil
+import sys
 from pathlib import Path
 
 import baseline
@@ -37,6 +38,8 @@ def sources():
     paths.extend(
         [
             REPO / 'crates/monty/tests/support/concurrency_transport.rs',
+            REPO / 'crates/monty/tests/asynccontextmanager_contract.rs',
+            REPO / 'crates/monty/tests/generator_runtime/support.rs',
             REPO / 'crates/monty-js/scripts/build-component.mjs',
             REPO / 'crates/monty-js/package.json',
             REPO / 'crates/monty-js/package-lock.json',
@@ -70,7 +73,7 @@ def authenticate(path):
     return association
 
 
-def preflight():
+def preflight(suite='regression'):
     """Check the frozen public-async oracle and pinned, formatted fixture sources."""
     frozen = FIXTURES / 'public_async'
     for name, expected in json.loads((frozen / 'contract.sha256.json').read_text()).items():
@@ -81,7 +84,21 @@ def preflight():
         for name, case in json.loads((frozen / 'contract.json').read_text())['cases'].items()
     }
     cases.update(replay.strict_json((ROOT / 'cases.json').read_text()))
-    replay.check(len(cases) == 25, 'unexpected case inventory')
+    replay.check(len(cases) == 27, 'unexpected case inventory')
+    if suite == 'asynccontextmanager':
+        cases = replay.strict_json((ROOT / 'asynccontextmanager.json').read_text())
+        replay.check(
+            set(cases)
+            == {'lifecycle', 'exceptions', 'propagation', 'protocol', 'nesting', 'entry_failure', 'host_cancel'},
+            'asynccontextmanager case inventory changed',
+        )
+        for name, case in cases.items():
+            replay.check((case['oracle_labels'] is None) == (name == 'host_cancel'), 'missing CPython oracle: ' + name)
+            labels = case['oracle_labels']
+            if labels is not None:
+                replay.check(len(set(labels)) == len(labels), 'aliased oracle call: ' + name)
+    elif suite != 'regression':
+        raise ValueError('unknown suite: ' + suite)
     for name, case in cases.items():
         replay.check(
             len(case['steps']) == len(case['batches']) > 0,
@@ -162,14 +179,59 @@ def verify(association, output, cases):
         raise RuntimeError('verification failed; see report.json')
 
 
+def oracle(cases, output):
+    """Run parity cases through the CPython adapter, retaining commands and failures."""
+    evidence = []
+    try:
+        for case in cases.values():
+            if case['oracle_labels'] is None:
+                continue
+            actual = replay.invoke([sys.executable, str(ROOT / 'oracle.py')], [FIXTURES / case['source']], evidence)
+            replay.check(
+                replay.equal(actual, {'result': case['result'], 'labels': case['oracle_labels']}),
+                'CPython oracle mismatch: ' + case['source'],
+            )
+    finally:
+        (output / 'oracle.json').write_text(json.dumps(evidence, indent=2) + '\n')
+
+
+def ownership(output):
+    """Run the focused native contract with ownership instrumentation enabled."""
+    guard.execute(
+        [
+            'cargo',
+            'test',
+            '--locked',
+            '-p',
+            'monty',
+            '--features',
+            'memory-model-checks,ref-count-return,cancellation-test-hooks',
+            '--test',
+            'asynccontextmanager_contract',
+        ],
+        output / 'ownership.json',
+    )
+    replay.check(
+        'test result: ok. 8 passed; 0 failed; 0 ignored;' in (output / 'ownership.log').read_text(),
+        'ownership gate did not run all eight tests',
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('sources', 'build', 'verify', 'run', 'baseline', 'verify-baseline'))
+    parser.add_argument(
+        'action', choices=('sources', 'build', 'verify', 'run', 'baseline', 'verify-baseline', 'oracle', 'ownership')
+    )
+    parser.add_argument('--suite', choices=('regression', 'asynccontextmanager'), default='regression')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--association', type=Path)
     parser.add_argument('--manifest', type=Path)
     args = parser.parse_args()
-    cases = preflight()
+    if args.action in ('oracle', 'ownership') and args.suite != 'asynccontextmanager':
+        parser.error('oracle and ownership require --suite asynccontextmanager')
+    if args.action in ('baseline', 'verify-baseline') and args.suite != 'regression':
+        parser.error('baseline actions use the regression suite')
+    cases = preflight(args.suite)
     if args.action == 'sources':
         print(f'Source preflight passed: {len(sources())} inputs; no build artifacts required')
         return
@@ -181,7 +243,14 @@ def main():
         parser.error('--manifest is required for verify-baseline')
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
+    if args.suite == 'asynccontextmanager' and args.action in ('oracle', 'run', 'verify'):
+        oracle(cases, output)
+    if args.action == 'oracle':
+        print('ORACLE PASS (VM checks not run)', output)
+        return
     with guard.session():
+        if args.suite == 'asynccontextmanager' and args.action in ('ownership', 'run', 'verify'):
+            ownership(output)
         association = args.association
         if args.action in ('build', 'run', 'baseline'):
             association = build(output)
@@ -195,7 +264,7 @@ def main():
                 manifest = baseline.capture(output, association, commands['native'], FIXTURES)
             baseline.verify(manifest, output, commands)
             authenticate(association)
-    print('PASS', output)
+    print('OWNERSHIP PASS (replay not run)' if args.action == 'ownership' else 'PASS', output)
 
 
 if __name__ == '__main__':
