@@ -171,6 +171,7 @@ _collections_abc: 3.3-
 _io: 3.0-  # not importable at runtime, only for type checking
 _typeshed: 3.0-  # not present at runtime, only for type checking
 abc: 3.0-  # not importable at runtime, only for type checking
+annotationlib: 3.14-  # narrowed to Monty's surface by custom/annotationlib.pyi
 asyncio: 3.4-
 base64: 3.0-
 binascii: 3.0-
@@ -182,6 +183,7 @@ csv: 3.0-
 dataclasses: 3.7-
 datetime: 3.0-
 decimal: 3.0-
+fnmatch: 3.0-
 functools: 3.0-
 genericpath: 3.0-  # not importable at runtime, only for type checking (posixpath re-exports from it)
 hashlib: 3.0-

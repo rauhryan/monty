@@ -4,6 +4,8 @@
 //! bytecode instructions, a constant pool, source location information for tracebacks,
 //! and an exception handler table.
 
+use std::ops::Not;
+
 use crate::{intern::StringId, parse::CodeRange, value::Value};
 
 /// Compiled bytecode for a function or module.
@@ -42,6 +44,27 @@ pub struct Code {
     /// messages when accessing undefined local variables (e.g., "name 'x' is not defined").
     #[serde(rename = "N")]
     local_names: Vec<StringId>,
+
+    /// Compiler-owned cleanup ranges. Only opt-in native cancellation consults these.
+    #[serde(rename = "P")]
+    pub(crate) native_cleanup: Vec<(u32, u32)>,
+
+    /// Authored cleanup entry points, distinct from cancellation masking ranges.
+    #[serde(rename = "U")]
+    pub(crate) native_cleanup_entries: Vec<u32>,
+
+    /// Nop continuation boundaries after cleanup and non-local unwind.
+    #[serde(rename = "Q")]
+    pub(crate) native_cancel_points: Vec<u32>,
+
+    /// In-progress matching ranges and the frame-relative active exception index.
+    #[serde(rename = "S")]
+    pub(crate) native_matching: Vec<(u32, u32, u16)>,
+
+    /// Whether the source ran under `from __future__ import annotations`: its
+    /// definitions store PEP 563 strings, and `exec()` here inherits the flag.
+    #[serde(rename = "V", default, skip_serializing_if = "Not::not")]
+    future_annotations: bool,
 }
 
 impl Code {
@@ -68,7 +91,41 @@ impl Code {
             location_table,
             exception_table,
             local_names,
+            future_annotations: false,
+            native_cleanup: Vec::new(),
+            native_cleanup_entries: Vec::new(),
+            native_cancel_points: Vec::new(),
+            native_matching: Vec::new(),
         }
+    }
+
+    /// Whether a suspended instruction belongs to a lexical cleanup body.
+    pub(crate) fn native_cleanup_at(&self, ip: usize) -> bool {
+        self.native_cleanup
+            .iter()
+            .any(|&(start, end)| (start as usize..end as usize).contains(&ip))
+    }
+
+    /// Resolve the existing exception owner; metadata never owns heap values.
+    pub(crate) fn native_matching_at(&self, ip: usize) -> Option<usize> {
+        self.native_matching.iter().find_map(|&(start, end, depth)| {
+            (start as usize..end as usize)
+                .contains(&ip)
+                .then_some(usize::from(depth))
+        })
+    }
+
+    /// Marks the code as compiled under `from __future__ import annotations`.
+    #[must_use]
+    pub(crate) fn with_future_annotations(mut self, future_annotations: bool) -> Self {
+        self.future_annotations = future_annotations;
+        self
+    }
+
+    /// Whether the code was compiled under `from __future__ import annotations`.
+    #[must_use]
+    pub(crate) fn future_annotations(&self) -> bool {
+        self.future_annotations
     }
 
     /// Returns the raw bytecode bytes.
@@ -117,10 +174,17 @@ impl Code {
     /// the given offset. Returns the first (innermost) matching handler, since
     /// entries are ordered innermost-first for nested try blocks.
     ///
-    /// Returns `None` if no handler covers this offset.
+    /// Pending native cancellation can skip prospective except dispatch outside
+    /// cleanup, preserving the escaping error without executing matching code.
+    /// Returns `None` if no eligible handler covers this offset.
     #[must_use]
-    pub fn find_exception_handler(&self, offset: u32) -> Option<&ExceptionEntry> {
-        self.exception_table.iter().find(|entry| entry.contains(offset))
+    pub fn find_exception_handler(&self, offset: u32, skip_unprotected_except: bool) -> Option<&ExceptionEntry> {
+        self.exception_table.iter().find(|entry| {
+            entry.contains(offset)
+                && !(skip_unprotected_except
+                    && entry.kind == HandlerKind::Except
+                    && !self.native_cleanup_at(entry.handler as usize))
+        })
     }
 }
 
@@ -133,6 +197,11 @@ impl Clone for Code {
             location_table: self.location_table.clone(),
             exception_table: self.exception_table.clone(),
             local_names: self.local_names.clone(),
+            native_cleanup: self.native_cleanup.clone(),
+            native_cleanup_entries: self.native_cleanup_entries.clone(),
+            native_cancel_points: self.native_cancel_points.clone(),
+            native_matching: self.native_matching.clone(),
+            future_annotations: self.future_annotations,
         }
     }
 }
@@ -192,8 +261,10 @@ impl LocationEntry {
 /// every level an exception propagates through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum HandlerKind {
-    /// `except` dispatch and `with`, which read the value off the stack.
+    /// `with` cleanup (and legacy except dispatch), which reads the value.
     Consuming,
+    /// Prospective except matching and body, which may execute arbitrary code.
+    Except,
     /// Only re-raises: the VM skips the push, the compiler the matching `Pop`.
     Cleanup,
 }
@@ -275,13 +346,18 @@ impl ExceptionEntry {
     /// Whether the VM must push the exception value before entering the handler.
     #[must_use]
     pub fn pushes_exception(&self) -> bool {
-        matches!(self.kind, HandlerKind::Consuming)
+        matches!(self.kind, HandlerKind::Consuming | HandlerKind::Except)
     }
 
     /// Returns the handler bytecode offset.
     #[must_use]
     pub fn handler(&self) -> u32 {
         self.handler
+    }
+
+    /// A prospective user handler, as opposed to required unwind bookkeeping.
+    pub(crate) fn is_except(&self) -> bool {
+        self.kind == HandlerKind::Except
     }
 
     /// Returns the stack depth to unwind to.

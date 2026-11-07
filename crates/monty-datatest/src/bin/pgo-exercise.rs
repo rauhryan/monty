@@ -19,7 +19,7 @@ const TYPE_CHECK_HANGS: &[&str] = &["functools__partial.py", "refcount__partial_
 /// Kills a worker whose turn hangs. An instrumented worker only writes its
 /// profile at exit, so a kill discards everything it gathered: this exists to
 /// fail the build loudly, not to skip cases silently.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const REQUEST_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Runs Monty's test-case corpus through subprocess pool sessions.
 #[tokio::main]

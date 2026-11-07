@@ -1,159 +1,16 @@
-//! Dump compatibility across builds.
-//!
-//! The dump codec names every field and variant, so a data-layout change made
-//! after a dump was written must still load it. Two tests pin that property:
-//! a checked-in dump written by an earlier build of the current
-//! `DUMP_VERSION`, and a synthetic old/new type pair round-tripped through the
-//! codec itself.
-
-use std::{env, fs, path::PathBuf};
+//! Current and frozen v40 snapshot round trips, plus rejection of older formats.
 
 use insta::assert_snapshot;
-use monty::{DUMP_VERSION, Dump, MontyRepl, ReplProgress, Session, SessionRef, dump};
-use monty_types::{CompileOptions, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
+use monty::{
+    DUMP_VERSION, Dump, DumpError, MIN_SUPPORTED_DUMP_VERSION, MontyRepl, ReplProgress, Session, SessionRef, dump,
+};
+use monty_types::{CompileOptions, ExecutionClock, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
 use serde::{Deserialize, Serialize};
-
-/// Environment variable that rewrites the fixture instead of checking it.
-const UPDATE_FIXTURE: &str = "UPDATE_DUMP_FIXTURE";
 
 /// Builds the state the fixture holds: the common heap types, live iterators,
 /// functions, classes and a cycle, ahead of a suspension on a host call whose
 /// arguments carry heap values.
-const FIXTURE_STATE: &str = r"
-import collections
-import dataclasses
-import datetime
-import functools
-import itertools
-import pathlib
-import random
-import re
-
-big = 2**100
-neg = -7
-f = 3.5
-s = 'héllo'
-b = b'\x00\x01bytes'
-xs = [1, 2.5, 'three', None, True]
-t = (1, 'two')
-d = {'a': 1, 'b': [2, 3], 3: 'int key'}
-st = {1, 2, 3}
-fs = frozenset({'x', 'y'})
-dq = collections.deque([1, 2, 3], maxlen=5)
-Point = collections.namedtuple('Point', ['x', 'y'])
-p = Point(1, 2)
-
-
-@dataclasses.dataclass
-class Item:
-    name: str
-    qty: int = 0
-
-
-item = Item('widget', 3)
-
-
-class Counter:
-    total = 0
-
-    def __init__(self, start):
-        self.value = start
-
-    def bump(self):
-        self.value += 1
-        return self.value
-
-
-c = Counter(10)
-c.bump()
-
-
-def make_adder(n):
-    def add(x):
-        return x + n
-
-    return add
-
-
-add5 = make_adder(5)
-
-
-it = iter([1, 2])
-next(it)
-
-try:
-    raise ValueError('boom')
-except ValueError as exc:
-    err = exc
-
-dt = datetime.datetime(2024, 1, 2, 3, 4, 5, 678901)
-dlt = datetime.timedelta(days=1, seconds=2)
-pat = re.compile(r'(\d+)-(\w+)')
-m = pat.match('12-ab')
-part = functools.partial(add5, 1)
-cycle = []
-cycle.append(cycle)
-
-day = datetime.date(2024, 5, 6)
-tz = datetime.timezone(datetime.timedelta(hours=2), 'X')
-tm = datetime.time(1, 2, 3)
-raw = b'\x07\x08' + b'\x09'
-rg = range(2, 10, 3)
-sl = slice(1, 5, 2)
-bound = c.bump
-kv, iv, vv = d.keys(), d.items(), d.values()
-rnd = random.Random(42)
-rnd.random()
-dq_it = iter(dq)
-next(dq_it)
-t_it = iter(t)
-next(t_it)
-b_it = iter(raw)
-next(b_it)
-di_it = iter(d.items())
-next(di_it)
-s_it = iter(st)
-next(s_it)
-call_it = iter(lambda: 7, 0)
-joined = '-'.join(['x', 'y'])
-str_it = iter('abc')
-next(str_it)
-range_it = iter(range(3))
-next(range_it)
-dk_it = iter(d)
-next(dk_it)
-dv_it = iter(d.values())
-next(dv_it)
-counter = itertools.count(5)
-next(counter)
-alias = list[int]
-opt = int | None
-where = pathlib.Path('/data') / 'file.txt'
-
-
-def with_default(x, y=[1]):
-    return x + len(y)
-
-
-def exec_host(xs, d, b):
-    g = {'host_call': host_call, 'xs': xs, 'd': d, 'b': b}
-    exec('out = host_call(xs, d, b)', g)
-    return g['out']
-
-
-pending_log = []
-
-
-class Pending:
-    def __init__(self, xs, d, b):
-        try:
-            raise KeyError('pending')
-        except KeyError:
-            try:
-                self.result = exec_host(xs, d, b)
-            finally:
-                pending_log.append('finally')
-";
+const FIXTURE_STATE: &str = include_str!("fixtures/concurrency/baseline/idle_state.py");
 
 /// The host call the fixture is suspended on, from inside an `exec()` frame with a
 /// globals dict, a `finally` block, an `except` handler and an `__init__`.
@@ -176,6 +33,11 @@ assert str(err) == 'boom' and isinstance(err, ValueError)
 assert dt.microsecond == 678901 and dlt.days == 1
 assert m.groups() == ('12', 'ab') and pat.sub('X', '1-a 2-b') == 'X X'
 assert cycle[0] is cycle
+assert next(new_generator) is cycle
+assert new_generator.send(cycle) is cycle
+assert dormant_generator.send(cycle) is cycle
+assert next(new_generator, 'done') == 'done'
+assert next(dormant_generator, 'done') == 'done'
 assert day == datetime.date(2024, 5, 6) and tm == datetime.time(1, 2, 3)
 assert tz.utcoffset(None) == datetime.timedelta(hours=2) and tz.tzname(None) == 'X'
 assert raw == b'\x07\x08\x09' and list(rg) == [2, 5, 8]
@@ -198,46 +60,172 @@ assert add5(2) == 7
 (result, c.value)
 ";
 
-/// A dump written by an earlier build at this `DUMP_VERSION` still loads and
-/// runs. Failing here means a data-layout change broke older dumps: add a
-/// `#[serde(alias)]` or `#[serde(default)]`, or bump `DUMP_VERSION` and
-/// regenerate with `UPDATE_DUMP_FIXTURE=1 cargo test -p monty --test dump_compat`.
+/// Current snapshots preserve the common heap types and suspended frames.
 #[test]
-fn fixture_dump_loads_and_resumes() {
-    let path = fixture_path();
-    if env::var_os(UPDATE_FIXTURE).is_some() {
-        let mut repl = MontyRepl::new("fixture.py", ResourceTracker::default(), CompileOptions::default());
-        repl.feed_run(FIXTURE_STATE, vec![], PrintWriter::Stdout).unwrap();
-        let mut progress = repl.feed_start(FIXTURE_CALL, vec![], PrintWriter::Stdout).unwrap();
-        // `host_call` is looked up from inside `exec_host`, where it is not yet defined
+fn current_dump_loads_and_resumes() {
+    let bytes = current_fixture_dump();
+    for _ in 0..2 {
+        check_fixture_dump(&bytes);
+    }
+}
+
+/// Header-only protocol probes: unsupported versions must fail before CBOR decoding.
+#[test]
+fn unsupported_versions_are_rejected_before_payload() {
+    assert_eq!((MIN_SUPPORTED_DUMP_VERSION, DUMP_VERSION), (40, 41));
+    for version in 0..MIN_SUPPORTED_DUMP_VERSION {
+        let mut header = b"MONTY\0".to_vec();
+        header.extend_from_slice(&version.to_le_bytes());
+        assert_eq!(
+            Dump::load(&header).unwrap_err(),
+            DumpError::VersionTooOld {
+                found: version,
+                min_supported: MIN_SUPPORTED_DUMP_VERSION,
+            }
+        );
+    }
+    for version in [DUMP_VERSION + 1, u16::MAX] {
+        let mut header = b"MONTY\0".to_vec();
+        header.extend_from_slice(&version.to_le_bytes());
+        assert_eq!(
+            Dump::load(&header).unwrap_err(),
+            DumpError::VersionTooNew {
+                found: version,
+                max_supported: DUMP_VERSION,
+            }
+        );
+    }
+}
+
+/// Genuine v40 state loads without migration and re-dumps with the current header.
+#[test]
+fn frozen_v40_redumps_as_current_format() {
+    for bytes in [
+        include_bytes!("fixtures/baseline_v40/snapshots/idle.bin").as_slice(),
+        include_bytes!("fixtures/baseline_v40/snapshots/handled.bin").as_slice(),
+        include_bytes!("fixtures/baseline_v40/snapshots/unwinding.bin").as_slice(),
+        include_bytes!("fixtures/baseline_v40/snapshots/internal.bin").as_slice(),
+        include_bytes!("fixtures/baseline_v40/snapshots/queue.bin").as_slice(),
+        include_bytes!("fixtures/baseline_v40/snapshots/host.bin").as_slice(),
+    ] {
+        assert_eq!(&bytes[..8], b"MONTY\0\x28\0");
+        let loaded = Dump::load(bytes).unwrap();
+        let state = match &loaded.state {
+            Session::Idle(repl) => SessionRef::Idle(repl),
+            Session::Suspended(progress) => SessionRef::Suspended(progress),
+            Session::Running(progress) => SessionRef::Running(progress),
+        };
+        let current = dump("baseline.py", None, &[], state).unwrap();
+        assert_eq!(u16::from_le_bytes([current[6], current[7]]), DUMP_VERSION);
+        for state in [loaded.state, Dump::load(&current).unwrap().state] {
+            match state {
+                Session::Idle(repl) => drop(repl),
+                Session::Suspended(progress) => drop(progress.into_repl()),
+                Session::Running(_) => unreachable!("the frozen baseline contains REPL states"),
+            }
+        }
+    }
+}
+
+/// Identity-only state and retained named helpers survive independent restores.
+#[test]
+fn anyio_group_identity_roundtrips() {
+    for named in [false, true] {
+        let binding = if named {
+            "method = group.start_soon"
+        } else {
+            "create_task_group = None"
+        };
+        let invocation = if named {
+            "method(child, 42)"
+        } else {
+            "group.start_soon(child, 42)"
+        };
+        let preflight = if named {
+            "assert method(child, 0) is None"
+        } else {
+            "pass"
+        };
+        let expected = if named { "[0, 42]" } else { "[42]" };
+        let source = format!(
+            r"
+import asyncio
+from anyio import create_task_group
+group = create_task_group()
+{binding}
+results = []
+async def child(value):
+    results.append(value)
+async def main():
+    async with group:
+        {preflight}
+        assert host_call() == 41
+        try:
+            group.create_task
+            assert False
+        except AttributeError:
+            pass
+        assert {invocation} is None
+    assert results == {expected}
+    return 42
+asyncio.run(main())
+"
+        );
+        let repl = MontyRepl::new("anyio.py", ResourceTracker::default(), CompileOptions::default());
+        let mut progress = repl.feed_start(&source, vec![], PrintWriter::Stdout).unwrap();
         while let ReplProgress::NameLookup(lookup) = progress {
             let host = MontyObject::function(lookup.name.clone(), None);
             progress = lookup
                 .resume(NameLookupResult::Value(host), PrintWriter::Stdout)
                 .unwrap();
         }
-        let ReplProgress::FunctionCall(call) = &progress else {
-            panic!("the fixture must suspend on host_call, got {progress:?}");
-        };
-        assert_eq!(call.function_name, "host_call");
-        let bytes = dump("fixture.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, bytes).unwrap();
-        eprintln!("updated {}", path.display());
-        return;
+        assert!(matches!(&progress, ReplProgress::FunctionCall(call) if call.function_name == "host_call"));
+        let bytes = dump("anyio.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+        drop(progress.into_function_call().unwrap().into_repl());
+        let frozen_name = b"anyio.TaskGroup.start_soon";
+        assert_eq!(bytes.windows(frozen_name.len()).any(|part| part == frozen_name), named);
+        for _ in 0..2 {
+            let Session::Suspended(progress) = Dump::load(&bytes).unwrap().state else {
+                panic!("expected host_call suspension");
+            };
+            let call = progress.into_function_call().unwrap();
+            assert_eq!(call.function_name, "host_call");
+            let progress = call.resume(MontyObject::int(41), PrintWriter::Stdout).unwrap();
+            let (_, value) = progress.into_complete().unwrap();
+            assert_eq!(value, MontyObject::int(42));
+        }
     }
-    let bytes = fs::read(&path).unwrap_or_else(|err| {
-        panic!(
-            "failed to read {}: {err}; regenerate with {UPDATE_FIXTURE}=1 cargo test -p monty --test dump_compat",
-            path.display()
-        )
-    });
-    let loaded = Dump::load(&bytes).expect("a fixture at the current DUMP_VERSION loads");
+}
+
+fn current_fixture_dump() -> Vec<u8> {
+    let mut repl = MontyRepl::new("fixture.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(FIXTURE_STATE, vec![], PrintWriter::Stdout).unwrap();
+    let mut progress = repl.feed_start(FIXTURE_CALL, vec![], PrintWriter::Stdout).unwrap();
+    // `host_call` is looked up from inside `exec_host`, where it is not yet defined
+    while let ReplProgress::NameLookup(lookup) = progress {
+        let host = MontyObject::function(lookup.name.clone(), None);
+        progress = lookup
+            .resume(NameLookupResult::Value(host), PrintWriter::Stdout)
+            .unwrap();
+    }
+    let ReplProgress::FunctionCall(call) = &progress else {
+        panic!("the fixture must suspend on host_call, got {progress:?}");
+    };
+    assert_eq!(call.function_name, "host_call");
+    let bytes = dump("fixture.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+    // Snapshots own manual heap references; abandon them contextually.
+    drop(progress.into_function_call().unwrap().into_repl());
+    bytes
+}
+
+fn check_fixture_dump(bytes: &[u8]) {
+    let loaded = Dump::load(bytes).expect("the current snapshot loads");
     assert_eq!(loaded.script_name, "fixture.py");
     assert!(loaded.type_check.is_none());
     let Session::Suspended(progress) = loaded.state else {
         panic!("fixture was dumped suspended on a host call");
     };
+    assert_eq!(progress.tracker().execution_clock(), ExecutionClock::Wall);
     let call = progress.into_function_call().expect("suspended on host_call");
     assert_eq!(call.function_name, "host_call");
     // the call arguments are a value graph of their own inside the dump
@@ -266,207 +254,15 @@ fn fixture_dump_loads_and_resumes() {
     let (mut repl, value) = progress.into_complete().expect("host_call resumed to completion");
     assert_eq!(value, MontyObject::int(42));
     repl.feed_run("result = 42", vec![], PrintWriter::Stdout).unwrap();
+    repl.feed_run(
+        "assert owned_completion.value is cycle and cycle[1] is owned_completion\nassert owned_completion.args is owned_completion.args\nassert delegated_generator.send(cycle) is cycle\ntry:\n    next(delegated_generator)\n    assert False\nexcept StopIteration as done:\n    assert done.value is cycle and done.args[0] is cycle",
+        vec![], PrintWriter::Stdout,
+    ).unwrap();
     let checked = repl.feed_run(FIXTURE_CHECK, vec![], PrintWriter::Stdout).unwrap();
     assert_eq!(
         checked,
         MontyObject::tuple(vec![MontyObject::int(42), MontyObject::int(13)])
     );
-}
-
-/// The class definitions in `dataclasses_v13.bin`, kept for reference: the
-/// fixture was written by the 1.1.0 release, before `@dataclass` generated
-/// methods. It must never be regenerated, since this build writes generated
-/// methods and the test would then check nothing.
-#[expect(dead_code, reason = "documents what the checked-in fixture holds")]
-const LEGACY_DATACLASS_STATE: &str = r"
-import dataclasses
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class Frozen:
-    x: int
-    y: int = 2
-
-
-@dataclass
-class Plain:
-    xs: list
-    n: int = 0
-
-
-@dataclass(eq=False)
-class NoEq:
-    a: int
-
-
-@dataclass
-class OwnRepr:
-    a: int
-
-    def __repr__(self):
-        return 'own'
-
-
-@dataclass(frozen=True)
-class FrozenHook:
-    x: int
-
-    def __setattr__(self, name, value):
-        pass
-
-
-def late_hook(self):
-    self.n = 100
-
-
-Plain.__post_init__ = late_hook
-f = Frozen(1)
-p = Plain([1])
-";
-
-/// Run against the upgraded classes: each behaves as its decoration said, and a
-/// `__post_init__` attached after decoration still never runs.
-const LEGACY_DATACLASS_CHECK: &str = r#"assert f == Frozen(1, 2)
-assert hash(f) == hash((1, 2))
-assert repr(f) == 'Frozen(x=1, y=2)'
-try:
-    f.x = 5
-    assert False, 'expected FrozenInstanceError'
-except dataclasses.FrozenInstanceError as e:
-    assert str(e) == "cannot assign to field 'x'"
-assert p == Plain([1])
-assert Plain([2]).n == 0
-assert p.n == 0
-assert Plain.__hash__ is None
-assert NoEq(1) != NoEq(1)
-assert repr(OwnRepr(1)) == 'own'
-assert OwnRepr(1) == OwnRepr(1)
-hooked = FrozenHook(3)
-assert hooked.x == 3
-try:
-    hooked.x = 4
-    assert False, 'expected FrozenInstanceError'
-except dataclasses.FrozenInstanceError as e:
-    assert str(e) == "cannot assign to field 'x'"
-"#;
-
-/// Dataclasses decorated by a build that generated no methods load with their
-/// methods generated (see `dataclasses::legacy`), and a re-dump of the upgraded
-/// session, written at the current version, loads the same way without one.
-#[test]
-fn legacy_dataclasses_upgrade_on_load() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dataclasses_v13.bin");
-    let mut bytes = fs::read(&path).unwrap();
-    for _ in 0..2 {
-        let loaded = Dump::load(&bytes).expect("the fixture and its re-dump load");
-        let Session::Idle(mut repl) = loaded.state else {
-            panic!("the fixture was dumped idle");
-        };
-        repl.feed_run(LEGACY_DATACLASS_CHECK, vec![], PrintWriter::Stdout)
-            .unwrap();
-        bytes = dump("dataclasses.py", None, &[], SessionRef::Idle(&repl)).unwrap();
-    }
-}
-
-/// The snippet suspended in `dataclasses_v13_suspended.bin`, kept for reference:
-/// the 1.1.0 release ran it up to the `host_value` lookup and dumped it. The
-/// classes are the in-flight snippet's, so their names live in the executor's
-/// interns, not the session's. Never regenerate it, as with the idle fixture.
-#[expect(dead_code, reason = "documents what the checked-in fixture holds")]
-const LEGACY_SUSPENDED_SNIPPET: &str = r#"import dataclasses
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class Frozen:
-    x: int
-    y: int = 2
-
-
-@dataclass
-class Plain:
-    xs: list
-    n: int = 0
-
-
-f = Frozen(1)
-answer = host_value
-assert answer == 42
-assert f == Frozen(1, 2)
-assert hash(f) == hash((1, 2))
-assert repr(f) == 'Frozen(x=1, y=2)'
-try:
-    f.x = 5
-    assert False, 'expected FrozenInstanceError'
-except dataclasses.FrozenInstanceError as e:
-    assert str(e) == "cannot assign to field 'x'"
-assert Plain([1]) == Plain([1])
-assert repr(Plain([1])) == 'Plain(xs=[1], n=0)'
-assert Plain.__hash__ is None
-"#;
-
-/// A version 13 dump suspended mid-snippet upgrades its dataclasses too: the
-/// resumed snippet's own asserts check them.
-#[test]
-fn legacy_dataclasses_upgrade_in_a_suspended_session() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dataclasses_v13_suspended.bin");
-    let loaded = Dump::load(&fs::read(&path).unwrap()).expect("a version 13 suspended dump loads");
-    let Session::Suspended(progress) = loaded.state else {
-        panic!("the fixture was dumped suspended");
-    };
-    let lookup = progress.into_name_lookup().expect("suspended on `host_value`");
-    let progress = lookup
-        .resume(NameLookupResult::Value(MontyObject::int(42)), PrintWriter::Stdout)
-        .unwrap();
-    assert!(progress.into_complete().is_some(), "the snippet runs to completion");
-}
-
-/// The state in `dataclasses_v13_hook_owns_class.bin`, kept for reference: the
-/// 1.1.0 release ran it and dumped it idle. `A.__delattr__` holds the only
-/// reference to `B`, a later class. Never regenerate it.
-#[expect(dead_code, reason = "documents what the checked-in fixture holds")]
-const LEGACY_HOOK_OWNS_CLASS_STATE: &str = r"from dataclasses import dataclass
-
-
-@dataclass(frozen=True, eq=False)
-class A:
-    x: int
-
-
-def attach():
-    @dataclass
-    class B:
-        y: int
-
-    A.__delattr__ = B
-
-
-attach()
-";
-
-/// Upgrading `A` replaces the hook holding the last reference to `B`, a class
-/// still waiting for its own upgrade; the load must not touch `B` once freed.
-#[test]
-fn legacy_upgrade_survives_freeing_a_queued_class() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dataclasses_v13_hook_owns_class.bin");
-    let loaded = Dump::load(&fs::read(&path).unwrap()).expect("a version 13 dump loads");
-    let Session::Idle(mut repl) = loaded.state else {
-        panic!("the fixture was dumped idle");
-    };
-    repl.feed_run(
-        r#"import dataclasses
-a = A(1)
-assert repr(a) == 'A(x=1)'
-try:
-    A.__delattr__(a, 'x')
-    assert False, 'expected FrozenInstanceError'
-except dataclasses.FrozenInstanceError as e:
-    assert str(e) == "cannot delete field 'x'""#,
-        vec![],
-        PrintWriter::Stdout,
-    )
-    .unwrap();
 }
 
 /// A current-version dump runs no upgrade, so a dataclass whose generated
@@ -534,14 +330,6 @@ fn persisted_key_hashes_are_stable() {
     assert_snapshot!(hashes.py_repr(), @"(-7376904247260835724, -8418895208483869890, -7578619387304540654, -6751866591645121981, -8097107109803033201, 2456456309100923238, -5014982954702616963, 2858064283329581446)");
 }
 
-/// The fixture for the current `DUMP_VERSION`; the name carries the version so
-/// a bump leaves the old file behind to delete rather than silently reuse.
-fn fixture_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(format!("dump_v{DUMP_VERSION}.bin"))
-}
-
 /// A record as an older build wrote it.
 #[derive(Serialize)]
 struct RecordV1 {
@@ -579,8 +367,7 @@ enum KindV2 {
     Beta(u8),
 }
 
-/// The codec property the fixture test relies on, asserted here rather than
-/// assumed from upstream: an older layout loads into the edited one.
+/// Named-field codec behavior, independent of the supported dump version range.
 #[test]
 fn layout_edits_load_older_encodings() {
     for (old, expected) in [
@@ -617,5 +404,80 @@ fn layout_edits_load_older_encodings() {
     ] {
         let bytes = minicbor_serde::to_vec(&old).unwrap();
         assert_eq!(minicbor_serde::from_slice::<RecordV2>(&bytes).unwrap(), expected);
+    }
+}
+
+/// Current state preserves a cancelled ancestor, active shield and exact signal.
+#[test]
+fn anyio_scope_snapshot_resumes_twice() {
+    let repl = MontyRepl::new("scope.py", ResourceTracker::default(), CompileOptions::default());
+    let mut progress = repl
+        .feed_start(
+            r"
+import asyncio
+import anyio
+async def main():
+    with anyio.CancelScope() as scope:
+        scope.cancel()
+        try:
+            await rejected()
+        except asyncio.CancelledError as caught:
+            signal = caught
+        with anyio.CancelScope(shield=True) as shield:
+            assert host_call() == 41
+            assert scope.cancel_called and not scope.cancelled_caught
+            assert isinstance(signal, anyio.get_cancelled_exc_class())
+        await rejected()
+    assert scope.cancelled_caught
+    return 42
+asyncio.run(main())
+",
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+    while let ReplProgress::NameLookup(lookup) = progress {
+        let host = MontyObject::function(lookup.name.clone(), None);
+        progress = lookup
+            .resume(NameLookupResult::Value(host), PrintWriter::Disabled)
+            .unwrap();
+    }
+    assert!(matches!(&progress, ReplProgress::FunctionCall(call) if call.function_name == "host_call"));
+    let bytes = dump("scope.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+    drop(progress.into_function_call().unwrap().into_repl());
+    for _ in 0..2 {
+        let Session::Suspended(progress) = Dump::load(&bytes).unwrap().state else {
+            panic!("suspended");
+        };
+        let progress = progress
+            .into_function_call()
+            .unwrap()
+            .resume(MontyObject::int(41), PrintWriter::Disabled)
+            .unwrap();
+        let (_, value) = progress.into_complete().unwrap();
+        assert_eq!(value, MontyObject::int(42));
+    }
+}
+
+/// These genuine producers represent upstream state and the incompatible
+/// cancellation signal before queue accounting. Never regenerate.
+#[test]
+fn historical_snapshots_are_rejected() {
+    assert_eq!((MIN_SUPPORTED_DUMP_VERSION, DUMP_VERSION), (40, 41));
+    for (bytes, version) in [
+        (include_bytes!("fixtures/dump_v14.bin").as_slice(), 14),
+        (include_bytes!("fixtures/anyio_scope_v35.bin").as_slice(), 35),
+        (include_bytes!("fixtures/dump_v36.bin").as_slice(), 36),
+        (include_bytes!("fixtures/dump_v37.bin").as_slice(), 37),
+    ] {
+        assert_eq!(&bytes[..6], b"MONTY\0");
+        assert_eq!(u16::from_le_bytes([bytes[6], bytes[7]]), version);
+        assert_eq!(
+            Dump::load(bytes).unwrap_err(),
+            DumpError::VersionTooOld {
+                found: version,
+                min_supported: MIN_SUPPORTED_DUMP_VERSION,
+            }
+        );
     }
 }

@@ -115,15 +115,20 @@ const KEYWORDS = new Set([
 
 /** Keep in sync with `monty-types::SANDBOX_MODULE_NAMES`; these imports never reach the host. */
 const SANDBOX_MODULES = new Set([
+  'annotationlib',
+  'anyio',
   'asyncio',
   'base64',
   'binascii',
+  'bisect',
   'collections',
+  'contextlib',
   'copy',
   'csv',
   'dataclasses',
   'datetime',
   'decimal',
+  'fnmatch',
   'functools',
   'gc',
   'hashlib',
@@ -135,6 +140,7 @@ const SANDBOX_MODULES = new Set([
   'posixpath',
   'random',
   're',
+  'sandbox',
   'sys',
   'time',
   'tomllib',

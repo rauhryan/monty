@@ -8,8 +8,9 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropWithContext, Heap, HeapData, HeapId},
-    intern::{Interns, StaticStrings, StringId},
+    frozen::FrozenFunction,
+    heap::{DropWithContext, Heap, HeapId, HeapReadOutput},
+    intern::{Interns, StaticStrings},
     modules::{
         ModuleFunctions, collections, csv,
         hashlib::{self, Blake2Kind},
@@ -18,8 +19,8 @@ use crate::{
     },
     py_value::PyValue,
     types::{
-        Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range, Set, Slice,
-        Str, TimeZone, Tuple,
+        BuiltinType, Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait,
+        Random, Range, Set, Slice, Str, TimeZone, Tuple,
         bytes::{bytes_fromhex, bytes_repr},
         complex, date, datetime, decimal,
         dict::{DictKind, dict_fromkeys},
@@ -107,7 +108,7 @@ pub enum Type {
     DictValues,
     Set,
     FrozenSet,
-    /// The type of a host-backed class instance ([`HeapData::HostClass`]),
+    /// The type of a host-backed class instance ([`crate::heap::HeapData::HostClass`]),
     /// for internal dispatch only: `type(x)` materializes a `HostClassType`
     /// instead, so it never reaches Python code or the host boundary.
     ///
@@ -183,7 +184,8 @@ pub enum Type {
     /// The iterator `os.scandir()` returns.
     #[strum(serialize = "posix.ScandirIterator")]
     ScandirIterator,
-    /// The iterator `os.walk()` and `Path.walk()` return; CPython's is a generator.
+    /// Synchronous generators, including the native `os.walk()` / `Path.walk()` iterator.
+    /// Keep the historical variant name for dump compatibility.
     #[strum(serialize = "generator")]
     WalkGenerator,
     // Variants serialize by name into dumps: renaming one needs `#[serde(alias)]`.
@@ -342,6 +344,9 @@ pub enum Type {
     /// The manager `decimal.localcontext()` returns.
     #[strum(serialize = "decimal.ContextManager")]
     DecimalContextManager,
+    /// `annotationlib.ForwardRef`, an unevaluated annotation.
+    #[strum(serialize = "annotationlib.ForwardRef")]
+    ForwardRef,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -638,13 +643,8 @@ impl Type {
     /// Keeps classmethod behavior centralized with type semantics instead of VM
     /// call plumbing. Any other name is looked up as a plain attribute and the
     /// result called, so `list.__name__()` raises `'str' object is not callable`.
-    pub(crate) fn call_class_method(
-        self,
-        method_id: StringId,
-        args: ArgValues,
-        vm: &mut VM<'_>,
-    ) -> RunResult<CallResult> {
-        match (self, vm.interns.static_string(method_id)) {
+    pub(crate) fn call_class_method(self, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        match (self, attr.static_string(vm.interns)) {
             // Type-level `dict.fromkeys(...)`, so the result is a plain dict.
             (Self::Dict, Some(StaticStrings::Fromkeys)) => {
                 dict_fromkeys(args, DictKind::plain(), vm).map(CallResult::Value)
@@ -670,13 +670,19 @@ impl Type {
             (Self::Decimal, Some(StaticStrings::FromNumber)) => {
                 decimal::py::class_from_number(vm, args).map(CallResult::Value)
             }
-            (Self::Decimal, _) if vm.interns.get_str(method_id) == "from_float" => {
+            (Self::Decimal, _) if attr.as_str(vm.interns) == "from_float" => {
                 decimal::py::class_from_float(vm, args).map(CallResult::Value)
             }
             (Self::Date, Some(StaticStrings::Today)) => date::class_today(vm, args),
             (Self::Path, Some(StaticStrings::Cwd)) => path::class_cwd(vm, args).map(CallResult::Value),
             (Self::Date, Some(StaticStrings::Fromisoformat)) => {
                 date::class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
+            }
+            (Self::Date, Some(StaticStrings::Fromtimestamp)) => {
+                date::class_fromtimestamp(vm, args).map(CallResult::Value)
+            }
+            (Self::DateTime, Some(StaticStrings::Fromtimestamp)) => {
+                datetime::class_fromtimestamp(vm, args).map(CallResult::Value)
             }
             (Self::DateTime, Some(StaticStrings::Now)) => datetime::class_now(vm, args),
             (Self::DateTime, Some(StaticStrings::Strptime)) => {
@@ -688,7 +694,7 @@ impl Type {
             // `object.__setattr__(obj, name, value)` called directly, which is
             // how it is nearly always reached; `object.__setattr__` as a value
             // is handled by `class_getattr`.
-            (Self::Object, _) if vm.interns.get_str(method_id) == "__setattr__" => {
+            (Self::Object, _) if attr.as_str(vm.interns) == "__setattr__" => {
                 builtin_object_setattr(vm, args).map(CallResult::Value)
             }
             (Self::DateTime, Some(StaticStrings::Combine)) => datetime::class_combine(vm, args).map(CallResult::Value),
@@ -709,13 +715,12 @@ impl Type {
             // The type's plain attributes (`list.__name__`); a missing name
             // raises the lookup's `type object 'list' has no attribute` error.
             _ => {
-                let attr = EitherStr::Interned(method_id);
-                if let Some(value) = self.class_getattr(&attr, vm) {
+                if let Some(value) = self.class_getattr(attr, vm) {
                     defer_drop!(value, vm);
                     vm.call_function(value, args)
                 } else {
                     args.drop_with(vm.heap);
-                    Err(self.attribute_error(&attr, vm))
+                    Err(self.attribute_error(attr, vm))
                 }
             }
         }
@@ -801,9 +806,24 @@ impl Type {
 
     /// Calls this type as a constructor (e.g., `list(x)`, `int(x)`).
     ///
-    /// Iterator acquisition may suspend in user code; other constructors complete natively.
+    /// Iterator acquisition and generator collection may suspend in user code.
     pub(crate) fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-        if self == Self::Iterator {
+        if matches!(self, Self::List | Self::Tuple)
+            && args
+                .first_positional()
+                .is_some_and(|value| matches!(value.read_heap(vm), Some(HeapReadOutput::Generator(_))))
+        {
+            let name = if self == Self::List { "list" } else { "tuple" };
+            let generator = args.get_zero_one_arg(name, vm.heap)?.expect("first argument checked");
+            vm.call_frozen_exact(
+                FrozenFunction::CollectGenerator,
+                [
+                    generator,
+                    Value::Bool(self == Self::Tuple),
+                    Value::Builtin(Builtins::Type(BuiltinType::Tuple)),
+                ],
+            )
+        } else if self == Self::Iterator {
             builtin_iter(vm, args)
         } else {
             self.call_native(vm, args).map(CallResult::Value)
@@ -832,6 +852,7 @@ impl Type {
             Self::TimeDelta => timedelta::init(vm, args),
             Self::TimeZone => TimeZone::init(vm, args),
             Self::Path => Path::init(vm, args),
+            Self::ForwardRef => ForwardRef::init(vm, args),
             Self::Partial => Partial::init(vm, args),
             Self::Random => Random::init(vm, args),
             Self::Blake2b => hashlib::blake2_init(Blake2Kind::Blake2b, vm, args),
@@ -1014,15 +1035,9 @@ fn int_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         None => int_convert(x, vm),
         Some(base) => {
             let base = int_base(base, vm)?;
-            let interns = vm.interns;
-            match x {
-                Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), base, vm.heap),
-                Value::InternBytes(bytes_id) => parse_int_from_bytes(interns.get_bytes(*bytes_id), base, vm.heap),
-                Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-                    HeapData::Str(s) => parse_int_from_str(s.as_str(), base, vm.heap),
-                    HeapData::Bytes(b) => parse_int_from_bytes(b.as_slice(), base, vm.heap),
-                    _ => Err(ExcType::type_error_int_non_string_with_base()),
-                },
+            match x.py_value(vm) {
+                PyValue::Str(value) => parse_int_from_str(value.as_str(vm), base, vm.heap),
+                PyValue::Bytes(value) => parse_int_from_bytes(value.as_slice(vm), base, vm.heap),
                 _ => Err(ExcType::type_error_int_non_string_with_base()),
             }
         }

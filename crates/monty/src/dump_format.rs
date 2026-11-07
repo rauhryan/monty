@@ -34,9 +34,6 @@ use monty_types::{ModuleStub, TypeCheckState};
 use serde::{Deserialize, Serialize, de::Error as _};
 
 use crate::{
-    dump_upgrade,
-    heap::Heap,
-    intern::Interns,
     repl::{MontyRepl, ReplProgress},
     run_progress::RunProgress,
 };
@@ -59,13 +56,39 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// Older builds then reject the new dumps instead of misexecuting them, and this
 /// build rejects dumps below [`MIN_SUPPORTED_DUMP_VERSION`].
 ///
-/// Before bumping, check there's already been a bump since the last release - multiple bumps
-/// between releases is unnecessary and can lead to confusion.
-pub const DUMP_VERSION: u16 = 14;
+/// Unreleased bumps may be coalesced only when no captured supported state needs
+/// the intervening distinction. Preserve a new version when an older reader would
+/// accept the header but misinterpret the stored semantics.
+// Version 20 persists cleanup-exit cancellation continuation points.
+// Older readers must not silently ignore prompt delivery at these boundaries.
+// Version 21 distinguishes prospective except dispatch for native cancellation.
+// Version 22 adds active matching ownership; 23 persists policy7 code/latch markers and diagnostics.
+// Version 24 adds Rust-owned child outcomes and delivery/drain roots.
+// Version 25 reserves the monotonic ID space for host calls, allowing bounded late-reply recognition.
+// Version 26 separates owned gather lifetimes from result delivery.
+// Version 27 adds traced guest queues and activation-time queue reservations.
+// Version 28 persists a protected gather's first error while its children drain.
+// Version 29 adds public Task lifetimes and multiple pending join routes.
+// Version 30 adds durable public TaskGroup ownership and exit barriers.
+// Version 31 records unresolved exceptional-cleanup roles on saved exceptions.
+// Version 32 records explicit run ownership and admitting-frame cleanup barriers.
+// Version 33 adds public Queue metadata and zero-capacity unbounded storage.
+// Version 34 distinguishes AnyIO TaskGroup surfaces and named helper identities.
+// A v33 reader ignores the defaulted flag and would expose create_task instead.
+// Version 35 persists task/run-owned lexical cancellation origins and ancestry.
+// Version 36 changes cancellation from ValueError to asyncio.CancelledError.
+// Older captured handlers cannot be silently reinterpreted under this contract.
+// Version 37 adds gather collection, generator return routes and queue work accounting.
+// Older queues cannot reconstruct the number of unacknowledged, already consumed items.
+// Version 38 retains PEP 479 cause identity and nested frozen implementations.
+// Version 39 adds RaiseFrom, inline strings, module namespaces and annotation state.
+// Version 40 removes experimental migration and private cancellation/contextmanager compatibility.
+// Version 41 adds the frozen custom-iterator loop adapter; v40 state loads unchanged.
+pub const DUMP_VERSION: u16 = 41;
 
-/// The oldest dump version this build loads. `Dump::load` runs `dump_upgrade`
-/// over an older dump, rebuilding what the newer versions changed.
-pub const MIN_SUPPORTED_DUMP_VERSION: u16 = 13;
+/// Experimental snapshots have no cross-version compatibility guarantee.
+/// This build also accepts the frozen v40 baseline without conversion.
+pub const MIN_SUPPORTED_DUMP_VERSION: u16 = 40;
 
 // The supported range must be non-empty, and must exclude zero
 const _: () = assert!(MIN_SUPPORTED_DUMP_VERSION >= 1);
@@ -148,8 +171,7 @@ impl Dump {
     /// Successful decoding does not authenticate or fully validate a snapshot.
     /// The same contract applies to direct serde deserialization.
     ///
-    /// Accepts [`MIN_SUPPORTED_DUMP_VERSION`]`..=`[`DUMP_VERSION`], upgrading a
-    /// dump older than [`DUMP_VERSION`] before returning it.
+    /// Accepts only the supported format range, without migrating older state.
     ///
     /// # Errors
     /// Returns [`DumpError`] for a dump this build cannot read. The version
@@ -175,16 +197,10 @@ impl Dump {
         } else {
             let payload = &bytes[HEADER_LEN..];
             let mut deserializer = Deserializer::new(payload);
-            let mut value =
-                Self::deserialize(&mut deserializer).map_err(|err| DumpError::Payload(DumpDecodeError(err)))?;
+            let value = Self::deserialize(&mut deserializer).map_err(|err| DumpError::Payload(DumpDecodeError(err)))?;
             // trailing bytes are rejected rather than ignored, so a padded dump
             // cannot decode as the shorter valid one it starts with
             if deserializer.into_decoder().position() == payload.len() {
-                if version < DUMP_VERSION
-                    && let Some((heap, interns)) = value.state.heap_and_interns()
-                {
-                    dump_upgrade::upgrade(version, heap, interns);
-                }
                 Ok(value)
             } else {
                 Err(DumpError::Payload(DumpDecodeError::custom(
@@ -209,17 +225,6 @@ pub enum Session {
     /// A one-shot [`crate::MontyRun`] execution paused at a suspension. Not a
     /// repl, so it cannot be fed further — only resumed to completion.
     Running(Box<RunProgress>),
-}
-
-impl Session {
-    /// The session heap and its interns, or `None` for a one-shot run that has completed.
-    fn heap_and_interns(&mut self) -> Option<(&mut Heap, &Interns)> {
-        match self {
-            Self::Idle(repl) => Some(repl.heap_and_interns()),
-            Self::Suspended(progress) => Some(progress.heap_and_interns()),
-            Self::Running(progress) => progress.heap_and_interns(),
-        }
-    }
 }
 
 /// Borrowed counterpart of [`Session`] used when dumping, so a live session can
@@ -372,7 +377,7 @@ mod tests {
     fn serialized_components_match_dump_version() {
         assert_eq!(
             opcode_fingerprint(),
-            0xa78a_9e6c_3fab_abed,
+            0x95d2_90c1_42ea_0b24,
             "opcodes changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(opcode_fingerprint())
         );
@@ -398,7 +403,7 @@ mod tests {
         );
         assert_eq!(
             variant_name_fingerprint(&type_names),
-            0x578d_38b1_7715_f9a1,
+            0x4db8_c44f_dbcb_fb2a,
             "Type variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_name_fingerprint(&type_names))
         );

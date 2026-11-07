@@ -405,7 +405,6 @@ pub enum Opcode {
     // Note: No SetupTry/PopExceptHandler - we use static exception_table
     /// Raise TOS as exception.
     Raise = 97,
-    // NOTE: RaiseFrom removed - `raise ... from ...` not supported by parser
     /// Re-raise current exception (bare `raise`).
     Reraise = 98,
     /// Clear current_exception when exiting except block.
@@ -598,6 +597,15 @@ pub enum Opcode {
     /// becomes `[v, a, b, c]`. Operand: u8 n. The inverse of `LiftToTop`; the
     /// pattern compiler uses it to park a capture under the pattern's temporaries.
     SinkTop = 129,
+    /// Suspend the active generator. Mode 0: yield; mode 1: yield from.
+    /// The sent value replaces TOS when execution resumes.
+    Yield = 130,
+    /// Host context call: 0 enter, 1 normal exit, 2 exceptional exit.
+    /// Returns a generator, awaited by a subsequent delegated Yield.
+    HostContext = 131,
+    /// `raise exc from cause`: stack `[exc, cause] -> []`. The cause becomes the
+    /// raised exception's `__cause__` and suppresses its `__context__`.
+    RaiseFrom = 132,
 }
 
 /// `LoadName` flag: the load is in call position, so an unresolved name under
@@ -695,6 +703,7 @@ impl Opcode {
             | Self::StoreSubscr
             | Self::GetIter
             | Self::Raise
+            | Self::RaiseFrom
             | Self::Reraise
             | Self::ClearException
             | Self::CheckExcMatch
@@ -705,7 +714,9 @@ impl Opcode {
             | Self::WithExit
             | Self::WithExceptStart
             | Self::BuildCell => OperandShape::None,
-            Self::LoadLocal
+            Self::HostContext
+            | Self::Yield
+            | Self::LoadLocal
             | Self::StoreLocal
             | Self::DeleteLocal
             | Self::FormatValue
@@ -962,6 +973,7 @@ impl Opcode {
             (StoreSubscr, Operand::None) => -3,
             (GetIter | Await, Operand::None) => 0,
             (Raise, Operand::None) => -1,
+            (RaiseFrom, Operand::None) => -2,
             (Reraise | ClearException | CheckExcMatch, Operand::None) => 0,
             (ReturnValue, Operand::None) => -1,
             (Nop, Operand::None) => 0,
@@ -970,6 +982,7 @@ impl Opcode {
             (LoadSmallInt, Operand::I8(_)) => 1,
 
             // === Fixed-effect, U8 operand ===
+            (Yield, Operand::U8(_)) => 0,
             (LoadLocal, Operand::U8(_)) => 1,
             (StoreLocal, Operand::U8(_)) => -1,
             (DeleteLocal, Operand::U8(_)) => 0,
@@ -999,6 +1012,7 @@ impl Opcode {
             // === Fixed-effect, no operand (context managers) ===
             // `BeforeWith` pushes the `__enter__` result on top of the existing ctx.
             (BeforeWith, Operand::None) => 1,
+            (HostContext, Operand::U8(mode)) => i32::from(mode != 1),
             // `WithExit` pops ctx and pushes the `__exit__` return value; compiler
             // emits a trailing `Pop` to discard.
             (WithExit, Operand::None) => 0,

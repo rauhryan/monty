@@ -572,8 +572,8 @@ if is_monty:
     try:
         asyncio.gather(foo(), foo(), xxx=True)
         assert False, 'gather with kwarg should raise'
-    except NotImplementedError as e:
-        assert str(e) == 'gather() does not yet support keyword arguments'
+    except TypeError as e:
+        assert str(e) == "gather() got an unexpected keyword argument 'xxx'"
 
 # =====================================================================
 # === Binding vs conversion ordering (per style family)              ===

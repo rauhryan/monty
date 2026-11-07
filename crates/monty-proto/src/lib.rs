@@ -9,6 +9,10 @@ mod convert;
 mod decode_budget;
 mod frame;
 mod generated;
+// The gRPC transport's path, codec and status vocabulary; opt-in because it
+// links tonic, which stdio-only consumers (the runtime) never need.
+#[cfg(feature = "grpc")]
+pub mod grpc;
 // Python ↔ MontyObject value conversion; opt-in because it links pyo3, which
 // pure-Rust consumers of the wire protocol must never pay for.
 #[cfg(feature = "python")]
@@ -33,7 +37,14 @@ pub mod worker;
 /// serving relay and its client act on them, children ignore them, and a
 /// child that drops them loses nothing. Version 6 added the `import` and
 /// `import_stubs` OS calls, which version 5 parents cannot answer.
-pub const PROTOCOL_VERSION: u32 = 6;
+/// Version 7 adds `ResumeFutures.native_cancel`, which older workers silently
+/// ignore. Version 8 requires policy7 catchable delivery and bounded interrupted
+/// diagnostics. Cancellation-aware parents declare version 8 without downgrade.
+// Version 9 requires the dedicated asyncio.CancelledError wire type.
+// Version 10 adds GeneratorExit; older peers cannot decode this exception type.
+// Version 11 integrates gRPC liveness, module-file replies and execution-clock negotiation.
+// Pre-merge version 10 workers do not implement these contracts.
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
 ///
@@ -49,7 +60,8 @@ pub const PROTOCOL_VERSION: u32 = 6;
 /// send a budget nothing enforces, and a version 4 child would accept the new
 /// budgets and ignore them. Neither side can be told apart from a working one,
 /// so both are refused.
-pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 5;
+// Older peers cannot represent GeneratorExit or the cancellation exception contract.
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 11;
 
 /// How long the child holds buffered `print()` output before emitting it as a
 /// `Print` event, when [`pb::Configure::print_flush_interval_ms`] says nothing.
@@ -96,7 +108,8 @@ pub fn check_protocol_version(version: u32) -> Result<(), String> {
 pub use budget_vec::BudgetVec;
 pub use convert::{
     ProtoConvertError, ext_result_from_proto, ext_result_to_proto, future_results_from_proto, future_results_to_proto,
-    named_values_from_proto, named_values_to_proto, os_call_from_proto, os_call_to_proto, resume_call_from_proto,
+    import_stubs_from_answer, named_values_from_proto, named_values_to_proto, os_call_from_proto, os_call_to_proto,
+    resume_call_from_proto,
 };
 #[cfg(feature = "test-util")]
 #[doc(hidden)]

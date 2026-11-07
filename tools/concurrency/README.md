@@ -1,0 +1,142 @@
+# Concurrency regression checks
+
+One native/Wasm replay harness for the supported public asyncio surface and
+cancellation semantics. Source fixtures live in
+`crates/monty/tests/fixtures/concurrency`; the native transport is a Cargo example
+in the interpreter crate, using the workspace lockfile.
+
+## Run
+
+The runner requires Linux, Python 3.11+, the repository's Rust toolchain/MSRV,
+Node 20+ and npm. Its Linux guard does not change the VM's platform support.
+Install dependencies explicitly if needed:
+
+```sh
+rustup target add wasm32-wasip1
+npm ci --prefix crates/monty-js
+```
+
+No Python package installation or pre-existing playground files are required.
+Cargo uses `--locked` and needs registry access or a populated dependency cache.
+
+```sh
+python3 tools/concurrency/run.py sources
+python3 tools/concurrency/test_runner.py
+python3 tools/concurrency/run.py run --output playground/concurrency-check-1
+```
+
+Use a new output directory each time. `run` builds the native example and actual
+Wasm component, then replays 25 programs on each backend. Every real suspension
+cut is independently restored twice and disposed; the original bytes are checked
+and the full trace must equal uninterrupted execution. Results, raw commands,
+snapshots, input/artifact hashes and build receipts are saved under the output.
+Generator loop, close and composition cases also capture active host-call frames before acknowledgement.
+A source/artifact change requires a new build, not repinning an old association.
+
+Build and replay can also be separate:
+
+```sh
+python3 tools/concurrency/run.py build --output playground/concurrency-build-1
+python3 tools/concurrency/run.py verify \
+  --association playground/concurrency-build-1/association.json \
+  --output playground/concurrency-replay-1
+```
+
+The public-async oracle retains the original frozen expectations; its source
+hashes pin the fixtures after their one-time Ruff formatting.
+Additional cases cover cancellation exception identity, host terminal
+cancellation, authored cancellation, gather result collection, generator loops and
+closure, queue work completion, iterable delegation and synchronous context-manager cleanup. The strict comparator rejects duplicate
+JSON keys, nonfinite values, type-coerced equality and mismatched restore traces.
+The runner tests also exercise lock contention, evidence overwrite, budget limits
+and source/artifact/receipt drift.
+
+## Ownership and compatibility tests
+
+Transport replay complements the crate's generator, async, dump and live-heap
+ownership tests; it does not replace them or claim an instrumented Wasm heap
+census. Python fixture bodies are test data, not importable modules. Their
+`.py` files were formatted once and are excluded from routine Ruff checks in
+`pyproject.toml` to keep host-injected names and source fragments stable.
+
+The `generator_runtime` target groups its tests under
+`crates/monty/tests/generator_runtime/`: generators, composition, structured cleanup, native
+cancellation, asyncio and AnyIO. Shared helpers construct a REPL, check live ownership and exercise snapshot disposal. Test bodies and fixture inputs stay with their owning behavior.
+
+Run the native ownership and compatibility suites without historical exclusions:
+
+```sh
+cargo test --locked -p monty --features memory-model-checks,ref-count-return,cancellation-test-hooks \
+  --lib --test generator_runtime --test generator_compile --test dump_compat --test asyncio
+```
+
+`make test-memory-model-checks` and native CI run these three features together.
+This enables live-owner assertions, drop checks and host-only cancellation fault
+injection, including restored execution. The fault hooks are not enabled in worker builds.
+
+On shared build machines, run this command under the same guard and budgets
+as the replay build.
+
+The fixture README describes the retained test families. Original research
+sources, superseded drivers and provenance remain available at research commit
+`34519dd69d7f50f825cbe20a83b388169ea29f1f` in PR #1; this runner does not load them.
+
+## Build safeguards
+
+The guard holds a nonblocking lock across build/replay, refuses competing
+Cargo/rustc or target processes, uses two jobs, and disables dev/test debug data
+and incremental compilation. It checks at least 10 GiB free and at most 8 GiB
+combined caches before, during and after commands. Builds time out after 15
+minutes; each adapter command times out after 40 seconds. No automatic pruning.
+
+The shared cache and lock retain their established locations under
+`playground/coroutine-baseline/`; these are output paths only. The repository's
+normal target and historical review target are also counted. On shared machines,
+include other caches charged to the same budget:
+
+```sh
+export MONTY_CHECK_EXTRA_CACHES=/path/to/cache:/path/to/another/cache
+```
+
+No sibling repository is required. Existing generated component declarations are
+regenerated by the normal JS build script; inspect unexpected generated diffs.
+
+## Candidate snapshot baseline
+
+Capture six selected VM states from the native producer and load the same bytes on both native and Wasm:
+
+```sh
+python3 tools/concurrency/run.py baseline --output playground/baseline-candidate-1
+```
+
+This builds under the same guard as `run`.
+The output `baseline.json` is a candidate manifest, not a compatibility promise or a frozen fixture set.
+It records the producer source/artifact association, build receipts, tool versions, Git status, snapshot hashes, state census and continuation oracle.
+Only the six files under `snapshots/` are candidates for retention; the other cuts are review evidence.
+The current writer uses format 41 and accepts format 40.
+The retained baseline remains v40; capture produces candidates in the current format.
+
+The selected states are idle common state, a user handler, generator unwinding, an internal annotation fallback handler, a draining group with queue cancellation and a shield, and sticky host cancellation.
+A serialization-based census checks the shared v40/v41 exception stacks and scheduler/queue/scope state.
+It distinguishes active from parked handlers without adding production VM hooks.
+The census is version-specific test tooling, not a snapshot validation API.
+The queue scenario retains the supplied AnyIO subset's cancellation-flag expectation; it is not a parity claim for the upstream AnyIO distribution.
+Native ownership tests in `generator_runtime/baseline.rs` complement replay/disposal; the Wasm checks do not claim an instrumented heap census.
+
+Replay a retained manifest against an independently built consumer:
+
+```sh
+python3 tools/concurrency/run.py verify-baseline \
+  --association playground/consumer-build/association.json \
+  --manifest playground/baseline-candidate-1/baseline.json \
+  --output playground/baseline-consumer-check-1
+```
+
+Consumers load each original snapshot twice, compare every continuation boundary with the producer oracle, and dispose original and partially resumed states.
+Idle consumers feed the saved continuation; they do not rerun the source that created the snapshot.
+Snapshot hashes must stay unchanged.
+The consumer association must match current sources and artifacts; the producer association remains recorded in the manifest.
+
+Before retaining binaries in Git, commit the producer sources and capture support, build that clean commit, then generate and review its candidate manifest.
+Commit the selected bytes and manifest separately so the producer commit identifies the code that wrote them.
+Never relabel a dirty candidate as frozen, regenerate a historical fixture with a newer producer, or change a snapshot header to simulate a migration.

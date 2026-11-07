@@ -14,16 +14,20 @@ use crate::{
     intern::StaticStrings,
 };
 
+pub(crate) mod annotationlib;
+pub(crate) mod anyio;
 pub(crate) mod asyncio;
 pub(crate) mod base64;
 pub(crate) mod binascii;
 pub(crate) mod bisect;
 pub(crate) mod collections;
+pub(crate) mod contextlib;
 pub(crate) mod copy;
 pub(crate) mod csv;
 pub(crate) mod dataclasses;
 pub(crate) mod datetime;
 pub(crate) mod decimal;
+pub(crate) mod fnmatch;
 pub(crate) mod functools;
 #[cfg(feature = "test-hooks")]
 pub(crate) mod gc;
@@ -36,6 +40,7 @@ pub(crate) mod os_path;
 pub(crate) mod pathlib;
 pub(crate) mod random;
 pub(crate) mod re;
+pub(crate) mod sandbox;
 pub(crate) mod sys;
 pub(crate) mod time;
 pub(crate) mod tomllib;
@@ -49,8 +54,12 @@ pub(crate) enum StandardLib {
     Sys,
     /// The `typing` module providing type hints support.
     Typing,
-    /// The `asyncio` module providing async/await support (only `run()` and `gather()` implemented).
+    /// The `asyncio` module providing the supported run, gather, Task, TaskGroup and Queue APIs.
     Asyncio,
+    /// Bounded supplied AnyIO task-group authoring surface.
+    Anyio,
+    /// Supplied platform capabilities, never OS filesystem access.
+    Sandbox,
     /// The `pathlib` module providing object-oriented filesystem paths.
     Pathlib,
     /// The `os` module: environment access, host-mediated filesystem calls and `os.path`.
@@ -77,6 +86,8 @@ pub(crate) enum StandardLib {
     Collections,
     /// The `functools` module providing reduction, partial application, and caching.
     Functools,
+    /// Synchronous generator context managers.
+    Contextlib,
     /// The `base64` module providing the base64/base32/base16 codecs.
     Base64,
     /// The `binascii` module providing binary-to-ASCII conversions, CRC32,
@@ -101,6 +112,10 @@ pub(crate) enum StandardLib {
     Tomllib,
     /// The `decimal` module: `Decimal`, `Context` and the signals.
     Decimal,
+    /// The `fnmatch` module: shell-style pattern matching.
+    Fnmatch,
+    /// The `annotationlib` module: `Format`, `ForwardRef` and `get_annotations()`.
+    Annotationlib,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -115,6 +130,8 @@ impl StandardLib {
             StaticStrings::Sys => Some(Self::Sys),
             StaticStrings::Typing => Some(Self::Typing),
             StaticStrings::Asyncio => Some(Self::Asyncio),
+            StaticStrings::Anyio => Some(Self::Anyio),
+            StaticStrings::Sandbox => Some(Self::Sandbox),
             StaticStrings::Pathlib => Some(Self::Pathlib),
             StaticStrings::Os => Some(Self::Os),
             StaticStrings::OsPath | StaticStrings::Posixpath => Some(Self::OsPath),
@@ -126,6 +143,7 @@ impl StandardLib {
             StaticStrings::Itertools => Some(Self::Itertools),
             StaticStrings::Dataclasses => Some(Self::Dataclasses),
             StaticStrings::Collections => Some(Self::Collections),
+            StaticStrings::Contextlib => Some(Self::Contextlib),
             StaticStrings::Functools => Some(Self::Functools),
             StaticStrings::Base64 => Some(Self::Base64),
             StaticStrings::Binascii => Some(Self::Binascii),
@@ -137,6 +155,8 @@ impl StandardLib {
             StaticStrings::Csv => Some(Self::Csv),
             StaticStrings::Tomllib => Some(Self::Tomllib),
             StaticStrings::DecimalMod => Some(Self::Decimal),
+            StaticStrings::Fnmatch => Some(Self::Fnmatch),
+            StaticStrings::Annotationlib => Some(Self::Annotationlib),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -157,6 +177,8 @@ impl StandardLib {
             Self::Sys => sys::create_module(vm),
             Self::Typing => typing::create_module(vm),
             Self::Asyncio => asyncio::create_module(vm),
+            Self::Anyio => anyio::create_module(vm),
+            Self::Sandbox => sandbox::create_module(vm),
             Self::Pathlib => pathlib::create_module(vm),
             Self::Os => os::create_module(vm),
             Self::OsPath => os_path::create_module(vm),
@@ -168,6 +190,7 @@ impl StandardLib {
             Self::Itertools => itertools::create_module(vm),
             Self::Dataclasses => dataclasses::create_module(vm),
             Self::Collections => collections::create_module(vm),
+            Self::Contextlib => contextlib::create_module(vm),
             Self::Functools => functools::create_module(vm),
             Self::Base64 => base64::create_module(vm),
             Self::Binascii => binascii::create_module(vm),
@@ -179,6 +202,8 @@ impl StandardLib {
             Self::Csv => csv::create_module(vm),
             Self::Tomllib => tomllib::create_module(vm),
             Self::Decimal => decimal::create_module(vm),
+            Self::Fnmatch => fnmatch::create_module(vm),
+            Self::Annotationlib => annotationlib::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         }
@@ -192,6 +217,11 @@ impl StandardLib {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ModuleFunctions {
     Asyncio(asyncio::AsyncioFunctions),
+    Anyio(anyio::AnyioFunctions),
+    /// Private frozen start_soon admission helper.
+    AnyioCheckGroup,
+    SandboxReadFile,
+    SandboxCapability(sandbox::Capability),
     Collections(collections::CollectionsFunctions),
     Json(json::JsonFunctions),
     Math(math::MathFunctions),
@@ -202,6 +232,7 @@ pub(crate) enum ModuleFunctions {
     Itertools(itertools::ItertoolsFunctions),
     Dataclasses(dataclasses::DataclassesFunctions),
     Functools(functools::FunctoolsFunctions),
+    Contextmanager,
     Base64(base64::Base64Functions),
     Binascii(binascii::BinasciiFunctions),
     Random(random::RandomFunctions),
@@ -214,6 +245,9 @@ pub(crate) enum ModuleFunctions {
     Csv(csv::CsvFunctions),
     Tomllib(tomllib::TomllibFunctions),
     Decimal(decimal::DecimalFunctions),
+    Fnmatch(fnmatch::FnmatchFunctions),
+    Typing(typing::TypingFunctions),
+    Annotationlib(annotationlib::AnnotationlibFunctions),
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; as in [`StandardLib`], the gated block
     /// goes last and new variants are appended ahead of it.
@@ -230,7 +264,11 @@ pub(crate) enum ModuleFunctions {
 impl fmt::Display for ModuleFunctions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::SandboxReadFile => write!(f, "read_file"),
+            Self::SandboxCapability(capability) => write!(f, "{}", capability.name()),
             Self::Asyncio(func) => write!(f, "{func}"),
+            Self::Anyio(func) => write!(f, "{func}"),
+            Self::AnyioCheckGroup => write!(f, "anyio_group_admission"),
             Self::Collections(func) => write!(f, "{func}"),
             Self::Json(func) => write!(f, "{func}"),
             Self::Math(func) => write!(f, "{func}"),
@@ -240,6 +278,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Unicodedata(func) => write!(f, "{func}"),
             Self::Itertools(func) => write!(f, "{func}"),
             Self::Dataclasses(func) => write!(f, "{func}"),
+            Self::Contextmanager => write!(f, "contextmanager"),
             Self::Functools(func) => write!(f, "{func}"),
             Self::Base64(func) => write!(f, "{func}"),
             Self::Binascii(func) => write!(f, "{func}"),
@@ -252,6 +291,9 @@ impl fmt::Display for ModuleFunctions {
             Self::Csv(func) => write!(f, "{func}"),
             Self::Tomllib(func) => write!(f, "{func}"),
             Self::Decimal(func) => write!(f, "{func}"),
+            Self::Fnmatch(func) => write!(f, "{func}"),
+            Self::Typing(func) => write!(f, "{func}"),
+            Self::Annotationlib(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -267,7 +309,11 @@ impl ModuleFunctions {
     /// require host involvement (e.g., `os.getenv()` needs the host to provide environment variables).
     pub fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         match self {
+            Self::SandboxReadFile => sandbox::read_file(vm, args).map(CallResult::Value),
+            Self::SandboxCapability(capability) => sandbox::call(capability, vm, args).map(CallResult::Value),
             Self::Asyncio(functions) => asyncio::call(vm, functions, args),
+            Self::Anyio(functions) => anyio::call(vm, functions, args),
+            Self::AnyioCheckGroup => anyio::check_group(vm, args),
             Self::Collections(functions) => collections::call(vm, functions, args).map(CallResult::Value),
             Self::Json(functions) => json::call(vm, functions, args),
             Self::Math(functions) => math::call(vm, functions, args).map(CallResult::Value),
@@ -277,6 +323,7 @@ impl ModuleFunctions {
             Self::Unicodedata(functions) => unicodedata::call(vm, functions, args).map(CallResult::Value),
             Self::Itertools(functions) => itertools::call(vm, functions, args).map(CallResult::Value),
             Self::Dataclasses(functions) => dataclasses::call(vm, functions, args).map(CallResult::Value),
+            Self::Contextmanager => contextlib::call(vm, args),
             Self::Functools(functions) => functools::call(vm, functions, args),
             Self::Base64(functions) => base64::call(vm, functions, args).map(CallResult::Value),
             Self::Binascii(functions) => binascii::call(vm, functions, args).map(CallResult::Value),
@@ -289,6 +336,9 @@ impl ModuleFunctions {
             Self::Csv(functions) => csv::call(vm, functions, args),
             Self::Tomllib(functions) => tomllib::call(vm, functions, args),
             Self::Decimal(functions) => decimal::call(vm, functions, args).map(CallResult::Value),
+            Self::Fnmatch(functions) => fnmatch::call(vm, functions, args).map(CallResult::Value),
+            Self::Typing(functions) => typing::call(vm, functions, args),
+            Self::Annotationlib(functions) => annotationlib::call(vm, functions, args),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]

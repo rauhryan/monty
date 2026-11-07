@@ -17,7 +17,7 @@ export interface DispatchReply extends DispatchResult {
 }
 
 /** Initialization is acknowledged before any turn deadline starts. */
-export type WorkerMessage = DispatchReply | { ready: true } | { startupError: string }
+export type WorkerMessage = DispatchReply | { ready: true } | { startupError: string; startupCode?: string }
 
 /** The message and lifecycle operations supplied by each worker backend. */
 export interface WorkerLike {
@@ -81,7 +81,8 @@ export class WorkerChannel implements PooledWorker {
     })
     worker.onMessage((reply) => {
       if ('ready' in reply) this.markReady()
-      else if ('startupError' in reply) void this.kill(`worker initialization failed: ${reply.startupError}`)
+      else if ('startupError' in reply)
+        void this.kill(`worker initialization failed: ${reply.startupError}`, false, null, reply.startupCode)
       else this.onReply(reply)
     })
     worker.onError(() => void this.kill('worker exited without a turn-ending event'))
@@ -140,7 +141,12 @@ export class WorkerChannel implements PooledWorker {
   }
 
   /** Reaps the worker before exposing its final crash metadata to callers. */
-  private async kill(message: string, timedOut = false, knownExitStatus: string | null = null): Promise<void> {
+  private async kill(
+    message: string,
+    timedOut = false,
+    knownExitStatus: string | null = null,
+    code?: string,
+  ): Promise<void> {
     if (!this.live) {
       await this.stopping
       return
@@ -156,6 +162,7 @@ export class WorkerChannel implements PooledWorker {
     )
     const exitStatus = await this.stopping
     this.failure = new MontyCrashedError(message, { timedOut, exitStatus })
+    if (code === 'MONTY_CANCELLATION_CONTRACT_UNSUPPORTED') Object.assign(this.failure, { code })
     this.failStartup(this.failure)
     for (const item of pending) item.reject(this.failure)
   }

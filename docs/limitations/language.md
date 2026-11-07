@@ -1,9 +1,9 @@
 # Python language / parser
 
 Monty parses Python source with Ruff's parser but rejects several constructs
-at parse time. Anything listed below raises `NotImplementedError` (prefixed
-with "The monty syntax parser does not yet support ") at compile time, before
-any code runs.
+at parse time. Constructs in the rejection lists below raise `NotImplementedError`
+(prefixed with "The monty syntax parser does not yet support ") at compile time,
+before any code runs. Other restrictions are described in their feature sections.
 
 ## Statements rejected at parse time
 
@@ -18,11 +18,6 @@ any code runs.
     scope and applied bottom-up. Rejected at parse time on **methods**, so
     `@classmethod`, `@staticmethod`, `@property` and any decorator on a `def`
     inside a class body are unavailable. See [classes.md](classes.md).
-- **`async with` statements** — not yet supported.
-- **`yield` / `yield from` expressions** — no generator functions. Generator
-    *expressions* (`(x for x in ...)`) parse but currently materialize to a
-    `list` rather than a lazy iterator, a known temporary divergence; see
-    `iter__generator_expr_type.py`.
 - **`del` statements** — neither `del x` nor `del d[k]` parse.
 - **`try*` / `except*` exception groups** — PEP 654 syntax rejected.
 - **`type` aliases** (PEP 695 `type Foo = int`).
@@ -33,6 +28,22 @@ any code runs.
 ## Expressions rejected at parse time
 
 - **Template strings (t-strings)** — PEP 750.
+
+## Generator functions
+
+Synchronous generator functions support direct `next(g[, default])`, `g.send(value)`,
+`g.throw(exception)`, explicit `g.close()`, `for` loops, `list(g)`, `tuple(g)` and iterable delegation.
+
+- `throw` accepts one exception instance or built-in exception class. The legacy
+    multiple-argument throw form is unavailable.
+- `__next__`, saved method attributes such as `resume = g.send`,
+    and generator inspection attributes are unavailable.
+- Other collection constructors and native iterator consumers cannot advance these generators.
+- Generator lambdas and async generators are rejected with `SyntaxError`.
+- Releasing a generator, including one suspended in `try/finally`, does not run
+    guest cleanup.
+- Generator *expressions* (`(x for x in ...)`) still materialize to a `list`
+    rather than a lazy iterator.
 
 ## Starred unpacking
 
@@ -60,9 +71,8 @@ exactly, except for the comprehension target restriction in
     see [with.md](with.md).
 - The message differs from CPython, which uses construct-specific wording (`too many nested parentheses`,
     `too many statically nested blocks`, …).
-- Class-body annotations count against the budget even though they are stringized rather than evaluated (see
-    [typing.md](typing.md)), as do class-variable values and method parameter defaults; all three are walked before
-    being parsed. CPython imposes no comparable limit on a stringized annotation.
+- Class-body annotations count against the budget, as do class-variable values and method parameter defaults; all
+    three are walked before being parsed.
 - A source longer than `CompileOptions::source_scan_threshold` bytes (4 KiB by default) is first scanned token by
     token and rejected with the same `SyntaxError` when its estimated parser nesting exceeds the cap.
     The scan bounds how much native stack the parser grows on a long source, memory the sandbox allocator does not
@@ -78,8 +88,7 @@ exactly, except for the comprehension target restriction in
     brackets is rejected the same way even when it is plain data.
 - With type checking on, the whole AST is checked against the cap before the type checker runs, whatever the source's
     length.
-    That includes function parameter and return annotations, which the compiler otherwise drops unchecked, so
-    `def f(a: A | B | ...)` with more than 200 members is rejected only when type checking.
+    That includes function parameter and return annotations.
     Every string literal longer than the remaining budget is parsed as a forward-reference annotation and counted
     from the depth it sits at, so a string that parses as a deeply nested expression is rejected even when it is data.
 - Only Rust hosts can change the threshold, with `CompileOptions { source_scan_threshold: n, ..CompileOptions::default() }`
@@ -97,10 +106,13 @@ exactly, except for the comprehension target restriction in
 ## `__future__` imports
 
 `from __future__ import ...` is a compiler directive, not a real import: it
-binds nothing and is accepted as a no-op. Of CPython's ten features, eight
-became mandatory in Python 3.7 or earlier and so are inert there too, and
-`annotations` is a no-op here because Monty already stringizes annotations
-(see [typing.md](typing.md)). Divergences:
+binds nothing. Of CPython's ten features, eight became mandatory in Python 3.7
+or earlier and so are inert there too. `annotations` is recorded on the
+module's code, and on the `exec()` snippets and later REPL feeds that inherit
+it: a class body under it stores its annotations as PEP 563 strings in
+`__annotations__` and a `def`'s `__annotate__` returns the strings, which
+`typing.get_type_hints()` evaluates as forward references (see
+[typing.md](typing.md#annotations)). Divergences:
 
 - **`barry_as_FLUFL`** (PEP 401) raises
     `NotImplementedError: "The monty syntax parser does not yet support the 'barry_as_FLUFL' future feature"`.
@@ -111,9 +123,6 @@ became mandatory in Python 3.7 or earlier and so are inert there too, and
     `` NotImplementedError: "The monty syntax parser does not yet support aliasing a `__future__` feature" ``.
     CPython binds `ann` to a `__future__._Feature` object; a no-op would bind nothing and surface as a `NameError`
     far from the import, so it is rejected at the import instead.
-- **Position is not enforced.** CPython requires `__future__` imports to
-    precede all other statements (`SyntaxError: "from __future__ imports must occur at the beginning of the file"`);
-    Monty accepts them anywhere.
 - `import __future__` (as opposed to `from __future__ import ...`) raises
     `ModuleNotFoundError`; there is no `__future__` module object.
 
@@ -172,8 +181,9 @@ nor safe to surface in the sandbox.
 
 ## Function objects
 
-A function exposes **no** attributes: `__name__`, `__doc__`, `__qualname__` and
-`__module__` all raise `AttributeError: 'function' object has no attribute '<name>'`, and new ones cannot be set —
+A function exposes only `__annotations__` and `__annotate__` (see [typing.md](typing.md#annotations)):
+`__name__`, `__doc__`, `__qualname__` and `__module__` all raise
+`AttributeError: 'function' object has no attribute '<name>'`, and attributes cannot be set —
 `fn.tag = True` raises
 `AttributeError: 'function' object has no attribute 'tag' and no __dict__ for setting new attributes`. CPython supports
 all of these.
@@ -240,6 +250,11 @@ comparison therefore differs when the *same* `NaN` object appears on both sides:
 unequal to itself. *Distinct* `NaN` objects agree on both
 (`[1, float('nan')] < [1, float('nan'), 3]` is `False` either way), as does a
 direct `x == x` (`False` on both). Named tuples inherit all of this from `tuple`.
+
+`Counter.most_common(n)` differs the same way: CPython ranks equal counts by
+tuple comparison, so the same `NaN` held as several counts can come back in
+another order (`Counter(a=x, b=x, c=x).most_common(2)` is
+`[('a', x), ('b', x)]` in CPython, `[('b', x), ('a', x)]` in Monty).
 
 ## What *does* work
 

@@ -6,8 +6,12 @@
 //! component boundary or enter the TypeScript host.
 #![expect(unsafe_code, reason = "generated canonical-ABI exports require unsafe code")]
 
+#[cfg(feature = "cancellation-test-hooks")]
+use std::env;
 use std::{cell::RefCell, collections::hash_map::RandomState, io, time::Instant};
 
+#[cfg(feature = "cancellation-test-hooks")]
+use monty::cancellation_test_hooks;
 use monty_proto::{
     BudgetVec, DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, PROTOCOL_VERSION, WireArena, exceeds_max_frame_len,
     os_call_from_proto, pb,
@@ -49,6 +53,10 @@ thread_local! {
 fn new_child() -> Child {
     let _ = Instant::now();
     let _ = RandomState::new();
+    #[cfg(feature = "cancellation-test-hooks")]
+    if let Ok(mode) = env::var("MONTY_REPAIR10_FAULT") {
+        cancellation_test_hooks::configure(&mode);
+    }
     Child::default()
 }
 
@@ -63,6 +71,10 @@ static ALLOC: monty_alloc::LimitedAllocator = monty_alloc::LimitedAllocator;
 struct Component;
 
 impl Guest for Component {
+    fn cancellation_contract() -> u32 {
+        8
+    }
+
     fn dispatch(request: Request) -> DispatchResult {
         let (result, allocator_ready) = CHILD.with_borrow_mut(|child| {
             let mut result = dispatch(child, request);
@@ -341,6 +353,7 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
             })
         }
         Request::ResumeFutures(request) => pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures {
+            native_cancel: request.native_cancel,
             results: request
                 .results
                 .into_iter()
@@ -368,6 +381,7 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
 fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
     pb::Configure {
         script_name: request.script_name,
+        execution_clock: Some(pb::ExecutionClock::Wall as i32),
         limits: request.limits.map(|limits| pb::ResourceLimits {
             max_feed_duration_micros: limits.max_feed_duration_micros,
             max_turn_duration_micros: limits.max_turn_duration_micros,
@@ -472,6 +486,10 @@ fn call_result_from_component(result: CallResult) -> pb::ExtFunctionResult {
         CallResult::PendingFuture(call_id) => pb::ext_function_result::Kind::Future(call_id),
         CallResult::NotFound(name) => pb::ext_function_result::Kind::NotFound(name),
         CallResult::NotHandled => pb::ext_function_result::Kind::NotHandled(pb::Unit {}),
+        CallResult::ModuleFile(file) => pb::ext_function_result::Kind::ModuleFile(pb::ModuleFile {
+            path: file.path,
+            source: file.source,
+        }),
     };
     pb::ExtFunctionResult { kind: Some(kind) }
 }
@@ -491,6 +509,8 @@ fn raised_exception_from_component(error: RaisedError) -> pb::RaisedException {
 fn event_from_proto(event: pb::ChildEvent) -> Event {
     match event.kind {
         Some(pb::child_event::Kind::Print(_)) => invalid_event("Print event bypassed segment expansion"),
+        // a serving relay's liveness probe; a child never sends one
+        Some(pb::child_event::Kind::Ping(_)) => invalid_event("Ping event is a relay's, never a child's"),
         Some(pb::child_event::Kind::FunctionCall(call)) => {
             let object_id = call.object_id.map(|uuid| uuid.to_string());
             let position = component_source_range(call.position.unwrap_or_else(monty_types::SourceRange::unknown));

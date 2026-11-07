@@ -218,7 +218,7 @@ impl MontyRun {
                 let vm_result = vm.run_external();
 
                 // Three-phase conversion: convert while VM alive, then snapshot, then build progress
-                let converted = convert_frame_exit(vm_result, &mut vm);
+                let converted = convert_frame_exit(vm_result, &mut vm, |_| Some(&*executor.program.code));
                 let vm_state = check_snapshot_from_converted(&converted, vm);
                 Ok((converted, vm_state))
             })?;
@@ -353,6 +353,9 @@ pub(crate) struct ReplSession<'a> {
     pub(crate) cwd: &'a Arc<str>,
     /// Clock, sleep and random initialization policies.
     pub(crate) os_policy: &'a Arc<OsPolicy>,
+    /// Whether an earlier feed ran `from __future__ import annotations`, which
+    /// persists for the rest of the session as in CPython's interactive mode.
+    pub(crate) future_annotations: bool,
 }
 
 impl Executor {
@@ -374,6 +377,7 @@ impl Executor {
             CompileInterns::direct(&mut interns),
             input_names,
             options,
+            false,
         )?;
         let namespace_size = globals.len();
 
@@ -426,6 +430,7 @@ impl Executor {
             CompileInterns::new(interns),
             input_names,
             options,
+            session.future_annotations,
         );
         if compiled.is_err() {
             globals.truncate(globals_len);
@@ -509,7 +514,8 @@ impl Executor {
             .emit(Opcode::ReturnValue)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
 
-        let module_code = builder.build();
+        // A callable bound to `exec` / `eval` inherits the session's `__future__` state from this frame.
+        let module_code = builder.build().with_future_annotations(session.future_annotations);
         overlay.commit();
         let tables = SessionTables {
             global_names: existing_globals,
@@ -562,7 +568,8 @@ impl Executor {
                 print.reborrow(),
             );
             populate_inputs(inputs, &mut vm)?;
-            Program::run_to_completion(&mut vm)
+            let result = Program::run_to_completion(&mut vm);
+            result.map_err(|e| e.into_python_exception(vm.interns, |_| Some(&*executor.program.code), vm.heap))
         });
 
         if heap.size() > heap_capacity {
@@ -571,7 +578,7 @@ impl Executor {
 
         // Non-REPL execution has exactly one source, so every frame's filename
         // resolves to the same `self.code`.
-        result.map_err(|e| e.into_python_exception(&self.tables.interns, |_| Some(&*self.program.code)))
+        result
     }
 
     /// Executes the code and returns both the result and reference count data, used for testing only.
@@ -657,8 +664,14 @@ impl Executor {
 
             // Convert return value while VM is still alive (needs access to interns).
             // Non-REPL: single source, so every frame resolves to `executor.code`.
-            let value = frame_exit_to_object(frame_exit_result, &mut vm)
-                .map_err(|e| e.into_python_exception(vm.interns, |_| Some(&*executor.program.code)))?;
+            let value = match frame_exit_to_object(frame_exit_result, &mut vm) {
+                Ok(value) => value,
+                Err(error) => {
+                    let error = error.into_python_exception(vm.interns, |_| Some(&*executor.program.code), vm.heap);
+                    globals.drop_with(vm.heap);
+                    return Err(error);
+                }
+            };
 
             // Drop globals with proper ref counting
             globals.drop_with(vm.heap);
@@ -746,12 +759,14 @@ impl Program {
                     args.drop_with(vm);
                     frame_exit_result = vm.resume_with_exception(err);
                 }
-                // An import nobody serves is a missing module.
+                // An import nobody serves is a missing module, and host hints are `{}`.
                 Ok(FrameExit::OsCall {
-                    function_call: call @ OsFunctionCall::Import(_),
+                    function_call: call @ (OsFunctionCall::Import(_) | OsFunctionCall::GetTypeHints(_)),
+                    effect,
                     ..
                 }) => {
-                    frame_exit_result = resume_with_result(vm, ExtFunctionResult::Error(call.on_no_handler()), None);
+                    vm.pending_effect = effect;
+                    frame_exit_result = resume_with_result(vm, call.no_handler_result(), None);
                 }
                 // Standard execution waits inline, excluding sleep from execution time.
                 Ok(FrameExit::OsCall {
@@ -797,7 +812,11 @@ pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: 
     // so one `drop_with` releases whatever the exit owns, fields added later
     // included.
     let exit = match answer_unserved_lookups(frame_exit_result, vm)? {
-        FrameExit::Return(return_value) => return Ok(MontyObject::export(return_value, vm)),
+        FrameExit::Return(return_value) => {
+            return vm
+                .export_on_clock(|vm| MontyObject::export(return_value, vm))
+                .map_err(|e| e.into_run_error(vm));
+        }
         exit => exit,
     };
     let error: RunError = match &exit {
@@ -851,7 +870,8 @@ pub struct RefCountOutput {
 /// Compiles module source through the supplied tables, committing any overlay on success.
 /// On failure the caller restores provisional global slots or discards a fresh program's tables.
 /// The source must already have passed the nesting scan; `MontyRun::new` and
-/// the REPL feeds run it.
+/// the REPL feeds run it. `future_annotations` is inherited from earlier REPL feeds;
+/// the returned `Code` records it, or a `from __future__ import annotations` in `code`.
 fn compile_module_source(
     code: &str,
     script_name: &str,
@@ -859,6 +879,7 @@ fn compile_module_source(
     mut interns: CompileInterns<'_>,
     input_names: impl IntoIterator<Item = impl AsRef<str>>,
     options: CompileOptions,
+    future_annotations: bool,
 ) -> Result<(Code, Vec<NamespaceId>), MontyException> {
     let input_names = input_names.into_iter();
     let mut input_slots = Vec::with_capacity(input_names.size_hint().0);
@@ -869,11 +890,11 @@ fn compile_module_source(
             .map_err(|e| e.into_python_exc(script_name, code))?;
         input_slots.push(slot);
     }
-    let nodes =
-        parse_with_interner(code, script_name, &mut interns).map_err(|e| e.into_python_exc(script_name, code))?;
-    let nodes =
-        prepare_with_existing_names(nodes, &interns, globals).map_err(|e| e.into_python_exc(script_name, code))?;
-    let module_code = Compiler::compile_module(&nodes, &mut interns, globals, options)
+    let parsed = parse_with_interner(code, script_name, &mut interns, future_annotations)
+        .map_err(|e| e.into_python_exc(script_name, code))?;
+    let nodes = prepare_with_existing_names(parsed.nodes, &interns, globals)
+        .map_err(|e| e.into_python_exc(script_name, code))?;
+    let module_code = Compiler::compile_module(&nodes, &mut interns, globals, options, parsed.future_annotations)
         .map_err(|e| e.into_python_exc(script_name, code))?;
     interns.commit();
     Ok((module_code, input_slots))

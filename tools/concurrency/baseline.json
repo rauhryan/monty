@@ -1,0 +1,212 @@
+{
+  "idle": {
+    "source": "baseline/idle_state.py",
+    "idle": true,
+    "continuation": "baseline/idle_resume.py",
+    "requires": {
+      "equal": {
+        "idle": true
+      }
+    }
+  },
+  "handled": {
+    "source": "baseline/handled.py",
+    "steps": [
+      [
+        [
+          "handled"
+        ],
+        [
+          "handled"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "handled": "ok"
+      }
+    ],
+    "result": "ok",
+    "capture": 0,
+    "requires": {
+      "minimum": {
+        "active_handled": 1
+      }
+    }
+  },
+  "unwinding": {
+    "source": "baseline/unwinding.py",
+    "step": true,
+    "steps": [
+      [
+        "call",
+        "unwinding"
+      ],
+      [
+        [],
+        [
+          "unwinding"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "$ack": true
+      },
+      {
+        "unwinding": "ok"
+      }
+    ],
+    "result": "ok",
+    "capture": 0,
+    "requires": {
+      "minimum": {
+        "active_unwinding": 1
+      }
+    }
+  },
+  "internal": {
+    "source": "baseline/internal.py",
+    "step": true,
+    "steps": [
+      [
+        "call",
+        "internal"
+      ],
+      [
+        [],
+        [
+          "internal"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "$ack": true
+      },
+      {
+        "internal": "ok"
+      }
+    ],
+    "result": "ok",
+    "capture": 0,
+    "requires": {
+      "minimum": {
+        "active_internal": 1
+      }
+    }
+  },
+  "queue": {
+    "source": "baseline/queue.py",
+    "steps": [
+      [
+        [
+          "control"
+        ],
+        [
+          "control"
+        ]
+      ],
+      [
+        [
+          "release"
+        ],
+        [
+          "release"
+        ]
+      ],
+      [
+        [
+          "after"
+        ],
+        [
+          "after"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "control": "ok"
+      },
+      {
+        "release": "ok"
+      },
+      {
+        "after": "ok"
+      }
+    ],
+    "result": "ok",
+    "capture": 1,
+    "requires": {
+      "minimum": {
+        "active_unwinding": 1,
+        "parked_handled": 1,
+        "draining_groups": 1,
+        "empty_queues": 1,
+        "active_shields": 1,
+        "cancelled_scopes": 1
+      }
+    }
+  },
+  "host": {
+    "steps": [
+      [
+        [
+          "body"
+        ],
+        [
+          "body"
+        ]
+      ],
+      [
+        [
+          "cleanup"
+        ],
+        [
+          "cleanup"
+        ]
+      ],
+      [
+        [],
+        [
+          "cleanup"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "$cancel": "FIRST"
+      },
+      {
+        "$cancel": "SECOND"
+      },
+      {
+        "cleanup": "ok"
+      }
+    ],
+    "cancelled": "FIRST",
+    "source": "cancelled_error/host.py",
+    "terminal": {
+      "status": "cancelled",
+      "reason": "FIRST",
+      "value": "\"suppressed\"",
+      "error": null,
+      "interrupted_error": null,
+      "value_export_error": null
+    },
+    "capture": 1,
+    "requires": {
+      "minimum": {
+        "active_shields": 1
+      },
+      "equal": {
+        "host_cancellations": [
+          {
+            "reason": "FIRST",
+            "delivered": true
+          }
+        ]
+      }
+    }
+  }
+}

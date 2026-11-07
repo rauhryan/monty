@@ -165,7 +165,8 @@ test-no-features: ## Run rust tests without any features enabled
 
 .PHONY: test-memory-model-checks
 test-memory-model-checks: ## Run rust tests with memory-model-checks enabled - THIS IS EXTREMELY SLOW, SHOULD MOSTLY BE RUN IN CI OR IF ABSOLUTELY NECESSARY
-	cargo test -p monty --features "memory-model-checks test-hooks"
+	# Include live-owner assertions and cancellation fault injection alongside drop checks.
+	cargo test -p monty --features memory-model-checks,ref-count-return,cancellation-test-hooks
 	cargo run -p monty-datatest --features memory-model-checks
 
 .PHONY: test-ref-count-return
@@ -235,10 +236,10 @@ testcov: ## Run Rust tests with coverage, print table, and generate HTML report
 	@cargo llvm-cov --version > /dev/null 2>&1 || echo 'Please run: `cargo install cargo-llvm-cov`'
 	cargo llvm-cov clean --workspace
 	echo "coverage for `make test-no-features`"
-	cargo llvm-cov --no-report -p monty
+	cargo llvm-cov --no-report -p monty -p monty-fs -p monty-types
 	cargo llvm-cov run --no-report -p monty-datatest
 	echo "coverage for `make test-memory-model-checks`"
-	cargo llvm-cov --no-report -p monty --features memory-model-checks
+	cargo llvm-cov --no-report -p monty --features memory-model-checks,ref-count-return,cancellation-test-hooks
 	cargo llvm-cov run --no-report -p monty-datatest --features memory-model-checks
 	echo "coverage for `make test-ref-count-return`"
 	cargo llvm-cov --no-report -p monty --features ref-count-return

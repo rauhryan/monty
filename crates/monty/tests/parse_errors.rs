@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, MontyException};
+use monty_types::{CompileOptions, ExcType, MontyException, MontyObject};
 
 /// Helper to extract the exception from a parse error.
 fn get_parse_err(code: impl Into<String>) -> MontyException {
@@ -11,10 +11,14 @@ fn get_parse_err(code: impl Into<String>) -> MontyException {
 }
 
 #[test]
-fn yield_expressions_return_not_implemented_error() {
-    let err = get_parse_err("def foo():\n    yield 1");
-    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
-    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support yield expressions");
+fn yield_expressions_compile() {
+    MontyRun::new(
+        "def foo():\n    yield 1".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -146,14 +150,29 @@ fn unknown_imports_compile_successfully_error_deferred_to_runtime() {
 
 #[test]
 fn explicit_class_annotations_assignment_returns_not_implemented_error() {
-    // The synthesized `__annotations__` is the last class-body statement, so an
-    // explicit assignment would be silently clobbered and its entries lost.
-    // CPython merges the two; Monty rejects rather than dropping them quietly.
-    let err = get_parse_err("class C:\n    __annotations__ = {'a': 'b'}\n    x: int");
+    // Under PEP 563 the synthesized `__annotations__` is the last class-body
+    // statement, so an explicit assignment would be silently clobbered and its
+    // entries lost. CPython merges the two; Monty rejects rather than dropping
+    // them quietly.
+    let err =
+        get_parse_err("from __future__ import annotations\nclass C:\n    __annotations__ = {'a': 'b'}\n    x: int");
     assert_eq!(err.exc_type(), ExcType::NotImplementedError);
     assert_snapshot!(
         err.message().unwrap(),
         @"The monty syntax parser does not yet support assigning `__annotations__` in a class body with annotated names"
+    );
+    // Without the import the annotations compile to `__annotate__`, so the
+    // binding is an ordinary member that wins, as in CPython.
+    let mut runner = MontyRun::new(
+        "class C:\n    __annotations__ = {'a': 'b'}\n    x: int\nC.__annotations__".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        runner.run_no_limits(vec![]).unwrap(),
+        MontyObject::dict([(MontyObject::string("a"), MontyObject::string("b"))]),
     );
 }
 
@@ -224,17 +243,14 @@ fn undefined_future_import_returns_syntax_error() {
 }
 
 #[test]
-fn async_with_statement_returns_not_implemented_error() {
-    // Plain `with` is supported (see `test_cases/with__all.py`); only `async with`
-    // is still rejected at parse time.
-    let result = MontyRun::new(
-        "async def f():\n    async with open('f') as g: pass\n".to_owned(),
+fn async_with_statement_compiles() {
+    MontyRun::new(
+        "async def f(manager):\n    async with manager as value: pass\n".to_owned(),
         "test.py",
         vec![],
         CompileOptions::default(),
-    );
-    let err = result.expect_err("expected parse error");
-    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    )
+    .expect("async with is supported");
 }
 
 #[test]

@@ -3,7 +3,13 @@ use std::{
     fmt::{self, Write},
 };
 
-use crate::{args::Signature, bytecode::Code, expressions::Identifier, intern::Interns, namespace::NamespaceId};
+use crate::{
+    args::Signature,
+    bytecode::Code,
+    expressions::Identifier,
+    intern::{FunctionId, Interns},
+    namespace::NamespaceId,
+};
 
 /// How an exact positional call can bypass argument binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +86,9 @@ pub(crate) struct Function {
     /// and starts execution only when awaited.
     #[serde(rename = "A")]
     pub is_async: bool,
+    /// Calling a generator binds arguments without executing the body.
+    #[serde(default, rename = "Y")]
+    pub is_generator: bool,
     /// Cached binder-free call plan, derived from the fields above and cached
     /// via [`Self::exact_positional_call`].
     ///
@@ -89,6 +98,10 @@ pub(crate) struct Function {
     /// than merely checked.
     #[serde(skip)]
     exact_positional_call: OnceCell<Option<ExactPositionalCall>>,
+    /// The compiled `__annotate__(format)` of an annotated `def` (PEP 649), run
+    /// for `f.__annotations__` and `typing.get_type_hints()`; `None` when unannotated.
+    #[serde(rename = "T", default, skip_serializing_if = "Option::is_none")]
+    pub annotate: Option<FunctionId>,
     /// Compiled body borrowed by active frames, which track body-relative instruction offsets.
     #[serde(rename = "B")]
     pub code: Code,
@@ -133,9 +146,18 @@ impl Function {
             cell_param_indices,
             defaults_count,
             is_async,
+            is_generator: false,
             exact_positional_call: OnceCell::new(),
+            annotate: None,
             code,
         }
+    }
+
+    /// Attaches the compiled `__annotate__` function.
+    #[must_use]
+    pub fn with_annotate(mut self, annotate: Option<FunctionId>) -> Self {
+        self.annotate = annotate;
+        self
     }
 
     /// Returns the binder-free call plan for this function, deriving and
@@ -148,6 +170,9 @@ impl Function {
 
     /// Derives the binder-free call plan from authoritative function metadata.
     fn derive_exact_positional_call(&self) -> Option<ExactPositionalCall> {
+        if self.is_generator {
+            return None;
+        }
         if self.cell_var_slots.is_empty() && self.free_var_slots.is_empty() {
             self.signature.exact_positional_count().map(|count| {
                 if self.is_async {

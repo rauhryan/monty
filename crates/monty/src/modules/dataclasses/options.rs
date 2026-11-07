@@ -54,13 +54,6 @@ impl DataclassParams {
     pub fn new(options: DataclassOptions) -> Self {
         Self { options }
     }
-
-    /// The options the class was decorated with, which `legacy` rebuilds the
-    /// generated methods from.
-    #[must_use]
-    pub(super) fn options(&self) -> DataclassOptions {
-        self.options
-    }
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassParams> {

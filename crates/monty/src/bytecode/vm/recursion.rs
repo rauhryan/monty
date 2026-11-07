@@ -27,11 +27,11 @@ use crate::{
 };
 
 /// Counts charged frames when restoring a VM or switching tasks.
-/// The first frame is the uncharged root; frozen implementation frames never contribute.
+/// The first frame is the uncharged root; direct native helper frames do not contribute.
 pub(super) fn frame_recursion_depth(frames: impl Iterator<Item = Option<FunctionId>>, interns: &Interns) -> usize {
     frames
         .skip(1)
-        .filter(|id| id.is_none_or(|id| !interns.is_internal_function(id)))
+        .filter(|id| id.is_none_or(|id| !interns.is_uncharged_function(id)))
         .count()
 }
 

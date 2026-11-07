@@ -20,8 +20,9 @@ use std::time::Instant;
 use monty::{MontyRun, RunProgress};
 use monty_proto::{WireArena, WireFunctionCall, decode_frame, os_call_to_proto, pb};
 use monty_types::{
-    CallArgs, CompileOptions, ExcType, GetenvArgs, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
-    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker, SourceRange,
+    CallArgs, CompileOptions, CreateExclusiveCallArgs, ExcType, GetenvArgs, MontyDate, MontyDateTime, MontyFileHandle,
+    MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, OsFunctionCall, PrintWriter,
+    ResourceTracker, SourceRange,
     unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::{BigInt, Sign};
@@ -34,6 +35,9 @@ use crate::oracle::monty_node::Kind;
 
 #[path = "oracle/monty.v1.rs"]
 mod oracle;
+
+#[path = "fixtures/resume_futures_v6.rs"]
+mod resume_futures_v6;
 
 /// Every `MontyObject` shape, deliberately including protobuf-default
 /// payloads (zeros, empty strings, `false`, empty containers, `Some("")`)
@@ -1249,4 +1253,70 @@ fn repeated_position_fields_merge_like_the_oracle() {
     let expected = filename[..SourceRange::MAX_FILENAME_LEN].to_owned();
     assert_eq!(hand.position.map(|p| p.filename), Some(expected));
     assert!(started.elapsed().as_secs() < 5, "repeats amplified decode work");
+}
+
+/// Optional tag 3 must distinguish no request from an empty first reason.
+#[test]
+fn native_cancel_presence_roundtrips_against_generated_oracle() {
+    for (reason, wire) in [
+        (None, vec![]),
+        (Some(""), vec![0x1a, 0]),
+        (Some("HOST"), b"\x1a\x04HOST".to_vec()),
+    ] {
+        let production = pb::ResumeFutures {
+            native_cancel: reason.map(str::to_owned),
+            ..Default::default()
+        };
+        let oracle = oracle::ResumeFutures {
+            native_cancel: reason.map(str::to_owned),
+            ..Default::default()
+        };
+        assert_eq!(production.encode_to_vec(), wire);
+        assert_eq!(oracle.encode_to_vec(), wire);
+        let decoded: pb::ResumeFutures = decode_frame(&oracle.encode_to_vec()).unwrap();
+        assert_eq!(decoded.native_cancel.as_deref(), reason);
+        let decoded = oracle::ResumeFutures::decode(production.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(decoded.native_cancel.as_deref(), reason);
+    }
+}
+
+/// An old decoder silently loses a present reason: Configure must refuse that peer.
+#[test]
+fn v6_resume_decoder_drops_cancellation_negative_control() {
+    for reason in ["", "HOST"] {
+        let current = oracle::ResumeFutures {
+            native_cancel: Some(reason.to_owned()),
+            ..Default::default()
+        };
+        let old = resume_futures_v6::ResumeFutures::decode(current.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(old.encode_to_vec(), [] as [u8; 0]);
+        let lost = oracle::ResumeFutures::decode(old.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(lost.native_cancel, None);
+    }
+}
+
+#[test]
+fn exclusive_creation_is_byte_compatible_with_generated_oracle() {
+    let hand = os_call_to_proto(
+        42,
+        OsFunctionCall::CreateExclusive(CreateExclusiveCallArgs {
+            path: "/data/new".into(),
+            mode: "wb".parse().unwrap(),
+            permissions: 0o600,
+        }),
+        false,
+        &SourceRange::unknown(),
+    );
+    let oracle = oracle::OsCall::decode(hand.encode_to_vec().as_slice()).unwrap();
+    let Some(oracle::os_call::Call::CreateExclusive(args)) = &oracle.call else {
+        panic!("exclusive creation arm missing");
+    };
+    assert_eq!(args.path, "/data/new");
+    assert_eq!(args.mode, "wb");
+    assert_eq!(args.permissions, 0o600);
+    assert_eq!(oracle.encode_to_vec(), hand.encode_to_vec());
+    assert_eq!(
+        decode_frame::<pb::OsCall>(oracle.encode_to_vec().as_slice()).unwrap(),
+        hand
+    );
 }

@@ -122,11 +122,20 @@ Successful decoding is not evidence of authenticity or validity.
 
 Async host functions are supported too: `FunctionCall::resume_pending` continues execution with a pending future the sandboxed code can `await`; when all tasks are blocked, execution yields `RunProgress::ResolveFutures` for the host to supply results. When `FunctionCall::allow_eager_await` is true the call is awaited immediately and no other task can run, so a host that already has the result can pass it to `FunctionCall::resume_eager` and skip the `ResolveFutures` round trip. `OsCall::allow_eager_await` says the same of an `asyncio.sleep` the host has already waited out.
 
-Imports of unknown modules suspend with `OsFunctionCall::Import` and the top-level module name.
-The host's answer becomes the module; dotted imports read subsequent components as attributes of that value.
+Imports of unknown modules suspend with `OsFunctionCall::Import`, whose `ImportArgs` carry the dotted module name and
+its search path: the working directory for a top-level name, or a file package's `__path__` for its submodules.
+A returned value becomes the module; dotted imports read subsequent components as attributes of that value.
 Hosts usually return a host-backed class instance containing the module's attributes.
-`ExtFunctionResult::NotFound`, or running without a host, raises `ModuleNotFoundError`.
+A host with no such module can answer `ExtFunctionResult::ModuleFile` with the module's `.py` file instead:
+`ImportArgs::candidates` lists `<dir>/name/__init__.py`, then `<dir>/name.py`, for each search directory,
+`find_module_file` reads them in turn with a function the host supplies (a missing file moves on, any other read error
+is the answer), and `MountTable::read_module` reads one through the mounts.
+The sandbox runs the file as the module and caches it for the session.
+`ExtFunctionResult::NotFound` (what `OsFunctionCall::no_handler_result` answers), or running without a host, raises
+`ModuleNotFoundError`; an exception the host raises for the import is raised as it is.
 The worker requests module type stubs through `OsFunctionCall::ImportStubs`; the interpreter never raises it.
+`typing.get_type_hints()` of a host function or class suspends with `OsFunctionCall::GetTypeHints`; the host's dict
+answer is the call's result, and running without a host gives `{}`.
 
 ## Other pieces
 
@@ -149,6 +158,8 @@ The worker requests module type stubs through `OsFunctionCall::ImportStubs`; the
   Defaults use the system clock, UTC and OS entropy, with sleeps capped at ten seconds.
   System sleeps suspend for the host to wait without its `os` handler; standard execution waits inline.
   `CallHost` delegates to the host through `RunProgress::OsCall`.
+  A loaded dump keeps the policy it was taken under until the host calls `MontyRepl::set_os_policy` or
+  `ReplProgress::set_os_policy`; the worker applies the restoring checkout's policy this way.
 
 ## Monty crates
 
@@ -165,3 +176,32 @@ The worker requests module type stubs through `OsFunctionCall::ImportStubs`; the
 ## License
 
 MIT
+
+### Experimental native cancellation
+
+`ReplResolveFutures::resume_native(results, cancel, print)` is an experimental native cancellation entry.
+An optional first host cause persists through snapshots and remains cancelled after guest catch-and-return.
+The terminal value is a dictionary with `status`, `reason`, `value`, `error`, `interrupted_error`, and `value_export_error`; ordinary `resume` behavior without a host request is unchanged.
+Compiler-owned finally and async-exit ranges protect yielding cleanup.
+Deferred cancellation is delivered at the outermost cleanup continuation before ordinary body work.
+On this experimental native route, delivery can interrupt an unresolved guest error; its bounded metadata is retained in `interrupted_error`.
+Exception handlers may match the delivered `asyncio.CancelledError`; an uncaught signal or a later guest failure appears in `error`.
+An active selector continuation is abandoned at delivery; required context exit consumes its suppression result before cancellation delivery.
+Blocking synchronous I/O and nonterminating cleanup remain outside the delivery guarantee.
+See [asyncio limitations](../../docs/limitations/asyncio.md) for the supported concurrency and cancellation behavior.
+
+
+The experimental `ReplResolveFutures::validate_results` checks a full settlement
+batch by reference before a transport transfers its suspension to `resume_native`.
+An unknown ID or a pending-future outcome is rejected without consuming the
+borrowed checkpoint. New executions ignore duplicate and late replies using a
+monotonic host-call range; first settlement wins, including within a batch.
+Owned-child host cancellation runs before same-batch replies and preserves
+protected cleanup operations. Gather descendants retain separate lifetime links,
+including after first-error delivery; the enclosing scope drains them before
+parent cleanup. These APIs remain experimental.
+
+The concurrent-I/O settlement contract uses the call IDs issued by the runtime
+and acknowledges those same IDs. Caller-assigned `ExtFunctionResult::Future`
+IDs from the lower-level legacy API are outside this proof. IDs are scoped to
+one execution, not a cross-execution deduplication journal.

@@ -348,11 +348,18 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     `checkout()` that restored it.
     The worker caps each restored resource limit at the restoring `checkout()` limit; stricter dump limits remain in
     effect.
+    The execution clock must match the snapshot; a mismatched load fails. Snapshots without a clock use wall time.
     Elapsed execution time is restored, not reset, and counts against the capped limits: a dump taken mid-feed that
     has already used more than the restoring `max_feed_duration` raises `TimeoutError` at its next time check.
     Module stubs are retained even when type checking is off, so a restored session requests stubs only for modules
     it never asked about; every `import` still asks the host for the module value.
     The restoring `checkout()`'s `external_modules` answer those imports and function calls.
+- **The restoring `checkout()`'s `os_policy` applies, not the dump's.** Its clock, zone, sleep, process-clock and
+    random-start settings govern every call after restoration, including the rest of a restored suspended feed.
+    A call already suspended when the dump was taken keeps the form it was issued in, and a `random` generator that
+    had already started keeps its state.
+    A `checkout()` without `os_policy` restores under the default policy (system clock, UTC, OS entropy), so pass the
+    dumped session's policy again to keep a fixed clock or seed.
 - **Host modules restore as module objects.** Their attributes, including functions named `tools.<attr>`, survive
     restoration, and a function call resolves through the restoring `checkout()`'s `external_modules`.
     An `import` after restoration asks the host again.
@@ -381,16 +388,14 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     load only dumps this host produced.
 - **Dumps carry a format version.** The bytes are Monty's own dump format, a `MONTY\0` magic followed by a dump-format
     version, then the state encoded as CBOR with every field and variant named.
-    A release that only changes the layout of stored data, adding fields that default when absent or removing and
-    reordering named fields, keeps the version, so its builds still load dumps written by earlier releases at that
-    version.
-    A release that changes what stored data means, such as the bytecode, bumps the version and says so in its release
-    notes.
-    Older builds then refuse the new dumps as too new.
-    Where the old data still holds everything the new meaning needs, the newer build upgrades older dumps as it loads
-    them: version 14 builds load version 13 dumps from 1.0 and 1.1, generating the methods their dataclasses lack.
-    Otherwise it refuses them as too old, and the session has to be rebuilt by replaying its feeds.
-    The same bytes load in-process, in a subprocess and over WebSocket.
+    This pre-release fork makes no cross-version snapshot compatibility guarantee.
+    This build writes format 41 and accepts formats 40 and 41.
+    The frozen v40 baseline loads without conversion; older readers reject the new loop-adapter format.
+    Incompatible representation or captured-code changes raise the format and minimum version;
+    older snapshots are rejected before their payload is decoded.
+    Preserve the producing build if you need to resume its experimental snapshots.
+    Current-format snapshots retain the same resume semantics across supported execution backends.
+    The same bytes load in-process, in a subprocess and over gRPC.
 
 ## Async
 
@@ -419,4 +424,4 @@ See the [Rust quickstart](quickstart/rust.md#serialization).
 - **Forking.** One snapshot restored into several sessions explores several branches from the same state.
 - **Surviving restarts.** A remote server draining for deploy answers with a dump you can restore elsewhere.
     A server that stores sessions instead resumes them for you; see
-    [stored sessions](api/python/websocket.md#stored-sessions).
+    [stored sessions](api/python/remote.md#stored-sessions).

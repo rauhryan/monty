@@ -442,6 +442,11 @@ pub enum ExcType {
     /// `decimal.FloatOperation`: floats and Decimals were mixed.
     #[strum(serialize = "decimal.FloatOperation")]
     DecimalFloatOperation,
+    /// asyncio cancellation is a direct BaseException subclass, not a validation failure.
+    #[strum(serialize = "asyncio.CancelledError")]
+    CancelledError,
+    /// Explicit generator closure, a direct BaseException subclass.
+    GeneratorExit,
 }
 impl ExcType {
     /// Checks if this exception type is a subclass of another exception type.
@@ -462,7 +467,14 @@ impl ExcType {
             // BaseException catches all exceptions
             Self::BaseException => true,
             // Exception catches everything except BaseException, and direct subclasses: KeyboardInterrupt, SystemExit
-            Self::Exception => !matches!(self, Self::BaseException | Self::KeyboardInterrupt | Self::SystemExit),
+            Self::Exception => !matches!(
+                self,
+                Self::BaseException
+                    | Self::KeyboardInterrupt
+                    | Self::SystemExit
+                    | Self::CancelledError
+                    | Self::GeneratorExit
+            ),
             // LookupError catches KeyError and IndexError
             Self::LookupError => matches!(self, Self::KeyError | Self::IndexError),
             // ArithmeticError catches ZeroDivisionError and OverflowError

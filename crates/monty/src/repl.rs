@@ -22,7 +22,7 @@ use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErr
 
 use crate::{
     args::{ArgValues, KwargsValues},
-    bytecode::{FrameExit, VM, VMSnapshot},
+    bytecode::{FrameExit, ModuleCache, VM, VMSnapshot},
     defer_drop,
     exception_private::{ExcTypeExt, RunError},
     heap::{DropWithContext, Heap, HeapData, HeapReader},
@@ -89,6 +89,14 @@ pub struct MontyRepl {
     /// The session's `random` state, carried between snippets like the
     /// globals so a `random.seed()` in one feed governs the draws of the next.
     random: SessionRandom,
+    /// Modules imported from files, carried between snippets like the globals
+    /// so each file runs once per session.
+    #[serde(default)]
+    modules: ModuleCache,
+    /// Whether a feed has run `from __future__ import annotations`, which then
+    /// applies to every later feed, as in CPython's interactive mode.
+    #[serde(default)]
+    future_annotations: bool,
     /// Persistent heap across snippets.
     heap: Heap,
     /// Persistent global variable values across snippets.
@@ -100,11 +108,6 @@ pub struct MontyRepl {
 }
 
 impl MontyRepl {
-    /// The session heap and interns, for a dump upgrade of an idle session.
-    pub(crate) fn heap_and_interns(&mut self) -> (&mut Heap, &Interns) {
-        (&mut self.heap, &self.interns)
-    }
-
     /// Creates an empty REPL session with no code parsed or executed.
     ///
     /// All code execution is driven through [`feed_run`](Self::feed_run) or [`feed_start`](Self::feed_start). This separates
@@ -124,6 +127,8 @@ impl MontyRepl {
             os_policy: Arc::new(OsPolicy::default()),
             cwd: Arc::from(DEFAULT_CWD),
             random: SessionRandom::default(),
+            modules: ModuleCache::default(),
+            future_annotations: false,
             heap,
             globals: Vec::new(),
         }
@@ -155,8 +160,14 @@ impl MontyRepl {
     /// [`MontyRun::with_os_policy`](crate::MontyRun::with_os_policy).
     #[must_use]
     pub fn with_os_policy(mut self, os_policy: OsPolicy) -> Self {
-        self.os_policy = Arc::new(os_policy);
+        self.set_os_policy(os_policy);
         self
+    }
+
+    /// Replaces the session's OS-call policies in place, for a host restoring
+    /// a dump under its own policy (see [`ReplProgress::set_os_policy`]).
+    pub fn set_os_policy(&mut self, os_policy: OsPolicy) {
+        self.os_policy = Arc::new(os_policy);
     }
 
     /// Switches the sandbox working directory (initially `/`).
@@ -258,6 +269,7 @@ impl MontyRepl {
             script_name: &this.script_name,
             cwd: &this.cwd,
             os_policy: &this.os_policy,
+            future_annotations: this.future_annotations,
         };
         let mut executor = match Executor::new_repl_snippet(
             code,
@@ -271,6 +283,7 @@ impl MontyRepl {
             Ok(exec) => exec,
             Err(error) => return Err(Box::new(ReplStartError { repl: this, error })),
         };
+        this.future_annotations = executor.program.module_code.future_annotations();
 
         this.ensure_globals_size(executor.namespace_size());
 
@@ -288,21 +301,36 @@ impl MontyRepl {
                 );
 
                 vm.random = mem::take(&mut this.random);
+                vm.modules = mem::take(&mut this.modules);
 
                 // Inject inputs with VM alive
                 if let Err(error) = inject_inputs_into_vm(&executor.program, input_values, &input_ids, &mut vm) {
-                    reclaim_vm_state(&mut this.globals, &mut this.cwd, &mut this.random, &mut vm);
+                    reclaim_vm_state(
+                        &mut this.globals,
+                        &mut this.cwd,
+                        &mut this.random,
+                        &mut this.modules,
+                        &mut vm,
+                    );
                     return Err(error);
                 }
 
                 let vm_result = vm.run_external();
 
                 // Convert while VM alive, then snapshot or reclaim globals
-                let converted = convert_frame_exit(vm_result, &mut vm);
+                let converted = convert_frame_exit(vm_result, &mut vm, |fname| {
+                    this.sources.get(fname).map(|source| &**source)
+                });
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
-                    reclaim_vm_state(&mut this.globals, &mut this.cwd, &mut this.random, &mut vm);
+                    reclaim_vm_state(
+                        &mut this.globals,
+                        &mut this.cwd,
+                        &mut this.random,
+                        &mut this.modules,
+                        &mut vm,
+                    );
                     None
                 };
                 Ok((converted, vm_state))
@@ -353,6 +381,7 @@ impl MontyRepl {
             script_name: &self.script_name,
             cwd: &self.cwd,
             os_policy: &self.os_policy,
+            future_annotations: self.future_annotations,
         };
         let mut executor = Executor::new_repl_snippet(
             code,
@@ -363,6 +392,7 @@ impl MontyRepl {
             self.options,
             session,
         )?;
+        self.future_annotations = executor.program.module_code.future_annotations();
 
         self.ensure_globals_size(executor.namespace_size());
 
@@ -380,16 +410,35 @@ impl MontyRepl {
                 );
 
                 vm.random = mem::take(&mut self.random);
+                vm.modules = mem::take(&mut self.modules);
 
                 if let Err(e) = inject_inputs_into_vm(&executor.program, input_values, &input_ids, &mut vm) {
-                    reclaim_vm_state(&mut self.globals, &mut self.cwd, &mut self.random, &mut vm);
+                    reclaim_vm_state(
+                        &mut self.globals,
+                        &mut self.cwd,
+                        &mut self.random,
+                        &mut self.modules,
+                        &mut vm,
+                    );
                     return Err(e);
                 }
 
-                let result = Program::run_to_completion(&mut vm);
+                let result = Program::run_to_completion(&mut vm).map_err(|e| {
+                    e.into_python_exception(
+                        vm.interns,
+                        |fname| self.sources.get(fname).map(|source| &**source),
+                        vm.heap,
+                    )
+                });
 
                 // Reclaim globals (and any directory change or seed) before cleanup.
-                reclaim_vm_state(&mut self.globals, &mut self.cwd, &mut self.random, &mut vm);
+                reclaim_vm_state(
+                    &mut self.globals,
+                    &mut self.cwd,
+                    &mut self.random,
+                    &mut self.modules,
+                    &mut vm,
+                );
                 Ok(result)
             },
         );
@@ -401,9 +450,7 @@ impl MontyRepl {
 
         // Resolve every traceback frame against the source of the snippet that
         // produced it — frames from earlier snippets live in `self.sources`.
-        result?.map_err(|e| {
-            e.into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source))
-        })
+        result?
     }
 
     /// Calls a Python function defined in the session by name.
@@ -424,20 +471,34 @@ impl MontyRepl {
         // The synthetic call site is `name(*args)`: keyword arguments have
         // no slot, so they are refused rather than silently dropped.
         if args.kwargs().len() != 0 {
-            return Err(ExcType::type_error("call_function() takes positional arguments only")
-                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source)));
+            return Err(
+                ExcType::type_error("call_function() takes positional arguments only").into_python_exception(
+                    &self.interns,
+                    |fname| self.sources.get(fname).map(|source| &**source),
+                    &mut self.heap,
+                ),
+            );
         }
         let Some(name_id) = self.interns.get_string_id_by_name(name) else {
-            return Err(RunError::from(ExcType::name_error(name))
-                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source)));
+            return Err(RunError::from(ExcType::name_error(name)).into_python_exception(
+                &self.interns,
+                |fname| self.sources.get(fname).map(|source| &**source),
+                &mut self.heap,
+            ));
         };
         let Some(slot_idx) = self.global_names.get(name_id) else {
-            return Err(RunError::from(ExcType::name_error(name))
-                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source)));
+            return Err(RunError::from(ExcType::name_error(name)).into_python_exception(
+                &self.interns,
+                |fname| self.sources.get(fname).map(|source| &**source),
+                &mut self.heap,
+            ));
         };
         if matches!(self.globals.get(slot_idx.index()), None | Some(Value::Undefined)) {
-            return Err(RunError::from(ExcType::name_error(name))
-                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source)));
+            return Err(RunError::from(ExcType::name_error(name)).into_python_exception(
+                &self.interns,
+                |fname| self.sources.get(fname).map(|source| &**source),
+                &mut self.heap,
+            ));
         }
 
         let input_script_name = self.next_input_script_name();
@@ -456,6 +517,7 @@ impl MontyRepl {
                 script_name: &self.script_name,
                 cwd: &self.cwd,
                 os_policy: &self.os_policy,
+                future_annotations: self.future_annotations,
             },
         )?;
         self.sources.insert(input_script_name, executor.program.code.clone());
@@ -476,6 +538,7 @@ impl MontyRepl {
                 );
 
                 vm.random = mem::take(&mut self.random);
+                vm.modules = mem::take(&mut self.modules);
                 let result = match convert_args(args, vm) {
                     Ok(args) => {
                         let (args, kwargs) = args.into_parts();
@@ -489,7 +552,15 @@ impl MontyRepl {
                         let mut run_result = vm.run_external();
                         loop {
                             run_result = match run_result {
-                                Ok(FrameExit::Return(value)) => break Ok(MontyObject::export(value, vm)),
+                                Ok(FrameExit::Return(value)) => {
+                                    break vm.export_on_clock(|vm| MontyObject::export(value, vm)).map_err(|e| {
+                                        e.into_run_error(vm).into_python_exception(
+                                            vm.interns,
+                                            |fname| self.sources.get(fname).map(|source| &**source),
+                                            vm.heap,
+                                        )
+                                    });
+                                }
                                 // No host answers inside a host-driven call, so the
                                 // lookup is `Undefined`: `hasattr()` is False,
                                 // `getattr()` yields its default.
@@ -505,9 +576,11 @@ impl MontyRepl {
                                     vm.resume_with_exception(error)
                                 }
                                 Err(error) => {
-                                    break Err(error.into_python_exception(vm.interns, |fname| {
-                                        self.sources.get(fname).map(|source| &**source)
-                                    }));
+                                    break Err(error.into_python_exception(
+                                        vm.interns,
+                                        |fname| self.sources.get(fname).map(|source| &**source),
+                                        vm.heap,
+                                    ));
                                 }
                             };
                         }
@@ -521,6 +594,7 @@ impl MontyRepl {
                 let args_slot = executor.program.input_slots[0].index();
                 mem::replace(&mut globals[args_slot], Value::Undefined).drop_with(vm);
                 self.random = mem::take(&mut vm.random);
+                self.modules = mem::take(&mut vm.modules);
                 self.globals = globals;
                 if let Some(cwd) = vm.take_changed_cwd() {
                     self.cwd = Arc::from(cwd);
@@ -673,22 +747,6 @@ pub struct ReplStartError {
 }
 
 impl ReplProgress {
-    /// The session heap and the interns its values refer to, for a dump upgrade.
-    /// While a snippet is in flight the executor holds the session's interns.
-    pub(crate) fn heap_and_interns(&mut self) -> (&mut Heap, &Interns) {
-        match self {
-            Self::FunctionCall(ReplFunctionCall { snapshot, .. })
-            | Self::OsCall(ReplOsCall { snapshot, .. })
-            | Self::NameLookup(ReplNameLookup { snapshot, .. }) => {
-                (&mut snapshot.repl.heap, &snapshot.executor.tables.interns)
-            }
-            Self::ResolveFutures(ReplResolveFutures { repl, executor, .. }) => {
-                (&mut repl.heap, &executor.tables.interns)
-            }
-            Self::Complete { repl, .. } => repl.heap_and_interns(),
-        }
-    }
-
     /// Consumes the progress and returns the [`ReplFunctionCall`] struct.
     #[must_use]
     pub fn into_function_call(self) -> Option<ReplFunctionCall> {
@@ -766,6 +824,22 @@ impl ReplProgress {
             Self::ResolveFutures(state) => state.repl.tracker_mut(),
             Self::NameLookup(lookup) => lookup.snapshot.repl.tracker_mut(),
             Self::Complete { repl, .. } => repl.tracker_mut(),
+        }
+    }
+
+    /// Replaces the OS-call policies of the session and of a suspended snippet.
+    ///
+    /// A dump carries the policy it was taken under; hosts restoring it call this
+    /// so the restoring side's clock, zone, sleep and entropy policy governs every
+    /// later call. A call already suspended keeps the shape it was issued with.
+    pub fn set_os_policy(&mut self, os_policy: OsPolicy) {
+        let os_policy = Arc::new(os_policy);
+        match self {
+            Self::FunctionCall(call) => call.snapshot.set_os_policy(os_policy),
+            Self::OsCall(call) => call.snapshot.set_os_policy(os_policy),
+            Self::ResolveFutures(state) => state.set_os_policy(os_policy),
+            Self::NameLookup(lookup) => lookup.snapshot.set_os_policy(os_policy),
+            Self::Complete { repl, .. } => repl.os_policy = os_policy,
         }
     }
 }
@@ -1001,11 +1075,19 @@ impl ReplNameLookup {
                 let vm_result = resume_lookup(&mut vm, answer, effect, &scope, &name);
 
                 // Convert while VM alive, then snapshot or reclaim globals
-                let converted = convert_frame_exit(vm_result, &mut vm);
+                let converted = convert_frame_exit(vm_result, &mut vm, |fname| {
+                    repl.sources.get(fname).map(|source| &**source)
+                });
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
-                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+                    reclaim_vm_state(
+                        &mut repl.globals,
+                        &mut repl.cwd,
+                        &mut repl.random,
+                        &mut repl.modules,
+                        &mut vm,
+                    );
                     None
                 };
                 (converted, vm_state)
@@ -1037,6 +1119,12 @@ pub struct ReplResolveFutures {
 }
 
 impl ReplResolveFutures {
+    /// Points the session and the blocked snippet's program at `os_policy`,
+    /// as [`ReplSnapshot`] does for the other suspensions.
+    fn set_os_policy(&mut self, os_policy: Arc<OsPolicy>) {
+        set_session_os_policy(&mut self.repl, &mut self.executor, os_policy);
+    }
+
     /// Extracts the REPL session, restoring globals from the suspended VM state.
     ///
     /// As with the other REPL snapshot types, globals live inside the VM
@@ -1054,10 +1142,11 @@ impl ReplResolveFutures {
             vm_state,
             ..
         } = self;
-        let (globals, cwd, random) = vm_state.abandon(&mut repl.heap);
-        repl.globals = globals;
-        repl.cwd = Arc::from(cwd);
-        repl.random = random;
+        let state = vm_state.abandon(&mut repl.heap);
+        repl.globals = state.globals;
+        repl.cwd = Arc::from(state.cwd);
+        repl.random = state.random;
+        repl.modules = state.modules;
         repl.commit_executor(executor);
         repl
     }
@@ -1098,18 +1187,41 @@ impl ReplResolveFutures {
         results: Vec<(u32, ExtFunctionResult)>,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
+        self.resume_native(results, None, print)
+    }
+
+    /// Check a complete settlement batch while retaining this suspension on failure.
+    /// Transports should call this before transferring ownership to `resume_native`.
+    pub fn validate_results(&self, results: &[(u32, ExtFunctionResult)]) -> Result<(), MontyException> {
+        for (id, result) in results {
+            if !self.vm_state.knows_host_call(*id) {
+                return Err(MontyException::runtime_error(format!("unknown call_id {id}")));
+            }
+            if matches!(result, ExtFunctionResult::Future(_)) {
+                return Err(MontyException::runtime_error(
+                    "a settlement must contain a value or error",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Experimental owned-task host cancellation. First cause wins (including empty).
+    /// Cleanup keeps its reply; cancellation is processed before this batch's replies.
+    /// Terminal cancellation is returned as a native-owned outcome dictionary.
+    pub fn resume_native(
+        self,
+        results: Vec<(u32, ExtFunctionResult)>,
+        cancel: Option<String>,
+        print: PrintWriter<'_>,
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
+        let validation = self.validate_results(&results);
         let Self {
             mut repl,
             mut executor,
             vm_state,
-            pending_call_ids,
             ..
         } = self;
-
-        let invalid_call_id = results
-            .iter()
-            .find(|(call_id, _)| !pending_call_ids.contains(call_id))
-            .map(|(call_id, _)| *call_id);
 
         repl.heap.tracker.on_turn_start();
         match HeapReader::with(
@@ -1124,21 +1236,38 @@ impl ReplResolveFutures {
                     print.reborrow(),
                 );
 
-                if let Some(call_id) = invalid_call_id {
-                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
-                    return Err(MontyException::runtime_error(format!(
-                        "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
-                    )));
+                if let Err(error) = validation {
+                    reclaim_vm_state(
+                        &mut repl.globals,
+                        &mut repl.cwd,
+                        &mut repl.random,
+                        &mut repl.modules,
+                        &mut vm,
+                    );
+                    return Err(error);
                 }
 
-                let vm_result = vm.resume_with_resolved_futures(results);
+                let vm_result = match cancel {
+                    Some(reason) => vm
+                        .cancel_native(&reason)
+                        .and_then(|()| vm.resume_with_resolved_futures(results)),
+                    None => vm.resume_with_resolved_futures(results),
+                };
 
                 // Convert while VM alive, then snapshot or reclaim globals
-                let converted = convert_frame_exit(vm_result, &mut vm);
+                let converted = convert_frame_exit(vm_result, &mut vm, |fname| {
+                    repl.sources.get(fname).map(|source| &**source)
+                });
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
-                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+                    reclaim_vm_state(
+                        &mut repl.globals,
+                        &mut repl.cwd,
+                        &mut repl.random,
+                        &mut repl.modules,
+                        &mut vm,
+                    );
                     None
                 };
                 Ok((converted, vm_state))
@@ -1267,9 +1396,17 @@ fn abort_restored(
                 print.reborrow(),
             );
             let vm_result = vm.abort(exc);
-            let converted = convert_frame_exit(vm_result, &mut vm);
+            let converted = convert_frame_exit(vm_result, &mut vm, |fname| {
+                repl.sources.get(fname).map(|source| &**source)
+            });
             // Uncatchable exceptions cannot suspend, so no snapshot is needed.
-            reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+            reclaim_vm_state(
+                &mut repl.globals,
+                &mut repl.cwd,
+                &mut repl.random,
+                &mut repl.modules,
+                &mut vm,
+            );
             converted
         },
     );
@@ -1290,6 +1427,12 @@ pub(crate) struct ReplSnapshot {
 }
 
 impl ReplSnapshot {
+    /// Points both the session and the suspended snippet's program at `os_policy`,
+    /// which a resumed VM reads from the program.
+    fn set_os_policy(&mut self, os_policy: Arc<OsPolicy>) {
+        set_session_os_policy(&mut self.repl, &mut self.executor, os_policy);
+    }
+
     /// Raises `exc` uncatchably at the suspension point.
     fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
         let Self {
@@ -1313,10 +1456,11 @@ impl ReplSnapshot {
             executor,
             vm_state,
         } = self;
-        let (globals, cwd, random) = vm_state.abandon(&mut repl.heap);
-        repl.globals = globals;
-        repl.cwd = Arc::from(cwd);
-        repl.random = random;
+        let state = vm_state.abandon(&mut repl.heap);
+        repl.globals = state.globals;
+        repl.cwd = Arc::from(state.cwd);
+        repl.random = state.random;
+        repl.modules = state.modules;
         repl.commit_executor(executor);
         repl
     }
@@ -1360,11 +1504,19 @@ impl ReplSnapshot {
                 let vm_result = resume_with_result(&mut vm, ext_result, eager_call_id);
 
                 // Convert while VM alive, then snapshot or reclaim globals
-                let converted = convert_frame_exit(vm_result, &mut vm);
+                let converted = convert_frame_exit(vm_result, &mut vm, |fname| {
+                    repl.sources.get(fname).map(|source| &**source)
+                });
                 let vm_state = if converted.needs_snapshot() {
                     Some(vm.snapshot())
                 } else {
-                    reclaim_vm_state(&mut repl.globals, &mut repl.cwd, &mut repl.random, &mut vm);
+                    reclaim_vm_state(
+                        &mut repl.globals,
+                        &mut repl.cwd,
+                        &mut repl.random,
+                        &mut repl.modules,
+                        &mut vm,
+                    );
                     None
                 };
                 (converted, vm_state)
@@ -1379,15 +1531,22 @@ impl ReplSnapshot {
 // ---------------------------------------------------------------------------
 
 /// Reclaims what outlives a snippet from its finished VM: the globals, the
-/// `random` generator, and the working directory when the snippet (or the
-/// snapshot it resumed from) owns one, so an `os.chdir` or a `random.seed()`
-/// persists into later feeds like the globals do.
-fn reclaim_vm_state(globals: &mut Vec<Value>, cwd: &mut Arc<str>, random: &mut SessionRandom, vm: &mut VM<'_>) {
+/// `random` generator, the file modules, and the working directory when the
+/// snippet (or the snapshot it resumed from) owns one, so an `os.chdir`, a
+/// `random.seed()` or an import persists into later feeds like the globals do.
+fn reclaim_vm_state(
+    globals: &mut Vec<Value>,
+    cwd: &mut Arc<str>,
+    random: &mut SessionRandom,
+    modules: &mut ModuleCache,
+    vm: &mut VM<'_>,
+) {
     *globals = vm.take_globals();
     if let Some(changed) = vm.take_changed_cwd() {
         *cwd = Arc::from(changed);
     }
     *random = mem::take(&mut vm.random);
+    *modules = mem::take(&mut vm.modules);
 }
 
 /// Injects input values into the VM's global namespace slots.
@@ -1491,9 +1650,7 @@ fn build_repl_progress(
             // is still required because it holds the StringIds referenced by
             // the in-flight frames; `repl.sources` holds every snippet's
             // source text and is what owns any older snippets' sources.
-            let error = err.into_python_exception(&executor.tables.interns, |fname| {
-                repl.sources.get(fname).map(|source| &**source)
-            });
+            let error = err;
             // Commit compiler metadata even on runtime errors, matching feed() behavior.
             // Snippets can create new variables or functions before raising, and those
             // values may reference FunctionId/StringId values from the new tables.
@@ -1548,3 +1705,434 @@ fn is_callable(value: &Value, heap: &Heap) -> bool {
         _ => false,
     }
 }
+
+/// Gives a suspended session and its snippet's program the same `os_policy`;
+/// the resumed VM reads the program's copy, later snippets the session's.
+fn set_session_os_policy(repl: &mut MontyRepl, executor: &mut Executor, os_policy: Arc<OsPolicy>) {
+    executor.program.os_policy = Arc::clone(&os_policy);
+    repl.os_policy = os_policy;
+}
+
+#[cfg(test)]
+mod compatibility11_tests {
+    use super::*;
+    use crate::{Dump, Session, SessionRef, dump};
+
+    #[test]
+    fn ownership_concurrent2_bounded_records() {
+        let mut repl = MontyRepl::new("records.py", ResourceTracker::default(), CompileOptions::default());
+        repl.feed_run(
+            include_str!("../tests/fixtures/concurrency/concurrent_io/wrappers.py"),
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+        repl.feed_run(
+            include_str!("../tests/fixtures/concurrency/concurrent_io/scope.py"),
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+        let source = "from __monty_host__ import host_coroutines\ndef request(label):\n    return (yield exchange(label))\nasync def operation():\n    cycle = []\n    cycle.append(cycle)\n    return await request('child')\nasync def parent():\n    for index in range(24):\n        async with Scope():\n            handle = asyncio._spawn(child(operation()))\n            await handle\n            await request('pulse')\nparent()._native1()";
+        let mut progress = repl
+            .feed_start(
+                source,
+                vec![("exchange".into(), MontyObject::function("exchange", None))],
+                PrintWriter::Disabled,
+            )
+            .unwrap();
+        for turn in 0..48 {
+            let ReplProgress::FunctionCall(call) = progress else {
+                panic!("call")
+            };
+            let id = call.call_id;
+            progress = call.resume_pending(PrintWriter::Disabled).unwrap();
+            let pending = progress.into_resolve_futures().unwrap();
+            assert_eq!(
+                pending.vm_state.ownership_child_counts(),
+                if turn % 2 == 0 { (2, 1, 1) } else { (1, 0, 0) }
+            );
+            progress = pending
+                .resume(
+                    vec![(id, ExtFunctionResult::Return(MontyObject::none()))],
+                    PrintWriter::Disabled,
+                )
+                .unwrap();
+        }
+        assert!(matches!(progress, ReplProgress::Complete { .. }));
+    }
+
+    /// Host cancellation removes child/result records before the surviving owner finishes.
+    #[test]
+    fn ownership_concurrent2_host_cancel_records() {
+        for _ in 0..24 {
+            let mut repl = MontyRepl::new("records.py", ResourceTracker::default(), CompileOptions::default());
+            for source in [
+                include_str!("../tests/fixtures/concurrency/concurrent_io/wrappers.py"),
+                include_str!("../tests/fixtures/concurrency/concurrent_io/scope.py"),
+            ] {
+                repl.feed_run(source, vec![], PrintWriter::Disabled).unwrap();
+            }
+            let source = include_str!("../tests/fixtures/concurrency/concurrent_io/host_cancel.py").replace(
+                "    return json.dumps(",
+                "    await request('pulse')\n    return json.dumps(",
+            );
+            let mut progress = repl
+                .feed_start(
+                    &source,
+                    vec![("exchange".into(), MontyObject::function("exchange", None))],
+                    PrintWriter::Disabled,
+                )
+                .unwrap();
+            let mut first = true;
+            let mut observed_pulse = false;
+            loop {
+                let mut pulse = false;
+                while let ReplProgress::FunctionCall(call) = progress {
+                    pulse |= call.args.arg(0).unwrap().as_str() == Some("pulse");
+                    progress = call.resume_pending(PrintWriter::Disabled).unwrap();
+                }
+                if matches!(progress, ReplProgress::Complete { .. }) {
+                    break;
+                }
+                let pending = progress.into_resolve_futures().unwrap();
+                if pulse {
+                    assert_eq!(pending.vm_state.ownership_child_counts(), (1, 0, 0));
+                    observed_pulse = true;
+                }
+                let results = if first {
+                    Vec::new()
+                } else {
+                    pending
+                        .pending_call_ids()
+                        .iter()
+                        .map(|id| (*id, ExtFunctionResult::Return(MontyObject::string("ok"))))
+                        .collect()
+                };
+                progress = pending
+                    .resume_native(results, Some("FIRST".into()), PrintWriter::Disabled)
+                    .unwrap();
+                first = false;
+            }
+            assert!(observed_pulse);
+        }
+    }
+
+    /// Gather first-error and cancellation release lifetime links before parent cleanup.
+    #[test]
+    fn ownership_concurrent2_gather_records() {
+        for (fixture, cancel) in [
+            (
+                include_str!("../tests/fixtures/concurrency/concurrent_io/gather_host.py"),
+                true,
+            ),
+            (
+                include_str!("../tests/fixtures/concurrency/concurrent_io/gather_first_error.py"),
+                false,
+            ),
+        ] {
+            for _ in 0..24 {
+                let mut repl = MontyRepl::new(
+                    "gather-records.py",
+                    ResourceTracker::default(),
+                    CompileOptions::default(),
+                );
+                for source in [
+                    include_str!("../tests/fixtures/concurrency/concurrent_io/wrappers.py"),
+                    include_str!("../tests/fixtures/concurrency/concurrent_io/scope.py"),
+                ] {
+                    repl.feed_run(source, vec![], PrintWriter::Disabled).unwrap();
+                }
+                let mut progress = repl
+                    .feed_start(
+                        fixture,
+                        vec![("exchange".into(), MontyObject::function("exchange", None))],
+                        PrintWriter::Disabled,
+                    )
+                    .unwrap();
+                let mut calls = Vec::new();
+                let mut first = true;
+                let mut observed = false;
+                loop {
+                    let mut parent_cleanup = false;
+                    while let ReplProgress::FunctionCall(call) = progress {
+                        let label = call.args.arg(0).unwrap().as_str().unwrap().to_owned();
+                        parent_cleanup |= label == "parent-cleanup";
+                        calls.push((call.call_id, label));
+                        progress = call.resume_pending(PrintWriter::Disabled).unwrap();
+                    }
+                    if matches!(progress, ReplProgress::Complete { .. }) {
+                        break;
+                    }
+                    let pending = progress.into_resolve_futures().unwrap();
+                    if parent_cleanup {
+                        assert_eq!(pending.vm_state.ownership_child_counts(), (1, 0, 0));
+                        assert_eq!(pending.vm_state.ownership_gather_counts(), (0, 0, 0, 0));
+                        observed = true;
+                    }
+                    let ids = pending.pending_call_ids();
+                    let selected = ["continue", "cleanup-B", "cleanup-A", "A", "parent-cleanup"]
+                        .iter()
+                        .find_map(|label| calls.iter().find(|(id, name)| ids.contains(id) && name == label))
+                        .map(|(id, _)| *id)
+                        .unwrap();
+                    let results = if first && cancel {
+                        Vec::new()
+                    } else {
+                        vec![(selected, ExtFunctionResult::Return(MontyObject::string("ok")))]
+                    };
+                    progress = pending
+                        .resume_native(results, cancel.then(|| "FIRST".into()), PrintWriter::Disabled)
+                        .unwrap();
+                    first = false;
+                }
+                assert!(observed, "parent cleanup missing: cancel={cancel}, calls={calls:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn ownership_concurrent2_gather_delivery() {
+        for cancel in [false, true] {
+            let mut repl = MontyRepl::new("join.py", ResourceTracker::default(), CompileOptions::default());
+            repl.feed_run(
+                include_str!("../tests/fixtures/concurrency/concurrent_io/wrappers.py"),
+                vec![],
+                PrintWriter::Disabled,
+            )
+            .unwrap();
+            repl.feed_run(
+                include_str!("../tests/fixtures/concurrency/concurrent_io/scope.py"),
+                vec![],
+                PrintWriter::Disabled,
+            )
+            .unwrap();
+            let mut progress = repl
+                .feed_start(
+                    include_str!("../tests/fixtures/concurrency/concurrent_io/gather_host.py"),
+                    vec![("exchange".into(), MontyObject::function("exchange", None))],
+                    PrintWriter::Disabled,
+                )
+                .unwrap();
+            while let ReplProgress::FunctionCall(call) = progress {
+                progress = call.resume_pending(PrintWriter::Disabled).unwrap();
+            }
+            let ReplResolveFutures {
+                mut repl,
+                mut executor,
+                vm_state,
+                ..
+            } = progress.into_resolve_futures().unwrap();
+            HeapReader::with(&mut repl.heap, &mut executor, |reader, executor| {
+                let mut vm = VM::restore(
+                    vm_state,
+                    &mut executor.tables,
+                    &executor.program,
+                    reader,
+                    PrintWriter::Disabled,
+                );
+                vm.ownership_probe_gather_delivery(cancel);
+                reclaim_vm_state(
+                    &mut repl.globals,
+                    &mut repl.cwd,
+                    &mut repl.random,
+                    &mut repl.modules,
+                    &mut vm,
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn ownership_concurrent2_join_delivery() {
+        let mut repl = MontyRepl::new("join.py", ResourceTracker::default(), CompileOptions::default());
+        repl.feed_run(
+            include_str!("../tests/fixtures/concurrency/concurrent_io/wrappers.py"),
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+        repl.feed_run(
+            include_str!("../tests/fixtures/concurrency/concurrent_io/scope.py"),
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+        let mut progress = repl
+            .feed_start(
+                include_str!("../tests/fixtures/concurrency/concurrent_io/children_errors.py"),
+                vec![("exchange".into(), MontyObject::function("exchange", None))],
+                PrintWriter::Disabled,
+            )
+            .unwrap();
+        while let ReplProgress::FunctionCall(call) = progress {
+            progress = call.resume_pending(PrintWriter::Disabled).unwrap();
+        }
+        let ReplResolveFutures {
+            mut repl,
+            mut executor,
+            vm_state,
+            ..
+        } = progress.into_resolve_futures().unwrap();
+        HeapReader::with(&mut repl.heap, &mut executor, |reader, executor| {
+            let mut vm = VM::restore(
+                vm_state,
+                &mut executor.tables,
+                &executor.program,
+                reader,
+                PrintWriter::Disabled,
+            );
+            vm.ownership_probe_join_delivery();
+            reclaim_vm_state(
+                &mut repl.globals,
+                &mut repl.cwd,
+                &mut repl.random,
+                &mut repl.modules,
+                &mut vm,
+            );
+        });
+    }
+
+    #[test]
+    fn ownership_compatibility11_saved_task_discrimination() {
+        // Literal diagnostic is ORIGINAL, never the different handled PARKED.
+        let source = r"from __monty_host__ import host_coroutines
+from asyncio import CancelledError
+def operation():
+    return (yield exchange('selector'))
+async def choose():
+    await operation()
+    return TypeError
+async def body():
+    try:
+        raise TypeError('PARKED')
+    except TypeError:
+        try:
+            raise TypeError('ORIGINAL')
+        except await choose():
+            return 'wrong-handler'
+async def entry():
+    try:
+        return await body()
+    except CancelledError as error:
+        assert str(error) == 'FIRST'
+        return 'caught'
+entry()._native1()
+";
+        for restored in [false, true] {
+            let repl = MontyRepl::new(
+                "compatibility11.py",
+                ResourceTracker::default(),
+                CompileOptions::default(),
+            );
+            let progress = repl
+                .feed_start(
+                    source,
+                    vec![("exchange".into(), MontyObject::function("exchange", None))],
+                    PrintWriter::Disabled,
+                )
+                .unwrap()
+                .into_function_call()
+                .unwrap()
+                .resume_pending(PrintWriter::Disabled)
+                .unwrap();
+            let ReplResolveFutures {
+                mut repl,
+                mut executor,
+                vm_state,
+                pending_call_ids,
+                position,
+            } = progress.into_resolve_futures().unwrap();
+            let vm_state = HeapReader::with(&mut repl.heap, &mut executor, |reader, executor| {
+                let mut vm = VM::restore(
+                    vm_state,
+                    &mut executor.tables,
+                    &executor.program,
+                    reader,
+                    PrintWriter::Disabled,
+                );
+                vm.compatibility11_save_main_task();
+                vm.snapshot()
+            });
+            let progress = ReplProgress::ResolveFutures(ReplResolveFutures {
+                repl,
+                executor,
+                vm_state,
+                pending_call_ids,
+                position,
+            });
+            let progress = if restored {
+                let bytes = dump("compatibility11.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+                drop(progress.into_repl());
+                let Session::Suspended(progress) = Dump::load(&bytes).unwrap().state else {
+                    panic!("suspended")
+                };
+                *progress
+            } else {
+                progress
+            };
+            let ReplResolveFutures {
+                mut repl,
+                mut executor,
+                vm_state,
+                ..
+            } = progress.into_resolve_futures().unwrap();
+            let converted = HeapReader::with(&mut repl.heap, &mut executor, |reader, executor| {
+                let mut vm = VM::restore(
+                    vm_state,
+                    &mut executor.tables,
+                    &executor.program,
+                    reader,
+                    PrintWriter::Disabled,
+                );
+                vm.compatibility11_cancel_with_unrelated_parked_stack().unwrap();
+                let result = vm.resume_with_resolved_futures(vec![]);
+                let converted =
+                    convert_frame_exit(result, &mut vm, |fname| repl.sources.get(fname).map(|source| &**source));
+                reclaim_vm_state(
+                    &mut repl.globals,
+                    &mut repl.cwd,
+                    &mut repl.random,
+                    &mut repl.modules,
+                    &mut vm,
+                );
+                converted
+            });
+            let progress = build_repl_progress(converted, None, executor, repl).unwrap();
+            let (mut repl, outcome) = progress.into_complete().unwrap();
+            let pairs = outcome.as_ref().pairs().unwrap();
+            let diagnostic = pairs
+                .iter()
+                .find(|(k, _)| k.as_str() == Some("interrupted_error"))
+                .unwrap()
+                .1
+                .pairs()
+                .unwrap();
+            assert!(
+                diagnostic
+                    .iter()
+                    .any(|(k, v)| k.as_str() == Some("message") && v.as_str() == Some("ORIGINAL"))
+            );
+            assert!(
+                pairs
+                    .iter()
+                    .any(|(k, v)| k.as_str() == Some("value") && v.as_str() == Some("caught"))
+            );
+            // Contextual retirement is checked before teardown, with all guest
+            // exception owners gone; functions here are interned, not heap roots.
+            repl.feed_run("[]", vec![], PrintWriter::Disabled).unwrap();
+            #[cfg(feature = "ref-count-return")]
+            {
+                eprintln!(
+                    "compatibility11 saved restored={restored}: live={}",
+                    repl.heap_entry_count()
+                );
+                assert_eq!(repl.heap_entry_count(), 1); // the registered external function
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "ref-count-return"))]
+#[path = "../tests/unit/queue_repl.rs"]
+mod queue_tests;

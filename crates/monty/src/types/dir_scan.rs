@@ -27,7 +27,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::{HashValue, identity_hash},
-    heap::{ContainsHeap, HeapData, HeapId, HeapItem, HeapObjectRead},
+    heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
     identity::Identity,
     intern::StaticStrings,
     os_dispatch::value_as_path_str,
@@ -436,6 +436,7 @@ fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
         match action {
             WalkAction::Done => return Ok(None),
             WalkAction::Error(error) => {
+                defer_drop!(error, vm);
                 let onerror = match this.get(vm.heap) {
                     DirScan::Walk(walk) => walk.onerror.clone_with_heap(vm.heap),
                     DirScan::Entry(_) | DirScan::Scandir(_) => unreachable!("walk_next is only called on a walk"),
@@ -443,9 +444,9 @@ fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
                 defer_drop!(onerror, vm);
                 if !matches!(onerror, Value::None) {
                     let RunError::Exc(raise) = error else {
-                        return Err(error);
+                        return Err(error.clone_with_heap(vm.heap));
                     };
-                    let exc = Value::Ref(vm.heap.allocate(HeapData::Exception(raise.exc)));
+                    let exc = vm.create_exception_value(raise);
                     let result = vm.evaluate_function(onerror, ArgValues::One(exc))?;
                     result.drop_with(vm);
                 }
@@ -792,7 +793,11 @@ impl ScanEffect {
                     return Err(SimpleException::new_msg(ExcType::RuntimeError, message).into());
                 }
             },
-            Err(RunError::Exc(raise)) => Err(raise.exc),
+            Err(RunError::Exc(raise)) => {
+                let simple = raise.exc.clone();
+                raise.drop_with(vm);
+                Err(simple)
+            }
             Err(other) => {
                 self.release(vm.heap);
                 return Err(other);

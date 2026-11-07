@@ -324,31 +324,60 @@ fn external_function_in_deepcopy_raises_not_implemented() {
     "#);
 }
 
-/// `for` still requires synchronous advancement, so an external call in
-/// `__next__` raises at that call site rather than suspending the loop.
+/// A custom loop advances on ordinary frames, including a restored host call.
 #[test]
-fn external_function_in_next_raises_not_implemented() {
-    let code = "class Foo:\n    def __iter__(self):\n        return self\n\n    def __next__(self):\n        return ext_fn()\n\nfor _x in Foo():\n    pass";
-    let mut ex = MontyRun::new(
+fn external_function_in_next_suspends() {
+    let code = "class Foo:\n    def __iter__(self):\n        return self\n\n    def __next__(self):\n        return ext_fn()\n\nfor value in Foo():\n    break\nvalue";
+    let runner = MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["ext_fn".to_owned()],
         CompileOptions::default(),
     )
     .unwrap();
-    let err = ex
-        .run_no_limits(vec![MontyObject::function("ext_fn".to_owned(), None)])
+    let progress = runner
+        .start(
+            vec![MontyObject::function("ext_fn", None)],
+            ResourceTracker::default(),
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+    let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
+    let Session::Running(restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("running")
+    };
+    let Session::Running(failing) = Dump::load(&bytes).unwrap().state else {
+        panic!("running")
+    };
+    let error = failing
+        .into_function_call()
+        .unwrap()
+        .resume(
+            ExtFunctionResult::Error(MontyException::new(
+                ExcType::ValueError,
+                Some("callback failed".to_owned()),
+            )),
+            PrintWriter::Disabled,
+        )
         .unwrap_err();
-    assert_snapshot!(err.to_string(), @r#"
+    assert_snapshot!(error, @r#"
     Traceback (most recent call last):
       File "test.py", line 8, in <module>
-        for _x in Foo():
-                  ~~~~~
+        for value in Foo():
+                     ~~~~~
       File "test.py", line 6, in __next__
         return ext_fn()
                ~~~~~~~~
-    NotImplementedError: external function 'ext_fn' cannot suspend in this synchronous context
+    ValueError: callback failed
     "#);
+    for progress in [progress, *restored] {
+        let call = progress.into_function_call().unwrap();
+        assert_eq!(call.function_name, "ext_fn");
+        let result = call
+            .resume(ExtFunctionResult::Return(MontyObject::int(42)), PrintWriter::Disabled)
+            .unwrap();
+        assert_eq!(result.into_complete().unwrap(), MontyObject::int(42));
+    }
 }
 
 /// Iterator acquisition reports both the synchronous consumer and the suspended method in its traceback.

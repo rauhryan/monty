@@ -710,6 +710,24 @@ def test_a_sandbox_module_name_is_never_looked_up(pool: Monty):
             'json',
             snapshot('ValueError: module "json" is provided by the sandbox or its type checker and cannot be replaced'),
         ),
+        (
+            'anyio',
+            snapshot(
+                'ValueError: module "anyio" is provided by the sandbox or its type checker and cannot be replaced'
+            ),
+        ),
+        (
+            'contextlib',
+            snapshot(
+                'ValueError: module "contextlib" is provided by the sandbox or its type checker and cannot be replaced'
+            ),
+        ),
+        (
+            'sandbox',
+            snapshot(
+                'ValueError: module "sandbox" is provided by the sandbox or its type checker and cannot be replaced'
+            ),
+        ),
     ],
 )
 def test_an_invalid_module_name_is_refused_when_a_call_reaches_it(pool: Monty, module: str, message: str):

@@ -7,7 +7,7 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
 
-import { ClassInstance, MontyClassProxy } from '@pydantic/monty'
+import { ClassInstance, MontyClassProxy, MontyRuntimeError } from '@pydantic/monty'
 import { setupPool } from './helpers.js'
 import { InstanceStore, prepare, restore } from '../ts/classInstance.js'
 
@@ -80,17 +80,13 @@ test('a deeply nested result crosses intact', async () => {
   t.is(nesting(await run('x = [1]\nfor _ in range(300):\n    x = [x]\nx')), 301)
 })
 
-test('a result nested past the export guard degrades to a repr string', async () => {
-  // export recurses once per nesting level under the sandbox's recursion
-  // limit, so the value arrives truncated at that depth with a string in
-  // place of the rest; the host walk handles 1000 levels
-  const result = await run('x = [1]\nfor _ in range(2000):\n    x = [x]\nx')
-  t.is(nesting(result), 1000)
-  let innermost: unknown = result
-  for (let i = 0; i < 1000; i++) {
-    innermost = (innermost as unknown[])[0]
-  }
-  t.is(innermost, '<deeply nested>')
+test('a result nested past the export guard is rejected without poisoning the session', async () => {
+  await using session = await pool().checkout()
+  const error = await t.throwsAsync(() => session.feedRun('x = [1]\nfor _ in range(2000):\n    x = [x]\nx'), {
+    instanceOf: MontyRuntimeError,
+  })
+  t.is(error.message, 'RecursionError: maximum recursion depth exceeded during host export')
+  t.is(await session.feedRun('x = None\n40 + 2'), 42)
 })
 
 test('the host walks handle a value nested past the JS call stack', () => {

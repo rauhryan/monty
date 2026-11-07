@@ -1,9 +1,9 @@
 # `iter()` and iterators
 
-- User `__iter__` and `__next__` methods cannot suspend when driven by `for`, comprehensions, collection constructors,
-    or native iterator adaptors.
+- User `__iter__` and `__next__` methods cannot suspend when driven by collection constructors or native iterator adaptors.
     An external or OS call raises `NotImplementedError` inside the method, where it can be caught.
-    Direct `iter()`, `next()` (including its default form), and `functools.reduce()` can suspend in these methods.
+    Direct `iter()`, `next()` (including its default form), `for`, comprehensions and `functools.reduce()` can suspend
+    in these methods.
 
 - `iter(callable, sentinel)` runs `callable` synchronously, so one that calls an external/OS function cannot suspend and
     raises `NotImplementedError`. Same limitation as `map`/`filter`/`sorted(key=...)`.

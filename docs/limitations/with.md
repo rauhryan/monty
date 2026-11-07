@@ -18,6 +18,8 @@ Lookup is type-level, as in CPython: an instance attribute named
 `__enter__`/`__exit__` is ignored by the `with` statement, but used by an
 explicit `obj.__enter__()` call, which is an ordinary method call.
 
+For async context-manager limitations, see [asyncio.md](asyncio.md#async-def-await).
+
 ## Supported but desugared
 
 - **Multiple context managers in a single `with`** (`with a() as x, b() as y:`)
@@ -32,10 +34,7 @@ explicit `obj.__enter__()` call, which is an ordinary method call.
 
 ## Not supported
 
-- **Async `with`** (`async with EXPR:`) is rejected at parse time with
-    `SyntaxError: async context managers (async with) is not yet implemented`.
-- **`contextlib`** (`@contextmanager`, `ExitStack`, etc.) — the module is not
-    available; only the language-level `with` statement is.
+- **`contextlib.ExitStack` and async helpers** remain unavailable; see [contextlib.md](contextlib.md).
 
 ## Behavioural divergences
 
@@ -44,10 +43,6 @@ explicit `obj.__enter__()` call, which is an ordinary method call.
     through unchanged (`typ is ValueError` etc. works). Code that inspects the
     traceback object inside `__exit__` sees `None` where CPython would
     provide a `traceback` instance.
-- If `__exit__` itself raises during the exception path, the new exception
-    replaces the original and the original is dropped. This matches CPython's
-    behavior, and is listed here because some readers expect the original
-    to be preserved as `__context__`; Monty does not track exception chaining.
 - CPython's `BEFORE_WITH` looks up **and binds** `__enter__`/`__exit__` once,
     when the `with` statement is entered; Monty's `WithExit`/`WithExceptStart`
     opcodes look `__exit__` up again when the block exits. A class whose

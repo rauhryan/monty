@@ -8,7 +8,10 @@ use std::mem;
 
 use monty_types::{MontyUuid, OsFunctionCall};
 
-use super::{CallFrame, VM, attr::PendingLookupEffect, function_namespace, recursion::RunReentryGuard};
+use super::{
+    CallFrame, FrameGlobals, FrameNamespace, MissingNames, VM, attr::PendingLookupEffect, function_namespace,
+    recursion::RunReentryGuard,
+};
 use crate::{
     args::{ArgValues, KwargsValues},
     asyncio::Coroutine,
@@ -22,7 +25,9 @@ use crate::{
     heap_data::CellValue,
     intern::{FunctionId, StaticStrings, StringId},
     modules::dataclasses,
+    namespace::NamespaceId,
     os_dispatch::{PendingEffect, release_pending_effect},
+    py_value::PyValue,
     resource_checks::check_estimated_size,
     types::{Dict, Instance, PyTrait, Type, instance::class_name},
     value::{EitherStr, VALUE_SIZE, Value},
@@ -42,6 +47,17 @@ pub(crate) enum CallResult {
     /// A defined function became the VM's current frame.
     /// Propagate or require synchronous completion; dropping this result does not pop the frame.
     FramePushed,
+    /// Owned request handled by the outer VM loop, never evaluate_function.
+    ResumeGenerator {
+        generator: Value,
+        input: Value,
+        throwing: bool,
+        default: Option<Value>,
+    },
+    /// Experimental native entry: yields in this generator/delegates await futures.
+    NativeGenerator(Value),
+    /// Explicit synchronous generator cleanup.
+    CloseGenerator(Value),
     /// External function call requested - VM should pause and return to caller.
     /// The `EitherStr` is the name of the external function (interned or heap-owned).
     External(EitherStr, ArgValues),
@@ -161,13 +177,26 @@ impl CallResult {
 impl<C: ContainsHeap> DropWithContext<C> for CallResult {
     fn drop_with(self, heap: &mut C) {
         match self {
-            Self::Value(value) | Self::AwaitValue(value) => value.drop_with(heap),
+            Self::Value(value)
+            | Self::AwaitValue(value)
+            | Self::NativeGenerator(value)
+            | Self::CloseGenerator(value) => value.drop_with(heap),
             Self::External(_, args) | Self::MethodCall { args, .. } => {
                 args.drop_with(heap);
             }
             Self::OsCall(call) => call.drop_with(heap),
             Self::AttrLookup { effect, .. } => effect.drop_with(heap),
             Self::FramePushed => {}
+            Self::ResumeGenerator {
+                generator,
+                input,
+                default,
+                ..
+            } => {
+                generator.drop_with(heap);
+                input.drop_with(heap);
+                default.drop_with(heap);
+            }
             Self::OsCallWithEffect { call, effect } => {
                 call.drop_with(heap);
                 // Discarded before it ever became a `FrameExit`.
@@ -478,6 +507,9 @@ impl<'h> VM<'h> {
                 result.drop_with(self);
                 return error;
             }
+            CallResult::ResumeGenerator { .. } | CallResult::NativeGenerator(_) | CallResult::CloseGenerator(_) => {
+                ExcType::not_implemented("cannot resume generator in a synchronous Rust callback")
+            }
             CallResult::AwaitValue(_) => ExcType::not_implemented("cannot await a value in this synchronous context"),
             CallResult::Value(_) | CallResult::FramePushed => unreachable!("completed calls are handled above"),
         };
@@ -564,7 +596,7 @@ impl<'h> VM<'h> {
     /// the same `TypeError` the rejected arm used to, so a value that is not
     /// callable is refused without a branch of its own.
     fn call_heap_callable(&mut self, heap_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
-        self.heap.read(heap_id).py_call(args, self)
+        PyValue::from_heap(heap_id, self.heap).py_call(args, self)
     }
 
     /// Calls a function with unpacked args tuple and optional kwargs dict.
@@ -825,6 +857,42 @@ impl<'h> VM<'h> {
         CallResult::Value(Value::Ref(coroutine_id))
     }
 
+    /// Build a snapshot-owned scheduler coroutine for a durable continuation.
+    /// Compilation is fallible; the argument remains guarded until publication.
+    pub(crate) fn host_continuation_coroutine(&mut self, continuation: Value) -> RunResult<Value> {
+        self.frozen_awaitable(FrozenFunction::HostContinuation, vec![continuation], false)
+    }
+
+    /// Frozen awaitables retain all arguments in the serialized heap.
+    pub(crate) fn frozen_awaitable(
+        &mut self,
+        function: FrozenFunction,
+        args: Vec<Value>,
+        generator: bool,
+    ) -> RunResult<Value> {
+        let mut guard = DropGuard::new(args, self);
+        let (_, vm) = guard.as_parts_mut();
+        let interns = vm.interns;
+        let id = if let Some(id) = interns.frozen_function(function) {
+            id
+        } else {
+            let (id, overlay, nested) = function.compile(interns)?;
+            overlay.commit();
+            interns.set_frozen_function(function, id, nested);
+            id
+        };
+        let (mut args, vm) = guard.into_parts();
+        let func = interns.get_function(id);
+        assert_eq!(func.free_var_slots, [] as [NamespaceId; 0]);
+        vm.install_closure_cells(func, &[], &mut args);
+        let data = if generator {
+            HeapData::Generator(Box::new(super::Generator::new(id, args, None)))
+        } else {
+            HeapData::Coroutine(Coroutine::new(id, args, None))
+        };
+        Ok(Value::Ref(vm.heap.allocate(data)))
+    }
+
     /// Calls an internal function, compiling it on first use.
     /// Arguments transfer into ordinary frame locals; implementation frames do not charge recursion depth.
     pub(crate) fn call_frozen_exact<const N: usize>(
@@ -838,24 +906,25 @@ impl<'h> VM<'h> {
         let (function_id, overlay) = if let Some(id) = interns.frozen_function(function) {
             (id, None)
         } else {
-            let (id, overlay) = function.compile(interns)?;
-            (id, Some(overlay))
+            let (id, overlay, nested) = function.compile(interns)?;
+            (id, Some((overlay, nested)))
         };
         // No fallible operation or Python execution may intervene between publication and frame installation.
-        if let Some(overlay) = overlay {
+        if let Some((overlay, nested)) = overlay {
             overlay.commit();
-            interns.set_frozen_function(function, function_id);
+            interns.set_frozen_function(function, function_id, nested);
         }
         let (args, vm) = args_guard.into_parts();
         let func = interns.get_function(function_id);
         assert_eq!(func.signature.exact_positional_count(), Some(N));
-        assert!(func.cell_var_slots.is_empty() && func.free_var_slots.is_empty());
+        assert_eq!(func.free_var_slots, [] as [NamespaceId; 0]);
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("frozen function namespace exceeds u16");
         assert!(namespace_size >= N, "frozen function has too few local slots");
         let stack_base = vm.stack.len();
-        vm.stack.extend(args);
-        vm.stack.resize_with(stack_base + namespace_size, || Value::Undefined);
+        let mut namespace = Vec::from(args);
+        vm.install_closure_cells(func, &[], &mut namespace);
+        vm.stack.extend(namespace);
         let frame = CallFrame::new_function(
             &func.code,
             stack_base,
@@ -888,10 +957,94 @@ impl<'h> VM<'h> {
     ) -> Result<CallResult, RunError> {
         let func = self.interns.get_function(func_id);
 
-        if func.is_async {
+        if func.is_async || func.is_generator {
             self.create_coroutine(func_id, func, cells, defaults, globals, args)
         } else {
-            self.call_sync_function(func_id, func, cells, defaults, globals, args)
+            let namespace = function_namespace(globals, &*self.heap);
+            self.call_sync_function(func_id, func, cells, defaults, namespace, args)
+        }
+    }
+
+    /// Calls an `__annotate__` function with `format` (PEP 649).
+    ///
+    /// A `def` runs under [`FrameNamespace::Annotate`]: names resolve through
+    /// `classdict` (a borrowed class-namespace copy, for a class's annotations),
+    /// then its globals, with `missing` standing in for CPython's "fake globals"
+    /// in `FORWARDREF` and `STRING` format. Any other callable runs plainly.
+    /// Takes ownership of `missing`.
+    pub(crate) fn call_annotate(
+        &mut self,
+        annotate: &Value,
+        format: i64,
+        classdict: Option<HeapId>,
+        missing: MissingNames,
+    ) -> Result<CallResult, RunError> {
+        let this = self;
+        let args = ArgValues::One(Value::Int(format));
+        // The guard releases `missing` on the paths that run without a namespace.
+        let mut missing_guard = DropGuard::new(missing, this);
+        let (_, this) = missing_guard.as_parts_mut();
+        let Some(FunctionParts {
+            func_id,
+            cells,
+            defaults,
+            globals,
+        }) = this.function_parts(annotate)
+        else {
+            return this.call_function(annotate, args);
+        };
+        let func = this.interns.get_function(func_id);
+        if func.is_async {
+            defer_drop!(defaults, this);
+            return this.create_coroutine(func_id, func, &cells, defaults, globals, args);
+        }
+        let (missing, this) = missing_guard.into_parts();
+        defer_drop!(defaults, this);
+        let globals = match globals {
+            Some(dict) => {
+                this.heap.inc_ref(dict);
+                FrameGlobals::Dict(dict)
+            }
+            None => FrameGlobals::Slots,
+        };
+        if let Some(dict) = classdict {
+            this.heap.inc_ref(dict);
+        }
+        let namespace = Box::new(FrameNamespace::Annotate {
+            globals,
+            classdict,
+            missing,
+        });
+        this.call_sync_function(func_id, func, &cells, defaults, Some(namespace), args)
+    }
+
+    /// The [`FunctionParts`] of a Python function value; `None` for a callable
+    /// that is not a `def` (a builtin, a bound method, ...).
+    fn function_parts(&self, value: &Value) -> Option<FunctionParts> {
+        let parts = |func_id, cells, defaults: &[Value], globals| FunctionParts {
+            func_id,
+            cells,
+            defaults: defaults.iter().map(|v| v.clone_with_heap(self)).collect(),
+            globals,
+        };
+        match value {
+            Value::DefFunction(func_id) => Some(parts(*func_id, Box::default(), &[], None)),
+            Value::Ref(id) => match self.heap.get(*id) {
+                HeapData::FunctionDefaults(function) => Some(parts(
+                    function.func_id,
+                    Box::default(),
+                    &function.defaults,
+                    function.globals,
+                )),
+                HeapData::Closure(closure) => Some(parts(
+                    closure.func_id,
+                    closure.cells.clone(),
+                    &closure.defaults,
+                    closure.globals,
+                )),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -922,6 +1075,11 @@ impl<'h> VM<'h> {
         let (namespace, this) = namespace_guard.into_parts();
         if let Some(globals) = globals {
             this.heap.inc_ref(globals);
+        }
+        if func.is_generator {
+            let generator = super::Generator::new(func_id, namespace, globals);
+            let id = this.heap.allocate(HeapData::Generator(Box::new(generator)));
+            return Ok(CallResult::Value(Value::Ref(id)));
         }
         let coroutine = Coroutine::new(func_id, namespace, globals);
         let coroutine_id = this.heap.allocate(HeapData::Coroutine(coroutine));
@@ -968,7 +1126,8 @@ impl<'h> VM<'h> {
     /// Calls a sync function by pushing a new frame.
     ///
     /// Sets up the function's namespace with bound arguments, cell variables,
-    /// and free variables (captured from enclosing scope for closures).
+    /// and free variables (captured from enclosing scope for closures), and
+    /// installs `frame_namespace` (owned; released here if binding fails).
     ///
     /// Locals are built in the reusable `namespace_scratch` buffer (under a
     /// [`DropGuard`] for cleanup on error) and moved onto the VM stack, where
@@ -979,7 +1138,7 @@ impl<'h> VM<'h> {
         func: &'h Function,
         cells: &[HeapId],
         defaults: &[Value],
-        globals: Option<HeapId>,
+        frame_namespace: Option<Box<FrameNamespace>>,
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
         let call_offset = self.current_offset();
@@ -988,25 +1147,24 @@ impl<'h> VM<'h> {
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
 
+        let mut frame_namespace_guard = DropGuard::new(frame_namespace, self);
+        let (_, this) = frame_namespace_guard.as_parts_mut();
+
         // 1. Build the namespace in the reusable scratch buffer to avoid a
         //    per-call allocation. On error `DropGuard` drops the buffer, so the
         //    pool just restarts empty next call.
-        let mut namespace = mem::take(&mut self.namespace_scratch);
+        let mut namespace = mem::take(&mut this.namespace_scratch);
         namespace.reserve(namespace_size);
-        let mut namespace_guard = DropGuard::new(namespace, self);
+        let mut namespace_guard = DropGuard::new(namespace, this);
         let (namespace, this) = namespace_guard.as_parts_mut();
 
         // 2. Bind arguments to parameters
-        {
-            let bind_result = func.signature.bind(args, defaults, this, func.name, namespace);
-
-            bind_result?;
-        }
+        func.signature.bind(args, defaults, this, func.name, namespace)?;
 
         // 3. Install owned cells and captured free-var cells at their slots.
         this.install_closure_cells(func, cells, namespace);
 
-        // 6. Commit the guard (no rollback) and push the frame. The operand
+        // 4. Commit the guards (no rollback) and push the frame. The operand
         // stack starts immediately above the locals region — comprehensions
         // emit their own push/pop bytecode, so no frame-level region is
         // reserved here. `append` empties the buffer (keeping its allocation)
@@ -1014,9 +1172,9 @@ impl<'h> VM<'h> {
         let (mut namespace, this) = namespace_guard.into_parts();
         this.stack.append(&mut namespace);
         this.namespace_scratch = namespace;
+        let (frame_namespace, this) = frame_namespace_guard.into_parts();
 
         let exc_stack_base = this.exception_stack.len();
-        let namespace = function_namespace(globals, &*this.heap);
         this.push_frame(CallFrame::new_function(
             &func.code,
             stack_base,
@@ -1024,7 +1182,7 @@ impl<'h> VM<'h> {
             exc_stack_base,
             func_id,
             call_offset,
-            namespace,
+            frame_namespace,
         ))?;
 
         Ok(CallResult::FramePushed)
@@ -1162,10 +1320,19 @@ impl<'h> VM<'h> {
     /// to decide whether `__init__` can run as a suspendable initializer frame.
     fn is_plain_sync_function(&self, value: &Value) -> bool {
         match value {
-            Value::DefFunction(func_id) => !self.interns.get_function(*func_id).is_async,
+            Value::DefFunction(func_id) => {
+                let f = self.interns.get_function(*func_id);
+                !f.is_async && !f.is_generator
+            }
             Value::Ref(id) => match self.heap.get(*id) {
-                HeapData::Closure(closure) => !self.interns.get_function(closure.func_id).is_async,
-                HeapData::FunctionDefaults(fd) => !self.interns.get_function(fd.func_id).is_async,
+                HeapData::Closure(closure) => {
+                    let f = self.interns.get_function(closure.func_id);
+                    !f.is_async && !f.is_generator
+                }
+                HeapData::FunctionDefaults(fd) => {
+                    let f = self.interns.get_function(fd.func_id);
+                    !f.is_async && !f.is_generator
+                }
                 // Bound methods never wrap another bound method, so this
                 // recursion is at most one level deep.
                 HeapData::BoundMethod(bm) => self.is_plain_sync_function(&bm.func),
@@ -1232,14 +1399,14 @@ fn dispatch_dunder(
     // is lossy). The `with` statement still uses the trait hooks via the
     // `BeforeWith`/`WithExit`/`WithExceptStart` opcodes, which perform the
     // CPython type-level (class-only) lookup.
-    if matches!(vm.heap.get(heap_id), HeapData::Instance(_)) {
+    if matches!(vm.heap.get(heap_id), HeapData::Instance(_)) || vm.is_anyio_scope(heap_id) {
         return None;
     }
     Some(match static_str {
         StaticStrings::Enter => {
             let args = args.take().expect("dispatch_dunder called with empty args slot");
             args.check_zero_args("__enter__", vm.heap)
-                .and_then(|()| vm.heap.read(heap_id).py_enter(vm))
+                .and_then(|()| PyValue::from_heap(heap_id, vm.heap).py_enter(vm))
         }
         StaticStrings::Exit => {
             let args = args.take().expect("dispatch_dunder called with empty args slot");
@@ -1279,5 +1446,15 @@ fn dispatch_exit(heap_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> Result<Ca
         Value::Ref(id) => Some(*id),
         _ => None,
     };
-    vm.heap.read(heap_id).py_exit(vm, exc)
+    PyValue::from_heap(heap_id, vm.heap).py_exit(vm, exc)
+}
+
+/// What a Python function value is called with: its id, captured cells, owned
+/// clones of its defaults and its exec globals, as [`VM::function_parts`] unpacks them.
+struct FunctionParts {
+    func_id: FunctionId,
+    cells: Box<[HeapId]>,
+    /// OWNED clones, released by the caller.
+    defaults: Vec<Value>,
+    globals: Option<HeapId>,
 }

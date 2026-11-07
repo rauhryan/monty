@@ -12,6 +12,12 @@ export async function serveDispatch(
     subscribe(({ id, request }) => post({ id, ...dispatch(request) }))
     post({ ready: true })
   } catch (error) {
-    post({ startupError: error instanceof Error ? error.message : String(error) })
+    post({
+      startupError: error instanceof Error ? error.message : String(error),
+      startupCode:
+        error instanceof Error && 'code' in error && error.code === 'MONTY_CANCELLATION_CONTRACT_UNSUPPORTED'
+          ? error.code
+          : undefined,
+    })
   }
 }

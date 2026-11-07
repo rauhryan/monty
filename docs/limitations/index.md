@@ -35,9 +35,11 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `match` statements with every PEP 634 pattern kind and guards, see [match.md](match.md)
 - f-strings (including the `=` debug form), `str.format()` and `format()`, with `!r` / `!s` / `!a` conversions,
     format specs and nested replacement fields
-- `async` / `await`, and `asyncio.run` / `asyncio.gather` / `asyncio.sleep`
+- `async` / `await`, and `asyncio.run` / `asyncio.gather` / `asyncio.sleep` / `asyncio.create_task`,
+    `asyncio.TaskGroup` and `asyncio.Queue`
 - `import x`, `import x.y`, `from x import y, z as w`; a module the sandbox does not have is requested from the host,
-    see [modules.md](modules.md#host-modules)
+    see [modules.md](modules.md#host-modules), which may answer with the module's `.py` file from the working
+    directory instead, see [modules from files](modules.md#modules-from-files)
 - Starred unpacking everywhere CPython allows it
 - Runtime generic aliases (`list[int]`) and `|` unions (`int | None`), see [typing.md](typing.md)
 
@@ -45,67 +47,76 @@ They exist for development and for agents debugging code that runs on Monty; mos
 
 - Class inheritance and metaclasses (`class Foo(Bar):`)
 - Decorators on methods — so no `@classmethod`, `@staticmethod`, `@property`
-- `yield` / `yield from` — there are no generator functions.
-    Generator *expressions* parse, but currently materialise to a `list`
 - `del`, both `del x` and `del d[k]`
 - `try*` / `except*` exception groups
 - PEP 695 `type` aliases
-- `async with`, `async for` and async comprehensions
+- `async for` and async comprehensions
 - Wildcard imports (`from m import *`)
 - t-strings
 
 **Missing in other ways:**
 
+- Generator functions support `next`, `send`, `throw`, explicit `close`, `for` loops and delegation to
+    iterables; `list` and `tuple` collect generators, while other native consumers remain unsupported. Generator expressions
+    still materialise to a list; see [language.md](language.md#generator-functions).
+
 - User-defined exception classes.
     The built-in exception types are a fixed set, and without inheritance you cannot add to it.
+
 - Function attributes.
     `fn.__name__`, `fn.__doc__` and friends raise `AttributeError`, and new attributes cannot be set — so
     `functools.wraps`-style metadata copying and registries keyed on `fn.__name__` have no equivalent.
+
 - `compile`, `globals`, `__import__` and `super` — all raise `NameError`.
     `eval` and `exec` exist (source text only), and so does `locals()`; see [eval_exec.md](eval_exec.md).
+
 - Third-party packages.
     There is no `sys.path` and no site-packages.
+    A supplied [AnyIO subset](anyio.md) provides task groups, lexical cancellation scopes and shielding with explicit platform restrictions.
 
 ## Standard library
 
 The following modules are present:
 
-| Module        | Divergences                      |
-| ------------- | -------------------------------- |
-| `asyncio`     | [asyncio.md](asyncio.md)         |
-| `base64`      | [base64.md](base64.md)           |
-| `binascii`    | [base64.md](base64.md)           |
-| `bisect`      | [bisect.md](bisect.md)           |
-| `collections` | [collections.md](collections.md) |
-| `copy`        | [copy.md](copy.md)               |
-| `csv`         | [csv.md](csv.md)                 |
-| `dataclasses` | [dataclasses.md](dataclasses.md) |
-| `datetime`    | [datetime.md](datetime.md)       |
-| `decimal`     | [decimal.md](decimal.md)         |
-| `functools`   | [functools.md](functools.md)     |
-| `hashlib`     | [hashlib.md](hashlib.md)         |
-| `itertools`   | [itertools.md](itertools.md)     |
-| `json`        | [json.md](json.md)               |
-| `math`        | [math.md](math.md)               |
-| `os`          | [os.md](os.md)                   |
-| `os.path`     | [os.md](os.md)                   |
-| `pathlib`     | [pathlib.md](pathlib.md)         |
-| `posixpath`   | [os.md](os.md)                   |
-| `random`      | [random.md](random.md)           |
-| `re`          | [re.md](re.md)                   |
-| `sys`         | [sys.md](sys.md)                 |
-| `time`        | [time.md](time.md)               |
-| `tomllib`     | [tomllib.md](tomllib.md)         |
-| `typing`      | [typing.md](typing.md)           |
-| `unicodedata` | [unicodedata.md](unicodedata.md) |
+| Module          | Divergences                          |
+| --------------- | ------------------------------------ |
+| `annotationlib` | [annotationlib.md](annotationlib.md) |
+| `asyncio`       | [asyncio.md](asyncio.md)             |
+| `base64`        | [base64.md](base64.md)               |
+| `binascii`      | [base64.md](base64.md)               |
+| `bisect`        | [bisect.md](bisect.md)               |
+| `collections`   | [collections.md](collections.md)     |
+| `contextlib`    | [contextlib.md](contextlib.md)       |
+| `copy`          | [copy.md](copy.md)                   |
+| `csv`           | [csv.md](csv.md)                     |
+| `dataclasses`   | [dataclasses.md](dataclasses.md)     |
+| `datetime`      | [datetime.md](datetime.md)           |
+| `decimal`       | [decimal.md](decimal.md)             |
+| `fnmatch`       | [fnmatch.md](fnmatch.md)             |
+| `functools`     | [functools.md](functools.md)         |
+| `hashlib`       | [hashlib.md](hashlib.md)             |
+| `itertools`     | [itertools.md](itertools.md)         |
+| `json`          | [json.md](json.md)                   |
+| `math`          | [math.md](math.md)                   |
+| `os`            | [os.md](os.md)                       |
+| `os.path`       | [os.md](os.md)                       |
+| `pathlib`       | [pathlib.md](pathlib.md)             |
+| `posixpath`     | [os.md](os.md)                       |
+| `random`        | [random.md](random.md)               |
+| `re`            | [re.md](re.md)                       |
+| `sys`           | [sys.md](sys.md)                     |
+| `time`          | [time.md](time.md)                   |
+| `tomllib`       | [tomllib.md](tomllib.md)             |
+| `typing`        | [typing.md](typing.md)               |
+| `unicodedata`   | [unicodedata.md](unicodedata.md)     |
 
 Each covers only part of its CPython surface — often a small part. `itertools`,
-`hashlib` and `tomllib` are the exceptions: `itertools` implements every name it exports, `hashlib` every guaranteed
-algorithm, and `tomllib` its whole three-name surface.
+`hashlib`, `tomllib` and `fnmatch` are the exceptions: `itertools` implements every name it exports, `hashlib` every
+guaranteed algorithm, and `tomllib` and `fnmatch` their whole three- and four-name surfaces.
 The absent names are missing from the module namespace rather than stubbed, so they fail type checking as well as
 raising `AttributeError` at runtime.
 
-Notably absent: `enum`, `contextlib`, `io`, `string`, `struct`, `operator`,
+Notably absent: `enum`, `io`, `string`, `struct`, `operator`,
 `inspect`, `logging`, `traceback`, `uuid`, `urllib`.
 Some of those are absent by design — `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes` would breach
 the sandbox — and others are simply not implemented yet.
@@ -124,17 +135,19 @@ Each links to the page that owns it, which is where the full account lives:
 - **`enumerate`, `zip`, `map`, `filter` and `reversed` are eager**, not lazy.
     So `map(f, itertools.count())` runs until a resource limit trips
     ([builtins.md](builtins.md)).
-- **`re` is backed by Rust's `fancy-regex`**, not CPython's engine: no `bytes` patterns, no `VERBOSE` flag, and some
+- **`re` is backed by Rust's `fancy-regex`**, not CPython's engine: no `bytes` patterns, no `re.VERBOSE` constant, and some
     error messages differ ([re.md](re.md)).
 - **Only the class dunders listed above are dispatched.** `__lt__` and `__len__` raise
     `TypeError` as if undefined, while in-place arithmetic dunders are skipped in favor of binary arithmetic
     (`@=` is rejected at compile time).
     `__bool__` and the `__getattr__` family are ignored silently, so an instance is always truthy
     ([classes.md](classes.md)).
-- **There is no event loop inside the sandbox.** `async` / `await` work, and `asyncio` exposes exactly three functions:
-    `run`, `gather`, which runs host calls concurrently, and `sleep`, which asks the host to wait.
-    `create_task` and everything else do not exist
-    ([asyncio.md](asyncio.md)).
+- **There is no event loop inside the sandbox.** `async` / `await` work, and `asyncio` exposes
+    `run`, `gather`, `sleep`, `create_task` with awaitable Task handles, and TaskGroup.
+    Queue, TaskGroup, Task cancellation and inspection have bounded
+    [supported subsets](asyncio.md#public-queue-subset).
+    Host cancellation supports concurrent coroutine cleanup with protected host replies
+    ([asyncio.md](asyncio.md#host-cancellation-and-experimental-native-entry)).
 - **Only UTF-8, ASCII, UTF-16 and UTF-32 codecs exist.** `latin-1` and friends raise `LookupError`
     ([encoding.md](encoding.md)).
 
@@ -145,3 +158,7 @@ The pages are the `limitations/` directory of the [repository](https://github.co
 verbatim.
 If you hit something that is neither in the subset nor on these pages, [open an
 issue](https://github.com/pydantic/monty/issues).
+
+The experimental platform also supplies a host-mediated `sandbox.read_file`
+capability and direct variadic gathering of durable host continuations; see
+[asyncio.md](asyncio.md#supplied-host-read-capability).

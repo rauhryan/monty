@@ -2,6 +2,7 @@ import asyncio
 import bisect
 import datetime
 import decimal
+import fnmatch
 import functools
 import hashlib
 import itertools
@@ -15,7 +16,9 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from io import BufferedReader, BufferedWriter, TextIOWrapper
 from pathlib import Path
-from typing import Any, LiteralString, TextIO, assert_type
+from typing import Any, LiteralString, TextIO, assert_type, get_type_hints
+
+import annotationlib
 
 # === Type checking helper functions ===
 
@@ -773,6 +776,14 @@ assert_type(bisect.insort_left([1, 2], 2), None)
 assert_type(bisect.insort_right([(1, 'a')], (2, 'b'), key=lambda row: row[0]), None)
 assert_type(bisect.insort([1, 2], 3), None)
 
+# === fnmatch ===
+
+assert_type(fnmatch.fnmatch('a.py', '*.py'), bool)
+assert_type(fnmatch.fnmatchcase(b'a.py', b'*.py'), bool)
+assert_type(fnmatch.filter(['a.py', 'b.txt'], '*.py'), list[str])
+assert_type(fnmatch.filter((b'a', b'b'), b'?'), list[bytes])
+assert_type(fnmatch.translate('*.py'), str)
+
 # === open ===
 # Upstream typeshed's signatures accept any argument value the runtime might accept.
 
@@ -806,3 +817,17 @@ except FileNotFoundError:
     pass
 except (FileExistsError, IsADirectoryError, NotADirectoryError, PermissionError):
     pass
+
+
+# === annotationlib ===
+def annotated(x: int) -> str:
+    return str(x)
+
+
+forward = annotationlib.ForwardRef('Later', owner=annotated)
+assert_type(forward.__forward_arg__, str)
+assert_type(forward.__owner__, object)
+forward.evaluate(format=annotationlib.Format.STRING)
+annotationlib.get_annotations(annotated, format=annotationlib.Format.STRING)
+assert_type(annotationlib.get_annotations(annotated), dict[str, Any])
+assert_type(get_type_hints(annotated, format=annotationlib.Format.FORWARDREF), dict[str, Any])

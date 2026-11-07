@@ -1,14 +1,21 @@
 //! Exception handling helpers for the VM.
 
-use std::fmt::{self, Write};
+use std::{
+    fmt::{self, Write},
+    mem,
+};
+
+use monty_types::ResourceError;
 
 use super::VM;
+#[cfg(feature = "cancellation-test-hooks")]
+use crate::cancellation_test_hooks;
 use crate::{
     builtins::Builtins,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::{StaticStrings, StringId},
     types::{LazyHeapSet, PyTrait, Type},
     value::Value,
@@ -22,12 +29,39 @@ pub(super) enum CaughtException {
     /// An exception handled by user code, retaining its existing dump representation.
     Value(Value),
     /// An internal handler must not replace the original traceback when its match fails.
-    Frozen { value: Value, error: Box<ExceptionRaise> },
+    Frozen {
+        value: Value,
+        error: Box<ExceptionRaise>,
+        /// Still escaping through finally/context cleanup, rather than caught by except.
+        /// Legacy snapshots did not record this distinction.
+        #[serde(default)]
+        unwinding: bool,
+    },
 }
 
 impl CaughtException {
+    #[cfg(feature = "memory-model-checks")]
+    pub(super) fn forget_owned_value(&mut self) {
+        match self {
+            Self::Value(value) => value.dec_ref_forget(),
+            Self::Frozen { value, error, .. } => {
+                value.dec_ref_forget();
+                error.forget_owned_value();
+            }
+        }
+    }
+
+    pub(super) fn for_each_owned_id(&self, mut visit: impl FnMut(HeapId)) {
+        if let Value::Ref(id) = self.value() {
+            visit(*id);
+        }
+        if let Self::Frozen { error, .. } = self {
+            error.for_each_owned_id(visit);
+        }
+    }
+
     /// Borrows the exception object without exposing its internal traceback metadata.
-    fn value(&self) -> &Value {
+    pub(super) fn value(&self) -> &Value {
         match self {
             Self::Value(value) | Self::Frozen { value, .. } => value,
         }
@@ -37,7 +71,11 @@ impl CaughtException {
 impl<C: ContainsHeap> DropWithContext<C> for CaughtException {
     fn drop_with(self, ctx: &mut C) {
         match self {
-            Self::Value(value) | Self::Frozen { value, .. } => value.drop_with(ctx),
+            Self::Value(value) => value.drop_with(ctx),
+            Self::Frozen { value, error, .. } => {
+                value.drop_with(ctx);
+                error.drop_with(ctx);
+            }
         }
     }
 }
@@ -116,7 +154,7 @@ impl VM<'_> {
             // Exception instance on heap
             Value::Ref(heap_id) => {
                 if let HeapData::Exception(exc) = self.heap.get(*heap_id) {
-                    exc.clone()
+                    exc.simple.clone()
                 } else {
                     // Not an exception type
                     SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException")
@@ -139,10 +177,142 @@ impl VM<'_> {
 
         RunError::Exc(ExceptionRaise {
             exc: simple_exc,
+            object: match exc_value {
+                Value::Ref(id) if matches!(self.heap.get(*id), HeapData::Exception(_)) => {
+                    Some(exc_value.clone_with_heap(self.heap))
+                }
+                _ => None,
+            },
             frame,
             snippet_frame: None,
             hide_caret: false,
         })
+    }
+
+    /// Runs `raise exc from cause`.
+    ///
+    /// `exc` is checked first, as in CPython, then `cause` must be `None`, an
+    /// exception or an exception class (instantiated without a message). The
+    /// raised object records the cause and suppresses its context; a bare class
+    /// is instantiated here so there is an object to record it on.
+    pub(super) fn raise_with_cause(&mut self, exc: Value, cause: Value) -> Option<RunError> {
+        let error = self.make_exception(&exc, true);
+        let raised = match self.exception_object(exc) {
+            Ok(raised) => raised,
+            Err(other) => {
+                // `error` is the `exceptions must derive from BaseException` TypeError.
+                other.drop_with(self);
+                cause.drop_with(self);
+                return self.handle_exception_with_value(error, None);
+            }
+        };
+        let cause = match cause {
+            Value::None => None,
+            other => match self.exception_object(other) {
+                Ok(cause) => cause.into_ref_id(),
+                Err(other) => {
+                    other.drop_with(self);
+                    raised.drop_with(self);
+                    error.drop_with(self);
+                    let error = ExcType::type_error("exception causes must derive from BaseException");
+                    return self.handle_exception_with_value(error, None);
+                }
+            },
+        };
+        let Value::Ref(raised_id) = &raised else {
+            unreachable!("exceptions are heap values")
+        };
+        self.set_exception_cause(*raised_id, cause);
+        self.handle_exception_with_value(error, Some(raised))
+    }
+
+    /// The exception object `value` denotes: itself for an exception, a fresh
+    /// instance for an exception class. Anything else comes back as `Err` for the
+    /// caller to release and report.
+    fn exception_object(&mut self, value: Value) -> Result<Value, Value> {
+        match value {
+            Value::Ref(id) if matches!(self.heap.get(id), HeapData::Exception(_)) => Ok(value),
+            Value::Builtin(Builtins::ExcType(exc_type)) => Ok(self.allocate_exception(exc_type)),
+            other => Err(other),
+        }
+    }
+
+    /// Allocates `exc_type()` with no message, for `raise ExcType from ...` and its cause.
+    fn allocate_exception(&mut self, exc_type: ExcType) -> Value {
+        Value::Ref(self.heap.allocate(HeapData::Exception(Box::new(
+            SimpleException::new_none(exc_type).into(),
+        ))))
+    }
+
+    /// Stores `cause` (an owned reference) as `__cause__` of the exception `id`,
+    /// releasing any previous cause, and sets `__suppress_context__`.
+    fn set_exception_cause(&mut self, id: HeapId, cause: Option<HeapId>) {
+        let previous = match self.heap.read(id) {
+            HeapReadOutput::Exception(exc) => exc.get_mut(self.heap).set_cause(cause),
+            _ => unreachable!("set_exception_cause is only called on exceptions"),
+        };
+        previous.map(Value::Ref).drop_with(self);
+    }
+
+    /// Records the exception being handled as `__context__` of the newly raised
+    /// `raised`, as CPython's `_PyErr_SetObject` does: a bare `raise` of the handled
+    /// exception itself gets none, and a link that would make the chain circular is
+    /// cut first. An internal (frozen) handler's exception is skipped, since the
+    /// equivalent CPython code is C and leaves the user's handled exception in place.
+    fn attach_context(&mut self, raised: &Value) -> Result<(), ResourceError> {
+        let handled = self.exception_stack.iter().rev().find_map(|caught| match caught {
+            CaughtException::Value(Value::Ref(id))
+            | CaughtException::Frozen {
+                value: Value::Ref(id),
+                unwinding: true,
+                ..
+            } => Some(*id),
+            _ => None,
+        });
+        let Some(handled_id) = handled else {
+            return Ok(());
+        };
+        let Value::Ref(raised_id) = raised else {
+            return Ok(());
+        };
+        if *raised_id == handled_id {
+            return Ok(());
+        }
+        // Each re-raise inside a handler adds a link, so an unchecked scan of a
+        // chain grown by a loop would be quadratic: poll the clock.
+        let mut cursor = handled_id;
+        for step in 0usize.. {
+            let Some(next) = self.exception_context(cursor) else {
+                break;
+            };
+            if next == *raised_id {
+                self.set_exception_context(cursor, None);
+                break;
+            }
+            self.heap.tracker.check_time_every(step)?;
+            cursor = next;
+        }
+        self.heap.inc_ref(handled_id);
+        self.set_exception_context(*raised_id, Some(handled_id));
+        Ok(())
+    }
+
+    /// The `__context__` of the exception `id`, borrowed.
+    fn exception_context(&self, id: HeapId) -> Option<HeapId> {
+        match self.heap.get(id) {
+            HeapData::Exception(exc) => exc.context(),
+            _ => None,
+        }
+    }
+
+    /// Stores `context` (an owned reference) as `__context__` of the exception
+    /// `id`, releasing any previous context.
+    fn set_exception_context(&mut self, id: HeapId, context: Option<HeapId>) {
+        let previous = match self.heap.read(id) {
+            HeapReadOutput::Exception(exc) => exc.get_mut(self.heap).set_context(context),
+            _ => unreachable!("set_exception_context is only called on exceptions"),
+        };
+        previous.map(Value::Ref).drop_with(self);
     }
 
     /// Re-raises the active exception without replacing a user traceback with an internal handler.
@@ -152,7 +322,7 @@ impl VM<'_> {
             let error = if self.current_frame_is_frozen()
                 && let CaughtException::Frozen { error, .. } = caught
             {
-                RunError::Exc((**error).clone())
+                RunError::Exc(error.clone_with_heap(self.heap))
             } else {
                 self.make_exception(&raised, true)
             };
@@ -208,10 +378,14 @@ impl VM<'_> {
 
     /// Converts best-effort detail into an `AssertionError` message.
     /// Catchable formatting errors fall back to no detail; terminal errors propagate.
-    fn assert_failure(&self, detail: RunResult<Option<String>>) -> RunError {
+    fn assert_failure(&mut self, detail: RunResult<Option<String>>) -> RunError {
         match detail {
             Ok(Some(detail)) => self.assertion_error(Some(format!("assert {detail}"))),
-            Ok(None) | Err(RunError::Exc(_)) => self.assertion_error(None),
+            Ok(None) => self.assertion_error(None),
+            Err(error @ RunError::Exc(_)) => {
+                error.drop_with(self);
+                self.assertion_error(None)
+            }
             Err(e) => e,
         }
     }
@@ -228,7 +402,10 @@ impl VM<'_> {
         // the message itself fails to stringify.
         let detail = match this.assert_detail(cmp_op) {
             Ok(detail) => detail,
-            Err(RunError::Exc(_)) => None,
+            Err(error @ RunError::Exc(_)) => {
+                error.drop_with(this);
+                None
+            }
             Err(e) => return e,
         };
         let msg = match assert_msg_str(msg_value, this) {
@@ -236,7 +413,10 @@ impl VM<'_> {
             // show only the detail — avoids a stray leading `\n` before `assert`.
             Ok(msg) if msg.is_empty() => None,
             Ok(msg) => Some(msg),
-            Err(RunError::Exc(_)) => None,
+            Err(error @ RunError::Exc(_)) => {
+                error.drop_with(this);
+                None
+            }
             Err(e) => return e,
         };
         let full = match (msg, detail) {
@@ -279,6 +459,7 @@ impl VM<'_> {
             .then(|| RawStackFrame::from_raise(self.current_position(), self.current_frame_name()));
         RunError::Exc(ExceptionRaise {
             exc: SimpleException::new(ExcType::AssertionError, msg),
+            object: None,
             frame,
             snippet_frame: None,
             hide_caret: false,
@@ -319,6 +500,13 @@ impl VM<'_> {
 
     /// Handles one task's exception, returning to the caller's loop if another task must raise.
     fn handle_exception_step(&mut self, mut error: RunError, raised: Option<Value>) -> ExceptionHandlingResult {
+        #[cfg(feature = "cancellation-test-hooks")]
+        if self.native_cancel_reason().is_some()
+            && let Some(fatal) = cancellation_test_hooks::delivery_error()
+        {
+            error.drop_with(self);
+            error = fatal;
+        }
         // Ensure exception has initial frame info
         error = self.attach_frame_to_error(error);
 
@@ -341,6 +529,37 @@ impl VM<'_> {
             };
             self.create_exception_value(exc)
         };
+        if let Err(context_error) = self.attach_context(&exc_value) {
+            exc_value.drop_with(self);
+            error.drop_with(self);
+            return ExceptionHandlingResult::Unhandled(self.unwind_for_traceback(context_error.into()));
+        }
+
+        // Once materialized, the diagnostic and handler must share this exact
+        // identity, including when a Frozen handler or task caches the error.
+        if let RunError::Exc(exc) = &mut error
+            && exc.object.is_none()
+        {
+            exc.object = Some(exc_value.clone_with_heap(self.heap));
+        }
+
+        // The saved handler role is durable across suspension and helper frames.
+        // Match the actual object: an unrelated caught exception on the stack
+        // must not shield new body work from cancellation.
+        let unresolved_cleanup_error = self.exception_stack.iter().any(|caught| {
+            matches!(caught, CaughtException::Frozen { unwinding: true, .. })
+                && matches!((caught.value(), &exc_value), (Value::Ref(a), Value::Ref(b)) if a == b)
+        });
+        let public_cleanup_error = self
+            .scheduler
+            .current_task_id()
+            .is_some_and(|id| self.is_public_task(id))
+            && (unresolved_cleanup_error
+                || self.current_frame.code.native_cleanup_at(self.instruction_ip)
+                || self
+                    .suspended_frames
+                    .iter()
+                    .any(|frame| frame.code.native_cleanup_at(frame.ip.saturating_sub(1))));
 
         // Use DropGuard because exc_value is conditionally consumed (pushed onto
         // exception_stack when handler found) or dropped (when no handler found)
@@ -348,13 +567,53 @@ impl VM<'_> {
 
         // Search for handler in current and outer frames
         loop {
-            let (exc_value, this) = exc_guard.as_parts();
+            let (exc_value, this) = exc_guard.as_parts_mut();
+            if let Some(activation) = &mut this.current_frame.generator_activation {
+                activation.delegating = false;
+            }
             let frame = this.current_frame();
             let code = frame.code;
             let ip = u32::try_from(this.instruction_ip).unwrap_or(u32::MAX);
 
-            // Search exception table for a handler covering this IP
-            if let Some(entry) = code.find_exception_handler(ip) {
+            let entry = code.find_exception_handler(ip, false);
+            let pending = this
+                .scheduler
+                .current_task()
+                .filter(|task| !task.gather_protected)
+                .and_then(|task| task.native_cancel.as_ref())
+                .is_some_and(|cancel| !cancel.delivered);
+            let protected_caller = this
+                .suspended_frames
+                .iter()
+                .any(|frame| frame.code.native_cleanup_at(frame.ip.saturating_sub(1)));
+            // Replace at the remaining search site, after all nearer required cleanup.
+            // Do not replay a previously completed finally from the original raise site.
+            if pending
+                && !protected_caller
+                && entry.is_none_or(|entry| entry.is_except() && !code.native_cleanup_at(entry.handler() as usize))
+            {
+                let RunError::Exc(exc) = &error else {
+                    unreachable!("catchable error");
+                };
+                let diagnostic = super::scheduler::InterruptedError::capture(&exc.exc);
+                let signal = this.native_delivery(Some(diagnostic));
+                // Cancellation deferred by a public Task's authored cleanup
+                // cannot replace that cleanup's actual failure. Consume the
+                // delivery, retaining the exact object for joins/group outcomes.
+                if public_cleanup_error {
+                    signal.drop_with(this);
+                    continue;
+                }
+                error.drop_with(this);
+                error = this.attach_frame_to_error(signal);
+                let RunError::Exc(exc) = &error else {
+                    unreachable!("catchable signal");
+                };
+                let replacement = this.create_exception_value(exc);
+                mem::replace(exc_value, replacement).drop_with(this);
+                continue;
+            }
+            if let Some(entry) = entry {
                 // Unwind operands to the compiler-recorded region depth,
                 // including any in-flight comprehension values.
                 let handler_offset = entry.handler() as usize;
@@ -388,15 +647,18 @@ impl VM<'_> {
                 // Push exception onto the exception_stack for bare raise.
                 // This allows nested except handlers to restore outer
                 // exception context.
-                let caught = if this.current_frame_is_frozen() {
+                let unwinding = !entry.is_except();
+                let caught = if this.current_frame_is_frozen() || unwinding {
                     let RunError::Exc(error) = error else {
                         unreachable!("only catchable exceptions enter handlers")
                     };
                     CaughtException::Frozen {
                         value: exc_value,
                         error: Box::new(error),
+                        unwinding,
                     }
                 } else {
+                    error.drop_with(this);
                     CaughtException::Value(exc_value)
                 };
                 this.exception_stack.push(caught);
@@ -406,6 +668,20 @@ impl VM<'_> {
 
                 return ExceptionHandlingResult::Caught;
             }
+
+            // An escaping asyncio root error also cancels/drains unfinished
+            // Tasks before crossing the public run boundary. Retain its identity
+            // and original handler-search position across host-driven cleanup.
+            if this.root_error_needs_shutdown() {
+                drop(exc_guard);
+                return match self.root_error_shutdown(error) {
+                    Ok(()) => ExceptionHandlingResult::Caught,
+                    Err(error) => ExceptionHandlingResult::NextTask(error),
+                };
+            }
+
+            this.leave_cleanup_frame();
+            this.leave_run_frame();
 
             // No handler in this frame - pop frame and try outer
             if this.suspended_frames.is_empty() {
@@ -429,13 +705,59 @@ impl VM<'_> {
                 return ExceptionHandlingResult::Unhandled(error);
             }
 
+            // PEP 479 applies only after the body's handlers have declined the
+            // error. A normal generator return bypasses this path entirely.
+            if this.current_frame.generator_activation.is_some() && error.is_stop_iteration() {
+                error.drop_with(this);
+                error = this.attach_frame_to_error(
+                    SimpleException::new_msg(ExcType::RuntimeError, "generator raised StopIteration").into(),
+                );
+                let RunError::Exc(exc) = &error else {
+                    unreachable!("catchable generator error")
+                };
+                let replacement = this.create_exception_value(exc);
+                let original = mem::replace(exc_value, replacement);
+                let Some(HeapReadOutput::Exception(object)) = exc_value.read_heap(this) else {
+                    unreachable!("PEP 479 replacement")
+                };
+                let original_id = original.into_ref_id().expect("materialized StopIteration");
+                this.heap.inc_ref(original_id);
+                let object = object.get_mut(this.heap);
+                object.set_cause(Some(original_id));
+                // Transfer the original owned reference to context; cause owns the clone.
+                object.set_context(Some(original_id));
+                let RunError::Exc(exc) = &mut error else {
+                    unreachable!("PEP 479 RuntimeError")
+                };
+                exc.object = Some(exc_value.clone_with_heap(this.heap));
+            }
+
             // Get the caller's call-site offset before popping frame.
             // This is where the caller invoked the function that's failing.
             let call_offset = this.current_frame().call_offset;
 
+            // A raising module body must not stay cached; checked before the pop.
+            let is_initializer = this.current_frame().is_initializer;
             // Synchronous evaluation stops unwinding here, but its caller still
             // belongs in the traceback when the error crosses that boundary.
+            let was_generator = this.current_frame.generator_activation.is_some();
+            let closed = error.is_catchable(ExcType::GeneratorExit)
+                && this
+                    .current_frame
+                    .generator_activation
+                    .as_ref()
+                    .is_some_and(|a| a.return_route == super::generator::GeneratorReturn::Close && !a.delegated);
             let should_return = this.pop_frame();
+            if closed {
+                error.drop_with(this);
+                this.push(Value::None);
+                return ExceptionHandlingResult::Caught;
+            }
+            if was_generator && let Some(offset) = call_offset {
+                this.instruction_ip = offset as usize;
+            }
+            // CPython shows no carets under the `import` a module body's error unwinds through.
+            let from_module_body = is_initializer && this.forget_failed_module();
 
             // Add caller frame info to traceback (if we have a call site).
             // Resolve the offset now — against the caller, which is the current
@@ -446,8 +768,8 @@ impl VM<'_> {
                 let pos = this.resolve_offset(off);
                 let frame_name = this.current_frame_name();
                 match &mut error {
-                    RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name),
-                    RunError::UncatchableExc(exc) => exc.add_caller_frame(pos, frame_name),
+                    RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name, from_module_body),
+                    RunError::UncatchableExc(exc) => exc.add_caller_frame(pos, frame_name, from_module_body),
                     RunError::Internal(_) => {}
                 }
             }
@@ -465,7 +787,10 @@ impl VM<'_> {
             // Get the caller's call-site offset before popping frame
             let call_offset = self.current_frame().call_offset;
 
+            let is_initializer = self.current_frame().is_initializer;
             let should_return = self.pop_frame();
+            // CPython shows no carets under the `import` a module body's error unwinds through.
+            let from_module_body = is_initializer && self.forget_failed_module();
 
             // Add caller frame info to traceback. Resolve the offset against the
             // caller, which is the current frame after the pop above.
@@ -475,8 +800,8 @@ impl VM<'_> {
                 let pos = self.resolve_offset(off);
                 let frame_name = self.current_frame_name();
                 match &mut error {
-                    RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name),
-                    RunError::UncatchableExc(exc) => exc.add_caller_frame(pos, frame_name),
+                    RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name, from_module_body),
+                    RunError::UncatchableExc(exc) => exc.add_caller_frame(pos, frame_name, from_module_body),
                     RunError::Internal(_) => {}
                 }
             }
@@ -490,9 +815,12 @@ impl VM<'_> {
     /// Creates an exception Value from exception info.
     ///
     /// Allocates an Exception on the heap and returns a Value::Ref to it.
-    fn create_exception_value(&mut self, exc: &ExceptionRaise) -> Value {
+    pub(crate) fn create_exception_value(&mut self, exc: &ExceptionRaise) -> Value {
+        if let Some(object) = &exc.object {
+            return object.clone_with_heap(self.heap);
+        }
         let exception = exc.exc.clone();
-        let heap_id = self.heap.allocate(HeapData::Exception(exception));
+        let heap_id = self.heap.allocate(HeapData::Exception(Box::new(exception.into())));
         Value::Ref(heap_id)
     }
 
@@ -574,7 +902,10 @@ fn assert_operand_repr(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
         Ok(()) => Ok(writer.into_string()),
         // The cap abort is ours: the partial repr is the result. Genuine
         // errors can only surface before the cap (post-cap writes do no VM work).
-        Err(_) if writer.truncated => Ok(writer.into_string()),
+        Err(error) if writer.truncated && !matches!(error, RunError::UncatchableExc(_)) => {
+            error.drop_with(vm);
+            Ok(writer.into_string())
+        }
         Err(e) => Err(e),
     }
 }
@@ -584,7 +915,7 @@ fn assert_operand_repr(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
 fn assert_msg_str(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
     let str_value = value.py_str(vm)?;
     defer_drop!(str_value, vm);
-    Ok(str_value.to_str(vm)?.to_owned())
+    Ok(str_value.as_str(vm).expect("py_str returns str").to_owned())
 }
 
 /// Byte-capped sink that stops repr formatting on a character boundary.

@@ -2,8 +2,9 @@ use std::fmt::Write;
 
 use monty_types::MontyUuid;
 
-use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
+use super::{Dict, LazyHeapSet, PyTrait, Type};
 use crate::{
+    annotations,
     args::ArgValues,
     boundary_uuid::create_uuid,
     bytecode::{CallResult, VM},
@@ -11,10 +12,9 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{
-        BorrowedHeapReadMut, DropGuard, DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapReadMut, HeapReader,
+        BorrowedHeapReadMut, DropGuard, DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapReadMut,
         heap_read_ref_as_field_mut,
     },
-    intern::{Interns, StringId},
     types::{Union, str::allocate_string},
     value::{EitherStr, Value},
 };
@@ -97,18 +97,6 @@ impl<'h> HeapReadMut<'h, Class> {
         self.namespace_mut().set(name, value, vm)
     }
 
-    /// [`set_attr`](Self::set_attr) for a dump upgrade, which has no VM and
-    /// cannot fail: see `HeapRead::<Dict>::set_interned_str`.
-    pub(crate) fn set_interned_attr(
-        &self,
-        name: StringId,
-        value: Value,
-        heap: &mut HeapReader<'h>,
-        interns: &Interns,
-    ) -> Option<Value> {
-        self.namespace_mut().set_interned_str(name, value, heap, interns)
-    }
-
     /// Removes a class attribute, returning it for the caller to drop.
     ///
     /// Only `@dataclass` needs this, to clear the `field()` object a class body
@@ -153,8 +141,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
     }
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        if name.as_str(vm.interns) == "__annotations__" {
+            return annotations::set_class_annotations(self.id(), value, vm);
+        }
         let mut value_guard = DropGuard::new(value, vm);
-        let name = attribute_name_value(name, value_guard.ctx());
+        let name = name.as_value(value_guard.ctx().heap);
         let (value, vm) = value_guard.into_parts();
         let old_value = self.set_attr(name, value, vm)?;
         old_value.drop_with(vm);
@@ -185,6 +176,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
         if attr_str == "__name__" {
             let name = self.get(vm.heap).name.as_str(vm.interns).to_owned();
             return Ok(Some(CallResult::Value(allocate_string(name, vm.heap))));
+        }
+        // `Foo.__annotations__` is computed from the class's `__annotate__` on
+        // first access (PEP 649), another metaclass descriptor in CPython.
+        if attr_str == "__annotations__" {
+            return annotations::class_annotations(self.id(), vm).map(Some);
         }
         // Otherwise look up a member (method or class variable) in the namespace.
         match self.get(vm.heap).namespace.get_by_str(attr_str, vm.heap, vm.interns) {

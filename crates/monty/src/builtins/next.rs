@@ -9,6 +9,7 @@ use crate::{
     frozen::FrozenFunction,
     heap::{DropGuard, HeapReadOutput},
     os_dispatch::PostConversionEffect,
+    py_value::PyValue,
     types::PyTrait,
     value::Value,
 };
@@ -50,6 +51,12 @@ pub fn builtin_next(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let NextArgs { iterator, default } = NextArgs::from_args(args, vm)?;
     defer_drop!(iterator, vm);
     match iterator.read_heap(vm) {
+        Some(HeapReadOutput::Generator(_)) => Ok(CallResult::ResumeGenerator {
+            generator: iterator.clone_with_heap(vm.heap),
+            input: Value::None,
+            throwing: false,
+            default,
+        }),
         Some(HeapReadOutput::Instance(instance)) => {
             if let Some(default) = default {
                 vm.call_frozen_exact(
@@ -83,7 +90,7 @@ fn next_native(iterator: &Value, default: Option<Value>, vm: &mut VM<'_>) -> Run
     let Value::Ref(id) = iterator else {
         return Err(ExcType::type_error_not_iterator(&iterator.py_type_name(vm)));
     };
-    match vm.heap.read(*id).py_next(vm)? {
+    match PyValue::from_heap(*id, vm.heap).py_next(vm)? {
         Some(item) => Ok(item),
         None => match default_guard.into_inner() {
             Some(default) => Ok(default),

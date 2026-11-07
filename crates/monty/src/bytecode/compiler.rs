@@ -21,7 +21,7 @@ use super::{
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
     builtins::{Builtins, BuiltinsFunctions},
-    exception_private::{ExcType, RunError, SimpleException},
+    exception_private::{ExcType, ExceptionRaise, RunError, SimpleException},
     expressions::{
         AssignTarget, Callable, CaptureSource, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier,
         ImportName, Literal, NameScope, Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, Submodule,
@@ -29,7 +29,7 @@ use crate::{
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     function::Function,
-    intern::{CompileInterns, StringId},
+    intern::{CompileInterns, FunctionId, StaticStrings, StringId},
     name_map::NameMap,
     namespace::NamespaceId,
     parse::{CodeRange, ExceptHandler, Try, syntax_error_in_snippet},
@@ -145,7 +145,12 @@ fn target_position(target: &UnpackTarget) -> CodeRange {
 /// Whether an expression can resume a pushed/suspended call at its end offset.
 fn return_expr_needs_padding(expr: &ExprLoc) -> bool {
     match &expr.expr {
-        Expr::Call { .. } | Expr::AttrCall { .. } | Expr::IndirectCall { .. } | Expr::Await(_) => true,
+        Expr::Call { .. }
+        | Expr::AttrCall { .. }
+        | Expr::IndirectCall { .. }
+        | Expr::Await(_)
+        | Expr::Yield(_)
+        | Expr::YieldFrom(_) => true,
         Expr::IfElse { orelse, .. } => return_expr_needs_padding(orelse),
         Expr::Op {
             op: Operator::And | Operator::Or,
@@ -290,10 +295,17 @@ pub struct Compiler<'a, 'i> {
 
     /// Settings for this scope and its nested compilers.
     flags: ScopeFlags,
+
+    /// Native coroutine bodies await async context methods instead of yielding delegation.
+    native_async: bool,
 }
 
 /// Compiler settings inherited by nested scopes, with await restrictions reset for functions.
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent switches copied into nested scopes"
+)]
 struct ScopeFlags {
     /// Whether to compile pytest-style assert failure annotations.
     assert_message_annotations: bool,
@@ -304,6 +316,9 @@ struct ScopeFlags {
     /// Rejects `await` at snippet top level and in its class bodies.
     /// Nested function bodies reset this restriction.
     forbid_await: bool,
+    /// Whether the compile unit runs under `from __future__ import annotations`,
+    /// stamped on every `Code` it produces.
+    future_annotations: bool,
 }
 
 /// Jump targets needed to compile `break` and `continue`.
@@ -413,7 +428,7 @@ enum FBlock<'a> {
     FinallyEnd,
     /// A `with` body: the context manager sits on the operand stack and
     /// `__exit__` is invoked when control exits the block.
-    With { region: Region },
+    With { region: Region, is_async: bool },
     /// A return value to discard if control escapes an inline `finally`.
     PopValue,
 }
@@ -425,7 +440,7 @@ impl<'a> FBlock<'a> {
             Self::TryExcept { region }
             | Self::FinallyTry { region, .. }
             | Self::ExceptHandler { region, .. }
-            | Self::With { region } => Some(region),
+            | Self::With { region, .. } => Some(region),
             Self::WhileLoop(_) | Self::ForLoop(_) | Self::FinallyEnd | Self::PopValue => None,
         }
     }
@@ -473,7 +488,7 @@ impl<'a> FBlock<'a> {
     /// Extracts a `With` region or panics on a compiler invariant bug.
     fn expect_with(self) -> Region {
         match self {
-            Self::With { region } => region,
+            Self::With { region, .. } => region,
             _ => panic!("expected a with frame block"),
         }
     }
@@ -526,6 +541,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             frame_locals,
             comp_slots: Vec::new(),
             flags,
+            native_async: false,
         }
     }
 
@@ -536,8 +552,9 @@ impl<'a, 'i> Compiler<'a, 'i> {
         interns: &mut CompileInterns<'_>,
         globals: &NameMap,
         options: CompileOptions,
+        future_annotations: bool,
     ) -> Result<Code, CompileError> {
-        Self::compile_module_inner(nodes, interns, globals, options, None)
+        Self::compile_module_inner(nodes, interns, globals, options, None, future_annotations)
     }
 
     /// Compiles a prepared `eval()` / `exec()` snippet, rejecting top-level await.
@@ -549,8 +566,16 @@ impl<'a, 'i> Compiler<'a, 'i> {
         globals: &NameMap,
         options: CompileOptions,
         globals_by_name: bool,
+        future_annotations: bool,
     ) -> Result<Code, CompileError> {
-        Self::compile_module_inner(nodes, interns, globals, options, Some(globals_by_name))
+        Self::compile_module_inner(
+            nodes,
+            interns,
+            globals,
+            options,
+            Some(globals_by_name),
+            future_annotations,
+        )
     }
 
     /// Shared module compiler; `snippet` is `Some(globals_by_name)` for eval/exec.
@@ -560,6 +585,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         globals: &NameMap,
         options: CompileOptions,
         snippet: Option<bool>,
+        future_annotations: bool,
     ) -> Result<Code, CompileError> {
         check_namespace_size_u16(globals.len(), "module")?;
         // Module frames have `locals_count = 0` at runtime (globals live in
@@ -569,6 +595,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             assert_message_annotations: options.assert_message_annotations.enabled(),
             globals_by_name: snippet.unwrap_or(false),
             forbid_await: snippet.is_some(),
+            future_annotations,
         };
         let mut compiler = Compiler::new(interns, true, 0, flags);
 
@@ -581,7 +608,12 @@ impl<'a, 'i> Compiler<'a, 'i> {
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build())
+        Ok(compiler.finish())
+    }
+
+    /// Builds the compiled `Code`, stamped with the unit's `__future__` state.
+    fn finish(self) -> Code {
+        self.code.build().with_future_annotations(self.flags.future_annotations)
     }
 
     /// Compiles a function body to bytecode, appending any nested functions to `interns`.
@@ -603,6 +635,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             ..flags
         };
         let mut compiler = Compiler::new(interns, false, num_locals, flags);
+        compiler.native_async = func_def.is_async;
         // Parameters, and the cells captured parameters live in, are named up
         // front: a body that never mentions one still reports it from `locals()`.
         let param_names: Vec<StringId> = func_def.signature.param_names().collect();
@@ -622,7 +655,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build())
+        Ok(compiler.finish())
     }
 
     /// Compiles statements, retaining `finally` bodies for inline cleanup.
@@ -767,14 +800,19 @@ impl<'a, 'i> Compiler<'a, 'i> {
             } => self.compile_for(target, iter, body, or_else)?,
             Node::While { test, body, or_else } => self.compile_while(test, body, or_else)?,
             Node::Assert { test, msg } => self.compile_assert(test, msg.as_ref())?,
-            Node::Raise(expr) => {
-                if let Some(exc) = expr {
+            Node::Raise { exc, cause } => match (exc, cause) {
+                (Some(exc), Some(cause)) => {
+                    self.compile_expr(exc)?;
+                    self.compile_expr(cause)?;
+                    self.code.emit(Opcode::RaiseFrom)?;
+                }
+                (Some(exc), None) => {
                     self.compile_expr(exc)?;
                     self.code.emit(Opcode::Raise)?;
-                } else {
-                    self.code.emit(Opcode::Reraise)?;
                 }
-            }
+                // The parser rejects `raise from cause` without an exception.
+                (None, _) => self.code.emit(Opcode::Reraise)?,
+            },
             Node::FunctionDef { def, decorators } => self.compile_function_def(def, decorators)?,
             Node::ClassDef {
                 name,
@@ -790,8 +828,12 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 position,
             } => self.compile_match(subject, cases, *position)?,
             Node::With {
-                context, target, body, ..
-            } => self.compile_with(context, target.as_ref(), body)?,
+                context,
+                target,
+                body,
+                is_async,
+                ..
+            } => self.compile_with(context, target.as_ref(), body, *is_async)?,
             Node::Import { names } => {
                 for import_name in names {
                     self.compile_import(import_name)?;
@@ -896,7 +938,13 @@ impl<'a, 'i> Compiler<'a, 'i> {
         let defaults_count = check_call_args_u8(func_def.default_exprs.len(), "default parameter values", func_pos)?;
         let cell_count = check_call_args_u8(func_def.free_var_enclosing_slots.len(), "closure variables", func_pos)?;
 
-        // 1. Compile the body recursively.
+        // 1. Compile the `__annotate__` function (PEP 649) and the body
+        //    recursively; nested functions are pushed first, so they get lower ids.
+        let annotate = func_def
+            .annotate
+            .as_deref()
+            .map(|annotate| self.compile_annotate(annotate))
+            .transpose()?;
         let namespace_size = check_namespace_size_u16(func_def.namespace_size, what)?;
         let body_code = compile_body(self.interns, namespace_size)?;
 
@@ -913,8 +961,8 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 }
             })
             .collect();
-        let function = Function::new(
-            func_def.name,
+        let mut function = Function::new(
+            self.function_name(func_def),
             func_def.signature.clone(),
             func_def.namespace_size,
             enclosing_slot_metadata,
@@ -924,7 +972,9 @@ impl<'a, 'i> Compiler<'a, 'i> {
             func_def.default_exprs.len(),
             func_def.is_async,
             body_code,
-        );
+        )
+        .with_annotate(annotate);
+        function.is_generator = func_def.is_generator;
         let func_id = self.interns.push_function(function);
 
         // 3. Compile and push default values (evaluated at definition time)
@@ -958,6 +1008,46 @@ impl<'a, 'i> Compiler<'a, 'i> {
         }
 
         Ok(())
+    }
+
+    /// Compiles a `def`'s `__annotate__(format)` body and interns it, returning
+    /// its id for the owning [`Function`]. No `MakeFunction` is emitted: the
+    /// function value is built on `f.__annotate__` access from the owner's
+    /// globals, since it has no defaults or captured cells of its own.
+    fn compile_annotate(&mut self, annotate: &PreparedFunctionDef) -> Result<FunctionId, CompileError> {
+        debug_assert!(
+            annotate.free_var_enclosing_slots.is_empty() && annotate.default_exprs.is_empty(),
+            "an annotate function captures nothing and has no defaults"
+        );
+        let namespace_size = check_namespace_size_u16(annotate.namespace_size, "annotate function")?;
+        let code = Self::compile_function_body(annotate, self.interns, namespace_size, self.flags)?;
+        let function = Function::new(
+            self.function_name(annotate),
+            annotate.signature.clone(),
+            annotate.namespace_size,
+            Vec::new(),
+            annotate.free_var_slots.clone(),
+            annotate.cell_var_slots.clone(),
+            annotate.cell_param_indices.clone(),
+            0,
+            false,
+            code,
+        );
+        let func_id = self.interns.push_function(function);
+        Ok(FunctionId::from_index(check_function_count_u16(
+            func_id,
+            annotate.name.position,
+        )?))
+    }
+
+    /// The name a function reports in tracebacks: a synthesized `__annotate__` is
+    /// called that, as in CPython, whatever a class body binds it as.
+    fn function_name(&mut self, func_def: &PreparedFunctionDef) -> Identifier {
+        let mut name = func_def.name;
+        if func_def.is_annotate {
+            name.name_id = self.interns.intern_static(StaticStrings::DunderAnnotate);
+        }
+        name
     }
 
     /// Compiles a `class Foo: ...` definition.
@@ -1032,10 +1122,10 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// Compiles a class body, mirroring
     /// [`compile_function_body`](Self::compile_function_body) but replacing the
     /// implicit `LoadNone; ReturnValue` tail with a `type(name, (), {...})`
-    /// call: push the class name and an empty bases tuple, then for each
-    /// member (in source order) push `LoadConst <name>` and the member's value
-    /// from its class-body slot, build the namespace dict, and call the 3-arg
-    /// `type()` builtin (which builds the `Class`), then `ReturnValue`.
+    /// call: push the class name and an empty bases tuple, then for each member
+    /// (in source order) `LoadConst <name>` and the member's value from its
+    /// class-body slot, build the namespace dict, call the 3-arg `type()`
+    /// builtin (which builds the `Class`), then `ReturnValue`.
     ///
     /// Members are plain locals (the prepare phase forces class-body locals to
     /// never be cells — see `prepare_class_def`), so [`compile_name`](Self::compile_name)
@@ -1077,7 +1167,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             .emit_call_builtin_function(BuiltinsFunctions::Type as u8, 3)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build())
+        Ok(compiler.finish())
     }
 
     /// Compiles an import, resolving the module only when execution reaches it.
@@ -1400,6 +1490,14 @@ impl<'a, 'i> Compiler<'a, 'i> {
             Expr::LambdaRaw { .. } => {
                 // LambdaRaw should be converted to Lambda during prepare phase
                 unreachable!("Expr::LambdaRaw should not exist after prepare phase")
+            }
+
+            Expr::Yield(value) | Expr::YieldFrom(value) => {
+                self.compile_expr(value)?;
+                self.code.set_location(expr_loc.position, None);
+                // One opcode slot; the operand distinguishes plain yield/delegation.
+                self.code
+                    .emit_u8(Opcode::Yield, u8::from(matches!(expr_loc.expr, Expr::YieldFrom(_))))?;
             }
 
             Expr::Await(value) => {
@@ -2625,6 +2723,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
 
         // Loop start
         let loop_start = self.code.current_jump_target();
+        self.code.emit_native_cancel_point()?;
 
         // Push loop block for break/continue
         self.fblocks.push(FBlock::ForLoop(LoopInfo {
@@ -2662,6 +2761,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         for break_jump in loop_info.break_jumps {
             self.code.patch_jump(break_jump)?;
         }
+        self.code.emit_native_cancel_point()?;
 
         Ok(())
     }
@@ -2692,6 +2792,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         or_else: &'a [PreparedNode],
     ) -> Result<(), CompileError> {
         let loop_start = self.code.current_jump_target();
+        self.code.emit_native_cancel_point()?;
 
         self.fblocks.push(FBlock::WhileLoop(LoopInfo {
             start: loop_start,
@@ -2718,6 +2819,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         for break_jump in loop_info.break_jumps {
             self.code.patch_jump(break_jump)?;
         }
+        self.code.emit_native_cancel_point()?;
 
         Ok(())
     }
@@ -2802,7 +2904,11 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 self.code.current_position(),
             ))
         } else {
-            self.compile_block(finally)
+            let start = self.code.current_offset();
+            self.compile_block(finally)?;
+            self.code.mark_native_cleanup_entry(start);
+            self.code.mark_native_cleanup(start);
+            Ok(())
         }
     }
 
@@ -2820,12 +2926,17 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// `preserve_tos` protects a pending return value; callers restore the
     /// returned blocks after emitting the path's terminator.
     fn emit_unwind(&mut self, count: usize, preserve_tos: bool) -> Result<Vec<FBlock<'a>>, CompileError> {
+        let start = self.code.current_offset();
         let mut popped = Vec::with_capacity(count);
         for _ in 0..count {
             let mut block = self.fblocks.pop().expect("emit_unwind: fblock stack underflow");
             self.emit_block_unwind(&mut block, preserve_tos)?;
             popped.push(block);
         }
+        // All inline outer cleanup must finish before the non-local transfer.
+        // This range also masks checkpoints emitted by nested normal cleanup.
+        self.code.mark_native_cleanup(start);
+        self.code.emit_native_cancel_point()?;
         Ok(popped)
     }
 
@@ -2870,13 +2981,13 @@ impl<'a, 'i> Compiler<'a, 'i> {
             // Discard the in-flight exception: break/continue/return in a
             // finally body swallows the exception that triggered it.
             FBlock::FinallyEnd => self.code.emit(Opcode::ClearException),
-            FBlock::With { region } => {
+            FBlock::With { region, is_async } => {
                 // Keep `__exit__` outside its own handler region.
                 region.interrupt(self.code.current_offset());
                 if preserve_tos {
                     self.code.emit(Opcode::Rot2)?;
                 }
-                self.code.emit(Opcode::WithExit)?;
+                self.emit_context_call(Opcode::WithExit, *is_async)?;
                 self.code.emit(Opcode::Pop)
             }
             FBlock::PopValue => {
@@ -3706,6 +3817,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // === Fall-through copy ===
         self.code.patch_jump(normal_jump)?;
         self.compile_finally_copy(&try_block.finally)?;
+        self.code.emit_native_cancel_point()?;
 
         region.add_entries(body_end, &mut self.code, cleanup_start, HandlerKind::Cleanup)
     }
@@ -3746,7 +3858,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             self.code.patch_jump(jump)?;
         }
 
-        region.add_entries(body_end, &mut self.code, dispatch_start, HandlerKind::Consuming)
+        region.add_entries(body_end, &mut self.code, dispatch_start, HandlerKind::Except)
     }
 
     /// Compiles normal and exceptional exits for a `with` statement.
@@ -3757,20 +3869,21 @@ impl<'a, 'i> Compiler<'a, 'i> {
         context: &ExprLoc,
         target: Option<&UnpackTarget>,
         body: &'a [PreparedNode],
+        is_async: bool,
     ) -> Result<(), CompileError> {
         let Some(stack_depth) = self.code.stack_depth() else {
             return Ok(());
         };
 
         self.compile_expr(context)?;
-        self.code.emit(Opcode::BeforeWith)?;
+        self.emit_context_call(Opcode::BeforeWith, is_async)?;
         // Keep a pushed `__enter__` call's resume offset outside the body region.
         self.code.emit(Opcode::Nop)?;
 
         // === Body (protected region) ===
         // The context manager remains below the protected body's operands.
         let region = Region::open(self.code.current_offset(), stack_depth + 1, self.exc_stack_count());
-        self.fblocks.push(FBlock::With { region });
+        self.fblocks.push(FBlock::With { region, is_async });
         // Protect target binding so unpack failures invoke `__exit__`.
         if let Some(target) = target {
             self.compile_unpack_target(target)?;
@@ -3787,7 +3900,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         let body_end = self.code.current_offset();
 
         // Normal exit skips the exception handler.
-        self.code.emit(Opcode::WithExit)?;
+        self.emit_context_call(Opcode::WithExit, is_async)?;
         self.code.emit(Opcode::Pop)?;
         let end_jump = self.code.emit_jump(Opcode::Jump)?;
 
@@ -3796,7 +3909,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // Entry stack: [ctx, exc].
         self.code.new_code_region(stack_depth + 2);
 
-        self.code.emit(Opcode::WithExceptStart)?;
+        self.emit_context_call(Opcode::WithExceptStart, is_async)?;
         // Stack: [ctx, exc, suppress]
         let swallow_jump = self.code.emit_jump(Opcode::JumpIfTrue)?;
         // Falsy path: stack = [ctx, exc]. Drop both and re-raise.
@@ -3812,8 +3925,43 @@ impl<'a, 'i> Compiler<'a, 'i> {
 
         // === Merge point for the normal-exit and swallowed-exception paths ===
         self.code.patch_jump(end_jump)?;
+        // Only after suppression has consumed its exception/operand owners.
+        self.code.emit_native_cancel_point()?;
 
         region.add_entries(body_end, &mut self.code, handler_start, HandlerKind::Consuming)
+    }
+
+    /// Await context methods with the enclosing function's execution protocol.
+    fn emit_context_call(&mut self, opcode: Opcode, is_async: bool) -> Result<(), CompileError> {
+        if is_async {
+            let mode = match opcode {
+                Opcode::BeforeWith => 0,
+                Opcode::WithExit => 1,
+                Opcode::WithExceptStart => 2,
+                _ => unreachable!("context opcode"),
+            };
+            let start = self.code.current_offset();
+            self.code.emit_u8(Opcode::HostContext, mode)?;
+            if self.native_async {
+                self.code.emit(Opcode::Await)?;
+            } else {
+                self.code.emit_u8(Opcode::Yield, 1)?;
+            }
+            if mode != 0 {
+                self.code.mark_native_cleanup_entry(start);
+                self.code.mark_native_cleanup(start);
+            }
+            Ok(())
+        } else {
+            let start = self.code.current_offset();
+            self.code.emit(opcode)?;
+            if matches!(opcode, Opcode::WithExit | Opcode::WithExceptStart) {
+                self.code.mark_native_cleanup_entry(start);
+                // Finish required synchronous exit before consuming its result.
+                self.code.mark_native_cleanup(start);
+            }
+            Ok(())
+        }
     }
 
     /// Compiles the exception handlers for a try block.
@@ -3837,6 +3985,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         self.code.new_code_region(stack_depth + 1);
 
         for handler in handlers {
+            let matching_start = self.code.current_offset();
             let no_match_jump = if let Some(exc_type) = &handler.exc_type {
                 // Typed handler: `except ExcType:` or `except ExcType as e:`.
                 // Stack on entry: [exception]. `CheckExcMatch` peeks the
@@ -3849,6 +3998,8 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 // Bare `except:` (must be the last handler per Python rules).
                 None
             };
+
+            self.code.mark_native_matching(matching_start, self.exc_stack_count());
 
             // Match path: consume exception from the stack and store
             // to target if present.
@@ -3865,6 +4016,8 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 name: handler.name.as_ref(),
                 region,
             });
+            // Pending native cancellation arbitrates before dispatch in the VM.
+            // A match alone does not mean authored code suppressed the error.
             self.compile_block(&handler.body)?;
             let (name, region) = self
                 .fblocks
@@ -4000,11 +4153,29 @@ impl CompileError {
         }
     }
 
+    /// Converts an imported file's compile error; see `ParseError::into_file_run_error`.
+    pub(crate) fn into_file_run_error(self, path: &str, source: &str) -> RunError {
+        let (exc_type, msg, frame) = self.into_parts(path, source);
+        RunError::Exc(ExceptionRaise {
+            exc: SimpleException::new_msg(exc_type, msg),
+            object: None,
+            frame: None,
+            snippet_frame: Some(Box::new(frame)),
+            hide_caret: true,
+        })
+    }
+
     /// Converts this compile error into a Python exception.
     ///
     /// Syntax errors omit the frame name; unsupported constructs report a
     /// runtime-style location with the stored exception type and message.
     pub fn into_python_exc(self, filename: &str, source: &str) -> MontyException {
+        let (exc_type, msg, frame) = self.into_parts(filename, source);
+        MontyException::with_traceback(exc_type, Some(msg), vec![frame])
+    }
+
+    /// The exception type, message and the frame locating the error in `filename`.
+    fn into_parts(self, filename: &str, source: &str) -> (ExcType, String, StackFrame) {
         let mut source_map = SourceMap::new(source);
         let mut frame = if self.exc_type == ExcType::SyntaxError {
             // SyntaxError uses different format: no `, in <module>`
@@ -4016,7 +4187,7 @@ impl CompileError {
         if self.exc_type == ExcType::ModuleNotFoundError {
             frame.hide_caret = true;
         }
-        MontyException::with_traceback(self.exc_type, Some(self.message.into_owned()), vec![frame])
+        (self.exc_type, self.message.into_owned(), frame)
     }
 }
 

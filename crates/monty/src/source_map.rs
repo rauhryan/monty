@@ -141,7 +141,8 @@ impl<'s> SourceMap<'s> {
         let line_idx = self.line_starts.partition_point(|&s| s <= byte).saturating_sub(1);
         let line_start = self.line_starts[line_idx];
         let slice_start = line_start as usize;
-        let slice_end = (byte as usize).min(self.source.len());
+        // Round an offset inside a multi-byte character down to its boundary.
+        let slice_end = self.source.floor_char_boundary(byte as usize);
         let slice = &self.source[slice_start..slice_end];
         // Ruff caps source files at 4 GiB, so any byte-based column count fits
         // comfortably in `u32`; saturate defensively if that ever changes.

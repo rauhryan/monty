@@ -37,6 +37,25 @@ def test_value_error(monty_run: RunMonty):
     assert str(inner) == snapshot('bad value')
 
 
+def test_generator_exit_crosses_both_boundaries(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("raise GeneratorExit('closed')")
+    inner = exc_info.value.exception()
+    assert type(inner) is GeneratorExit
+    assert str(inner) == 'closed'
+    assert not isinstance(inner, Exception)
+
+    def close_from_host():
+        raise GeneratorExit('host close')
+
+    result = monty_run(
+        'try:\n    close_from_host()\nexcept Exception:\n    assert False\nexcept GeneratorExit as error:\n    result = str(error)\nresult',
+        external_lookup={'close_from_host': close_from_host},
+        skip_type_check=True,
+    )
+    assert result == 'host close'
+
+
 def test_unicode_encode_error(monty_run: RunMonty):
     # `str.encode('ascii')` on a non-ascii string raises `UnicodeEncodeError`
     # inside the sandbox; the structured constructor fields travel with the
