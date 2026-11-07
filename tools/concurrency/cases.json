@@ -804,5 +804,93 @@
       "interrupted_error": null,
       "value_export_error": null
     }
+  },
+  "contextlib_closing/suspension": {
+    "source": "contextlib_closing/suspension.py",
+    "steps": [
+      [
+        "call",
+        "body"
+      ],
+      [
+        [],
+        [
+          "body"
+        ]
+      ],
+      [
+        "call",
+        "close"
+      ],
+      [
+        [],
+        [
+          "close"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "$ack": true
+      },
+      {
+        "body": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "close": "ok"
+      }
+    ],
+    "result": "ok",
+    "step": true
+  },
+  "contextlib_closing/cancellation": {
+    "steps": [
+      [
+        [
+          "body"
+        ],
+        [
+          "body"
+        ]
+      ],
+      [
+        [
+          "cleanup"
+        ],
+        [
+          "cleanup"
+        ]
+      ],
+      [
+        [],
+        [
+          "cleanup"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "$cancel": "FIRST"
+      },
+      {
+        "$cancel": "SECOND"
+      },
+      {
+        "cleanup": "ok"
+      }
+    ],
+    "cancelled": "FIRST",
+    "source": "contextlib_closing/cancellation.py",
+    "terminal": {
+      "status": "cancelled",
+      "reason": "FIRST",
+      "value": "suppressed",
+      "error": null,
+      "interrupted_error": null,
+      "value_export_error": null
+    }
   }
 }

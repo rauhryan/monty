@@ -26,7 +26,7 @@ python3 tools/concurrency/run.py run --output playground/concurrency-check-1
 ```
 
 Use a new output directory each time. `run` builds the native example and actual
-Wasm component, then replays 25 programs on each backend. Every real suspension
+Wasm component, then replays 27 programs on each backend. Every real suspension
 cut is independently restored twice and disposed; the original bytes are checked
 and the full trace must equal uninterrupted execution. Results, raw commands,
 snapshots, input/artifact hashes and build receipts are saved under the output.
@@ -46,7 +46,7 @@ The public-async oracle retains the original frozen expectations; its source
 hashes pin the fixtures after their one-time Ruff formatting.
 Additional cases cover cancellation exception identity, host terminal
 cancellation, authored cancellation, gather result collection, generator loops and
-closure, queue work completion, iterable delegation and synchronous context-manager cleanup. The strict comparator rejects duplicate
+closure, queue work completion, iterable delegation and synchronous context-manager cleanup, including `contextlib.closing`. The strict comparator rejects duplicate
 JSON keys, nonfinite values, type-coerced equality and mismatched restore traces.
 The runner tests also exercise lock contention, evidence overwrite, budget limits
 and source/artifact/receipt drift.
@@ -113,7 +113,7 @@ This builds under the same guard as `run`.
 The output `baseline.json` is a candidate manifest, not a compatibility promise or a frozen fixture set.
 It records the producer source/artifact association, build receipts, tool versions, Git status, snapshot hashes, state census and continuation oracle.
 Only the six files under `snapshots/` are candidates for retention; the other cuts are review evidence.
-The current writer uses format 41 and accepts format 40.
+The current writer uses format 43 and accepts formats 40 through 43.
 The retained baseline remains v40; capture produces candidates in the current format.
 
 The selected states are idle common state, a user handler, generator unwinding, an internal annotation fallback handler, a draining group with queue cancellation and a shield, and sticky host cancellation.
@@ -140,3 +140,8 @@ The consumer association must match current sources and artifacts; the producer 
 Before retaining binaries in Git, commit the producer sources and capture support, build that clean commit, then generate and review its candidate manifest.
 Commit the selected bytes and manifest separately so the producer commit identifies the code that wrote them.
 Never relabel a dirty candidate as frozen, regenerate a historical fixture with a newer producer, or change a snapshot header to simulate a migration.
+
+## Async context-manager implementation gate
+
+The [asynccontextmanager contract](asynccontextmanager.md) is a focused suite in this runner for the generator-backed async adapter.
+It reuses this build/replay infrastructure without changing the existing public-async expectations.

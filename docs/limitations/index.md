@@ -31,7 +31,8 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - List, dict and set comprehensions
 - `try` / `except` / `else` / `finally`, `raise ... from ...`
 - `for`, `while`, `if` / `elif` / `else`, `break`, `continue`, `pass`, `assert`, `global`, `nonlocal`, `return`
-- `with` statements, for files and for classes implementing `__enter__` / `__exit__`
+- `with` statements, for files and for classes implementing `__enter__` / `__exit__`;
+    `contextlib.contextmanager`, `contextlib.asynccontextmanager` and `contextlib.closing`
 - `match` statements with every PEP 634 pattern kind and guards, see [match.md](match.md)
 - f-strings (including the `=` debug form), `str.format()` and `format()`, with `!r` / `!s` / `!a` conversions,
     format specs and nested replacement fields

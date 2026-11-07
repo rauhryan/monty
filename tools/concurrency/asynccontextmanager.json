@@ -1,0 +1,349 @@
+{
+  "lifecycle": {
+    "source": "asynccontextmanager/lifecycle.py",
+    "oracle_labels": [
+      "a-enter",
+      "a-body",
+      "a-exit",
+      "b-enter",
+      "b-body",
+      "b-exit"
+    ],
+    "steps": [
+      [
+        [
+          "a-enter"
+        ],
+        [
+          "a-enter"
+        ]
+      ],
+      [
+        [
+          "a-body"
+        ],
+        [
+          "a-body"
+        ]
+      ],
+      [
+        [
+          "a-exit"
+        ],
+        [
+          "a-exit"
+        ]
+      ],
+      [
+        [
+          "b-enter"
+        ],
+        [
+          "b-enter"
+        ]
+      ],
+      [
+        [
+          "b-body"
+        ],
+        [
+          "b-body"
+        ]
+      ],
+      [
+        [
+          "b-exit"
+        ],
+        [
+          "b-exit"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "a-enter": "ok"
+      },
+      {
+        "a-body": "ok"
+      },
+      {
+        "a-exit": "ok"
+      },
+      {
+        "b-enter": "ok"
+      },
+      {
+        "b-body": "ok"
+      },
+      {
+        "b-exit": "ok"
+      }
+    ],
+    "result": "ok"
+  },
+  "exceptions": {
+    "source": "asynccontextmanager/exceptions.py",
+    "oracle_labels": [
+      "suppressed",
+      "replaced"
+    ],
+    "steps": [
+      [
+        [
+          "suppressed"
+        ],
+        [
+          "suppressed"
+        ]
+      ],
+      [
+        [
+          "replaced"
+        ],
+        [
+          "replaced"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "suppressed": "ok"
+      },
+      {
+        "replaced": "ok"
+      }
+    ],
+    "result": "ok"
+  },
+  "propagation": {
+    "source": "asynccontextmanager/propagation.py",
+    "oracle_labels": [
+      "exit"
+    ],
+    "steps": [
+      [
+        [
+          "exit"
+        ],
+        [
+          "exit"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "exit": "ok"
+      }
+    ],
+    "result": "ok"
+  },
+  "protocol": {
+    "source": "asynccontextmanager/protocol.py",
+    "oracle_labels": [
+      "empty",
+      "normal-second",
+      "normal-closed",
+      "throw-second",
+      "throw-closed"
+    ],
+    "steps": [
+      [
+        [
+          "empty"
+        ],
+        [
+          "empty"
+        ]
+      ],
+      [
+        [
+          "normal-second"
+        ],
+        [
+          "normal-second"
+        ]
+      ],
+      [
+        [
+          "normal-closed"
+        ],
+        [
+          "normal-closed"
+        ]
+      ],
+      [
+        [
+          "throw-second"
+        ],
+        [
+          "throw-second"
+        ]
+      ],
+      [
+        [
+          "throw-closed"
+        ],
+        [
+          "throw-closed"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "empty": "ok"
+      },
+      {
+        "normal-second": "ok"
+      },
+      {
+        "normal-closed": "ok"
+      },
+      {
+        "throw-second": "ok"
+      },
+      {
+        "throw-closed": "ok"
+      }
+    ],
+    "result": "ok"
+  },
+  "nesting": {
+    "source": "asynccontextmanager/nesting.py",
+    "oracle_labels": [
+      "outer-enter",
+      "inner-enter",
+      "body",
+      "inner-exit",
+      "outer-exit"
+    ],
+    "steps": [
+      [
+        [
+          "outer-enter"
+        ],
+        [
+          "outer-enter"
+        ]
+      ],
+      [
+        [
+          "inner-enter"
+        ],
+        [
+          "inner-enter"
+        ]
+      ],
+      [
+        [
+          "body"
+        ],
+        [
+          "body"
+        ]
+      ],
+      [
+        [
+          "inner-exit"
+        ],
+        [
+          "inner-exit"
+        ]
+      ],
+      [
+        [
+          "outer-exit"
+        ],
+        [
+          "outer-exit"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "outer-enter": "ok"
+      },
+      {
+        "inner-enter": "ok"
+      },
+      {
+        "body": "ok"
+      },
+      {
+        "inner-exit": "ok"
+      },
+      {
+        "outer-exit": "ok"
+      }
+    ],
+    "result": "ok"
+  },
+  "entry_failure": {
+    "source": "asynccontextmanager/entry_failure.py",
+    "oracle_labels": [
+      "entry"
+    ],
+    "steps": [
+      [
+        [
+          "entry"
+        ],
+        [
+          "entry"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "entry": "ok"
+      }
+    ],
+    "result": "ok"
+  },
+  "host_cancel": {
+    "source": "asynccontextmanager/host_cancel.py",
+    "oracle_labels": null,
+    "steps": [
+      [
+        [
+          "body"
+        ],
+        [
+          "body"
+        ]
+      ],
+      [
+        [
+          "cleanup"
+        ],
+        [
+          "cleanup"
+        ]
+      ],
+      [
+        [],
+        [
+          "cleanup"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "$cancel": "FIRST"
+      },
+      {
+        "$cancel": "SECOND"
+      },
+      {
+        "cleanup": "ok"
+      }
+    ],
+    "terminal": {
+      "status": "cancelled",
+      "reason": "FIRST",
+      "value": "suppressed",
+      "error": null,
+      "interrupted_error": null,
+      "value_export_error": null
+    }
+  }
+}

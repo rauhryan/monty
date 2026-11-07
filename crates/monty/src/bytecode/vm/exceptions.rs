@@ -709,9 +709,12 @@ impl VM<'_> {
             // error. A normal generator return bypasses this path entirely.
             if this.current_frame.generator_activation.is_some() && error.is_stop_iteration() {
                 error.drop_with(this);
-                error = this.attach_frame_to_error(
-                    SimpleException::new_msg(ExcType::RuntimeError, "generator raised StopIteration").into(),
-                );
+                let message = if this.is_coroutine_frame(this.current_frame.function_id) {
+                    "async generator raised StopIteration"
+                } else {
+                    "generator raised StopIteration"
+                };
+                error = this.attach_frame_to_error(SimpleException::new_msg(ExcType::RuntimeError, message).into());
                 let RunError::Exc(exc) = &error else {
                     unreachable!("catchable generator error")
                 };
