@@ -4,7 +4,7 @@ use std::mem;
 use super::{CallResult, VM, scheduler::GatherErrorDelivery};
 use crate::{
     args::ArgValues,
-    asyncio::{Awaiter, CallId, ExternalFuture, ExternalFutureState, TaskGroup, TaskGroupState, TaskId},
+    asyncio::{CallId, ExternalFuture, ExternalFutureState, TaskGroup, TaskGroupState, TaskId},
     exception_private::{ExcType, ExcTypeExt, ExceptionObject, ExceptionRaise, RunError, RunResult, SimpleException},
     heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
     modules::{
@@ -34,11 +34,7 @@ impl VM<'_> {
         if children.is_empty() && self.scheduler.run_externals(owner).is_empty() {
             return None;
         }
-        let mut future = ExternalFuture::new_pending(CallId::new(u32::MAX), None);
-        future.state = ExternalFutureState::Pending {
-            awaiter: Some(Awaiter::Task(owner)),
-        };
-        let id = self.heap.allocate(HeapData::ExternalFuture(Box::new(future)));
+        let id = self.new_task_barrier(Some(owner));
         self.scheduler.get_task_mut(owner).root_shutdown = Some(id);
         self.current_frame.ip = self.instruction_ip;
         self.scheduler.get_task_mut(owner).native_protected = true;
@@ -119,20 +115,7 @@ impl VM<'_> {
         if pending {
             return;
         }
-        let HeapReadOutput::ExternalFuture(future) = self.heap.read(id) else {
-            unreachable!()
-        };
-        if !matches!(future.get(self.heap).state, ExternalFutureState::Pending { .. }) {
-            return;
-        }
-        let ExternalFutureState::Pending { awaiter } = mem::replace(
-            &mut future.get_mut(self.heap).state,
-            ExternalFutureState::Resolved(Value::None),
-        ) else {
-            unreachable!()
-        };
-        drop(future);
-        if let Some(awaiter) = awaiter {
+        if let Some(awaiter) = self.finish_task_barrier(id) {
             if let Some(error) = self.scheduler.get_task_mut(owner).root_shutdown_error.take() {
                 self.scheduler.get_task_mut(owner).root_shutdown.take();
                 Value::Ref(id).drop_with(self);
@@ -641,28 +624,12 @@ impl VM<'_> {
                 )))));
                 Err(RunError::Exc(raised))
             };
-            let state = match &result {
-                Ok(v) => ExternalFutureState::Resolved(v.clone_with_heap(self.heap)),
-                Err(e) => ExternalFutureState::Failed(e.clone_with_heap(self.heap)),
-            };
-            let ExternalFutureState::Pending { awaiter } = mem::replace(&mut future.get_mut(self.heap).state, state)
-            else {
-                unreachable!()
-            };
             drop(future);
+            let awaiter = self.settle_task_future(id, &result);
             let roots = &mut self.scheduler.get_task_mut(owner).groups;
             roots.retain(|root| *root != id);
             Value::Ref(id).drop_with(self);
-            match (awaiter, result) {
-                (Some(waiter), Ok(v)) => {
-                    self.deliver_awaiter_success(waiter, v);
-                }
-                (Some(waiter), Err(e)) => {
-                    self.deliver_awaiter_failure(waiter, e);
-                }
-                (None, Ok(v)) => v.drop_with(self),
-                (None, Err(e)) => e.drop_with(self),
-            }
+            self.deliver_awaiter_result(awaiter, result);
         }
     }
 }

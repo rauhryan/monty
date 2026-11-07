@@ -244,10 +244,6 @@ impl VM<'_> {
         if let Err(error) = &mut result {
             error.materialize_object(self.heap);
         }
-        let state = match &result {
-            Ok(value) => ExternalFutureState::Resolved(value.clone_with_heap(self.heap)),
-            Err(error) => ExternalFutureState::Failed(error.clone_with_heap(self.heap)),
-        };
         let HeapReadOutput::ExternalFuture(future) = self.heap.read(id) else {
             unreachable!()
         };
@@ -255,8 +251,11 @@ impl VM<'_> {
         public.task = None;
         public.cancelled = cancelled;
         let waiters = mem::take(&mut public.waiters);
-        future.get_mut(self.heap).state = state;
         drop(future);
+        // Public Tasks keep their join routes in `waiters`, not the single-waiter slot.
+        let awaiter = self.settle_task_future(id, &result);
+        debug_assert!(awaiter.is_none());
+        awaiter.drop_with(self);
         let parent = self.scheduler.transfer_gather_lifetime(task);
         self.cleanup_current_task();
         self.scheduler.cancel_task(task, self.heap);

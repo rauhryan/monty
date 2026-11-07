@@ -1,11 +1,8 @@
 //! Admission-scoped barriers before authored cleanup; public Tasks remain run-owned.
-use std::mem;
-
 use super::{AwaitResult, VM, scheduler::CleanupLifetime};
 use crate::{
-    asyncio::{Awaiter, CallId, ExternalFuture, ExternalFutureState, TaskId},
+    asyncio::TaskId,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{HeapData, HeapReadOutput},
     value::Value,
 };
 
@@ -59,11 +56,7 @@ impl VM<'_> {
         if children.is_empty() && calls.is_empty() {
             return None;
         }
-        let mut future = ExternalFuture::new_pending(CallId::new(u32::MAX), None);
-        future.state = ExternalFutureState::Pending {
-            awaiter: Some(Awaiter::Task(owner)),
-        };
-        let id = self.heap.allocate(HeapData::ExternalFuture(Box::new(future)));
+        let id = self.new_task_barrier(Some(owner));
         let task = self.scheduler.get_task_mut(owner);
         task.cleanup_shutdown = Some(id);
         task.cleanup_shutdown_frame = Some(depth);
@@ -117,21 +110,7 @@ impl VM<'_> {
         {
             return;
         }
-        let HeapReadOutput::ExternalFuture(future) = self.heap.read(id) else {
-            unreachable!()
-        };
-        if !matches!(future.get(self.heap).state, ExternalFutureState::Pending { .. }) {
-            return;
-        }
-        let ExternalFutureState::Pending { awaiter } = mem::replace(
-            &mut future.get_mut(self.heap).state,
-            ExternalFutureState::Resolved(Value::None),
-        ) else {
-            unreachable!()
-        };
-        drop(future);
-        if let Some(awaiter) = awaiter {
-            self.deliver_awaiter_success(awaiter, Value::None);
-        }
+        let awaiter = self.finish_task_barrier(id);
+        self.deliver_awaiter_result(awaiter, Ok(Value::None));
     }
 }

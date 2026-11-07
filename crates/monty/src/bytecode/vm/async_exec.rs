@@ -1121,6 +1121,67 @@ impl<'h> VM<'h> {
         }
     }
 
+    /// Allocates an internal drain barrier, optionally already awaited by its owner.
+    /// Uses the internal call-ID sentinel and never registers a host request.
+    pub(super) fn new_task_barrier(&mut self, owner: Option<TaskId>) -> HeapId {
+        let mut future = ExternalFuture::new_pending(CallId::new(u32::MAX), None);
+        future.state = ExternalFutureState::Pending {
+            awaiter: owner.map(Awaiter::Task),
+        };
+        self.heap.allocate(HeapData::ExternalFuture(Box::new(future)))
+    }
+
+    /// Caches one clone of a prepared outcome and transfers its single waiter.
+    /// Callers retain the original result for delivery and decide when to release their root.
+    pub(super) fn settle_task_future(&mut self, id: HeapId, result: &RunResult<Value>) -> Option<Awaiter> {
+        let HeapReadOutput::ExternalFuture(future) = self.heap.read(id) else {
+            unreachable!("task completion future")
+        };
+        assert!(matches!(
+            future.get(self.heap).state,
+            ExternalFutureState::Pending { .. }
+        ));
+        let state = match result {
+            Ok(value) => ExternalFutureState::Resolved(value.clone_with_heap(self.heap)),
+            Err(error) => ExternalFutureState::Failed(error.clone_with_heap(self.heap)),
+        };
+        let ExternalFutureState::Pending { awaiter } = mem::replace(&mut future.get_mut(self.heap).state, state) else {
+            unreachable!("pending state checked before settlement")
+        };
+        awaiter
+    }
+
+    /// Resolves a ready barrier once; repeated lifecycle notifications do nothing.
+    pub(super) fn finish_task_barrier(&mut self, id: HeapId) -> Option<Awaiter> {
+        let HeapData::ExternalFuture(future) = self.heap.get(id) else {
+            unreachable!("task barrier")
+        };
+        if !matches!(future.state, ExternalFutureState::Pending { .. }) {
+            return None;
+        }
+        self.settle_task_future(id, &Ok(Value::None))
+    }
+
+    /// Consumes an outcome and waiter together, releasing undeliverable owners.
+    pub(super) fn deliver_awaiter_result(
+        &mut self,
+        awaiter: Option<Awaiter>,
+        result: RunResult<Value>,
+    ) -> Option<TaskId> {
+        match (awaiter, result) {
+            (Some(awaiter), Ok(value)) => self.deliver_awaiter_success(awaiter, value),
+            (Some(awaiter), Err(error)) => self.deliver_awaiter_failure(awaiter, error),
+            (None, Ok(value)) => {
+                value.drop_with(self);
+                None
+            }
+            (None, Err(error)) => {
+                error.drop_with(self);
+                None
+            }
+        }
+    }
+
     /// Pushes `value` onto a blocked task's stack and queues it, returning the awakened task.
     /// Drops the value if the task is gone or its awaitable has already settled.
     fn deliver_value_to_task(&mut self, task_id: TaskId, value: Value) -> Option<TaskId> {

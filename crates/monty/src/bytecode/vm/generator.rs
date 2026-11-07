@@ -249,6 +249,7 @@ impl VM<'_> {
     }
 
     /// Advance a loop iterator on the outer VM dispatch loop.
+    /// Loop entry never injects an exception; only send/throw/close can do so.
     pub(super) fn advance_generator_loop(&mut self, generator: Value, end: usize) -> RunResult<()> {
         self.activate_generator_route(
             generator,
@@ -380,13 +381,6 @@ impl VM<'_> {
                     self.push(Value::None);
                     return Ok(());
                 }
-                if let GeneratorReturn::ForIter { end } = return_route {
-                    input.drop_with(self);
-                    default.drop_with(self);
-                    self.pop().drop_with(self);
-                    self.current_frame.ip = end;
-                    return Ok(());
-                }
                 if throwing {
                     default.drop_with(self);
                     if delegated && matches!(input.py_type(self), Type::Exception(ExcType::StopIteration)) {
@@ -408,19 +402,7 @@ impl VM<'_> {
                     };
                 }
                 input.drop_with(self);
-                if native && !delegated {
-                    self.push(Value::None);
-                    return Ok(());
-                }
-                if delegated {
-                    self.complete_delegation(Value::None);
-                    return Ok(());
-                }
-                if let Some(value) = default {
-                    self.push(value);
-                    return Ok(());
-                }
-                return Err(self.generator_completion_error(Value::None));
+                return self.return_generator_value(Value::None, default, delegated, native, return_route);
             }
             let locals_count = u16::try_from(self.interns.get_function(function).namespace_size)
                 .expect("function namespace size exceeds u16");
@@ -671,29 +653,42 @@ impl VM<'_> {
             this.push(value);
             return Ok(());
         }
+        this.return_generator_value(value, default, delegated, native, return_route)
+    }
+
+    /// Consumes normal completion for both exhausted generators and returning frames.
+    /// Close and injected exceptions keep their separate exception-identity handling.
+    fn return_generator_value(
+        &mut self,
+        value: Value,
+        default: Option<Value>,
+        delegated: bool,
+        native: bool,
+        return_route: GeneratorReturn,
+    ) -> RunResult<()> {
         if let GeneratorReturn::ForIter { end } = return_route {
-            value.drop_with(this);
-            default.drop_with(this);
-            this.pop().drop_with(this);
-            this.current_frame.ip = end;
+            value.drop_with(self);
+            default.drop_with(self);
+            self.pop().drop_with(self);
+            self.current_frame.ip = end;
             return Ok(());
         }
         if delegated {
-            this.complete_delegation(value);
-            default.drop_with(this);
+            self.complete_delegation(value);
+            default.drop_with(self);
             return Ok(());
         }
         if native {
-            default.drop_with(this);
-            this.push(value);
+            default.drop_with(self);
+            self.push(value);
             return Ok(());
         }
         if let Some(default) = default {
-            value.drop_with(this);
-            this.push(default);
+            value.drop_with(self);
+            self.push(default);
             Ok(())
         } else {
-            Err(this.generator_completion_error(value))
+            Err(self.generator_completion_error(value))
         }
     }
 

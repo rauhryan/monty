@@ -284,8 +284,7 @@ impl VM<'_> {
         if !self.scheduler.get_task_mut(owner).scope_open || self.scheduler.get_task_mut(owner).drain.is_some() {
             return Err(ExcType::value_error("scope drain already pending"));
         }
-        let future = ExternalFuture::new_pending(CallId::new(u32::MAX), None);
-        let id = self.heap.allocate(HeapData::ExternalFuture(Box::new(future)));
+        let id = self.new_task_barrier(None);
         self.scheduler.get_task_mut(owner).drain = Some(id);
         self.scheduler.get_task_mut(owner).scope_open = false;
         let children = self.scheduler.get_task_mut(owner).children.clone();
@@ -347,14 +346,8 @@ impl VM<'_> {
         if let Err(error) = &mut result {
             error.materialize_object(self.heap);
         }
-        let state = match &result {
-            Ok(value) => ExternalFutureState::Resolved(value.clone_with_heap(self.heap)),
-            Err(error) => ExternalFutureState::Failed(error.clone_with_heap(self.heap)),
-        };
-        let ExternalFutureState::Pending { awaiter } = mem::replace(&mut future.get_mut(self.heap).state, state) else {
-            unreachable!()
-        };
         drop(future);
+        let awaiter = self.settle_task_future(id, &result);
         // Successful/cancelled completions carry no unconsumed error obligation.
         // Their handles retain outcomes; the scope needs no completed history.
         if result.is_ok() || cancelled {
@@ -364,18 +357,7 @@ impl VM<'_> {
         self.scheduler.transfer_gather_lifetime(task);
         self.cleanup_current_task();
         self.scheduler.cancel_task(task, self.heap);
-        let delivery = match (awaiter, result) {
-            (Some(awaiter), Ok(value)) => self.deliver_awaiter_success(awaiter, value),
-            (Some(awaiter), Err(error)) => self.deliver_awaiter_failure(awaiter, error),
-            (None, Ok(value)) => {
-                value.drop_with(self);
-                None
-            }
-            (None, Err(error)) => {
-                error.drop_with(self);
-                None
-            }
-        };
+        let delivery = self.deliver_awaiter_result(awaiter, result);
         self.finish_child_drain(owner);
         if self.resume_after_task_exit(delivery)? {
             Ok(AwaitResult::FramePushed)
@@ -424,24 +406,10 @@ impl VM<'_> {
             }
             Value::Ref(child).drop_with(self);
         }
-        let value = Value::Ref(self.heap.allocate(HeapData::List(List::new(errors))));
-        let HeapReadOutput::ExternalFuture(future) = self.heap.read(id) else {
-            unreachable!()
-        };
-        let cached = value.clone_with_heap(self.heap);
-        let ExternalFutureState::Pending { awaiter } = mem::replace(
-            &mut future.get_mut(self.heap).state,
-            ExternalFutureState::Resolved(cached),
-        ) else {
-            unreachable!()
-        };
-        drop(future);
+        let result = Ok(Value::Ref(self.heap.allocate(HeapData::List(List::new(errors)))));
+        let awaiter = self.settle_task_future(id, &result);
         Value::Ref(id).drop_with(self);
-        if let Some(awaiter) = awaiter {
-            self.deliver_awaiter_success(awaiter, value);
-        } else {
-            value.drop_with(self);
-        }
+        self.deliver_awaiter_result(awaiter, result);
     }
 }
 

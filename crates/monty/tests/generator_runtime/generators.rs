@@ -10,6 +10,58 @@ use monty_types::{
 
 use super::support::{checked_run, new_repl};
 
+/// Returning and already-closed generators share completion ownership across callers.
+#[test]
+fn generator_completion_routes_release_owners() {
+    let output = checked_run(
+        r"
+token = []
+default = []
+def returning():
+    if False:
+        yield
+    return token
+def delegate(child):
+    return (yield from child)
+for attempt in range(50):
+    g = returning()
+    assert next(g, default) is default
+    assert next(g, default) is default
+    for value in g:
+        assert False
+    else:
+        exhausted = True
+    assert exhausted
+    for value in returning():
+        assert False
+    g = returning()
+    for expected in [token, None]:
+        try:
+            next(g)
+        except StopIteration as done:
+            assert done.value is expected
+        else:
+            assert False
+    for child, expected in [(returning(), token), (g, None)]:
+        outer = delegate(child)
+        try:
+            next(outer)
+        except StopIteration as done:
+            assert done.value is expected
+        else:
+            assert False
+    native = returning()
+    assert native._native1() is token
+    assert native._native1() is None
+    assert native.close() is None
+g = child = outer = native = expected = returning = delegate = None
+None
+",
+    );
+    assert_eq!(output.counts["token"], 1);
+    assert_eq!(output.counts["default"], 1);
+}
+
 /// Lazy binding must retain each alias once without entering the function body.
 #[test]
 fn lazy_binding_and_default_aliases() {
