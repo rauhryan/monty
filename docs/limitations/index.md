@@ -147,7 +147,7 @@ Each links to the page that owns it, which is where the full account lives:
     Queue, TaskGroup, Task cancellation and inspection have bounded
     [supported subsets](asyncio.md#public-queue-subset).
     Host cancellation supports concurrent coroutine cleanup with protected host replies
-    ([asyncio.md](asyncio.md#host-cancellation-and-experimental-native-entry)).
+    ([asyncio.md](asyncio.md#host-cancellation-and-protected-cleanup)).
 - **Only UTF-8, ASCII, UTF-16 and UTF-32 codecs exist.** `latin-1` and friends raise `LookupError`
     ([encoding.md](encoding.md)).
 
@@ -159,6 +159,5 @@ verbatim.
 If you hit something that is neither in the subset nor on these pages, [open an
 issue](https://github.com/pydantic/monty/issues).
 
-The experimental platform also supplies a host-mediated `sandbox.read_file`
-capability and direct variadic gathering of durable host continuations; see
-[asyncio.md](asyncio.md#supplied-host-read-capability).
+The supplied `sandbox` module exposes host-mediated platform capabilities; see
+[host functions](../host-functions.md#sandbox-platform-capabilities).

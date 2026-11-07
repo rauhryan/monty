@@ -12,7 +12,7 @@ The group can be entered only once.
 `start_soon` requires a callable producing a new ordinary coroutine, accepts positional arguments and returns None.
 The `name` keyword, `start`, `task_status`, backend selection and the `anyio.abc` classes are absent.
 General introspection and signature/error-message parity are unsupported.
-`cancel_scope` becomes available when the group is entered; it is absent on restored older groups without that role.
+`cancel_scope` becomes available when the group is entered.
 
 Failures use the actual-exception `RuntimeError` tuple described in the [asyncio group subset](asyncio.md#public-taskgroup-subset).
 They do not produce upstream `ExceptionGroup` objects.
