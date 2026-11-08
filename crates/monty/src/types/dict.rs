@@ -2054,6 +2054,19 @@ macro_rules! impl_dict_iterator {
                 Value::Ref(id)
             }
 
+            /// Allocates a reverse iterator retaining the live dictionary.
+            pub(crate) fn allocate_reversed(dict: HeapId, vm: &mut VM<'_>) -> Value {
+                let HeapData::Dict(source) = vm.heap.get(dict) else {
+                    unreachable!("dictionary iterator source")
+                };
+                let cursor = source.table.reverse_cursor();
+                let id = vm
+                    .heap
+                    .allocate($heap_variant(Self(DictIteratorState { dict, cursor })));
+                vm.heap.inc_ref(dict);
+                Value::Ref(id)
+            }
+
             /// Returns the retained dictionary id for GC tracing.
             pub(crate) fn source_id(&self) -> HeapId {
                 self.0.dict

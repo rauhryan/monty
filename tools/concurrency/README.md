@@ -26,7 +26,7 @@ python3 tools/concurrency/run.py run --output playground/concurrency-check-1
 ```
 
 Use a new output directory each time. `run` builds the native example and actual
-Wasm component, then replays 29 programs on each backend. Every real suspension
+Wasm component, then replays 32 programs on each backend. Every real suspension
 cut is independently restored twice and disposed; the original bytes are checked
 and the full trace must equal uninterrupted execution. Results, raw commands,
 snapshots, input/artifact hashes and build receipts are saved under the output.

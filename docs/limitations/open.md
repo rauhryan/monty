@@ -145,7 +145,7 @@ Everything else raises `AttributeError`, including: `truncate()`,
     CPython's text-mode wording; CPython's binary files say `read of closed file`.
 - File I/O is rejected inside callbacks the interpreter evaluates in a
     synchronous context that cannot suspend to the host — the `key` of
-    `sorted()`/`list.sort()`/`min()`/`max()`, `map()`/`filter()` functions,
+    `sorted()`/`list.sort()`/`min()`/`max()`,
     `iter(callable, sentinel)`, `defaultdict`'s `default_factory`, and dunder
     methods that cannot suspend (see [classes.md](classes.md)).
     The first read that needs the host raises

@@ -1140,5 +1140,276 @@
     ],
     "result": "ok",
     "step": true
+  },
+  "filter/suspension": {
+    "source": "filter/suspension.py",
+    "steps": [
+      [
+        "call",
+        "iter"
+      ],
+      [
+        [],
+        [
+          "iter"
+        ]
+      ],
+      [
+        "call",
+        "next-1"
+      ],
+      [
+        "call",
+        "predicate-1"
+      ],
+      [
+        [],
+        [
+          "next-1",
+          "predicate-1"
+        ]
+      ],
+      [
+        "call",
+        "next-2"
+      ],
+      [
+        "call",
+        "predicate-2"
+      ],
+      [
+        [],
+        [
+          "next-2",
+          "predicate-2"
+        ]
+      ],
+      [
+        "call",
+        "next-3"
+      ],
+      [
+        [],
+        [
+          "next-3"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "$ack": true
+      },
+      {
+        "iter": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "$ack": true
+      },
+      {
+        "next-1": "ok",
+        "predicate-1": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "$ack": true
+      },
+      {
+        "next-2": "ok",
+        "predicate-2": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "next-3": "ok"
+      }
+    ],
+    "result": "ok",
+    "step": true
+  },
+  "map/suspension": {
+    "source": "map/suspension.py",
+    "steps": [
+      [
+        "call",
+        "iter"
+      ],
+      [
+        [],
+        [
+          "iter"
+        ]
+      ],
+      [
+        "call",
+        "next-1"
+      ],
+      [
+        "call",
+        "predicate-1"
+      ],
+      [
+        [],
+        [
+          "next-1",
+          "predicate-1"
+        ]
+      ],
+      [
+        "call",
+        "next-2"
+      ],
+      [
+        "call",
+        "predicate-2"
+      ],
+      [
+        [],
+        [
+          "next-2",
+          "predicate-2"
+        ]
+      ],
+      [
+        "call",
+        "next-3"
+      ],
+      [
+        [],
+        [
+          "next-3"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "$ack": true
+      },
+      {
+        "iter": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "$ack": true
+      },
+      {
+        "next-1": "ok",
+        "predicate-1": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "$ack": true
+      },
+      {
+        "next-2": "ok",
+        "predicate-2": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "next-3": "ok"
+      }
+    ],
+    "result": "ok",
+    "step": true
+  },
+  "reversed/suspension": {
+    "source": "reversed/suspension.py",
+    "steps": [
+      [
+        "call",
+        "start"
+      ],
+      [
+        [],
+        [
+          "start"
+        ]
+      ],
+      [
+        "call",
+        "first"
+      ],
+      [
+        [],
+        [
+          "first"
+        ]
+      ],
+      [
+        "call",
+        "second"
+      ],
+      [
+        [],
+        [
+          "second"
+        ]
+      ],
+      [
+        "call",
+        "empty"
+      ],
+      [
+        [],
+        [
+          "empty"
+        ]
+      ],
+      [
+        "call",
+        "mutated"
+      ],
+      [
+        [],
+        [
+          "mutated"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "$ack": true
+      },
+      {
+        "start": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "first": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "second": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "empty": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "mutated": "ok"
+      }
+    ],
+    "result": "ok",
+    "step": true
   }
 }

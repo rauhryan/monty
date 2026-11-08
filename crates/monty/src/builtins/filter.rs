@@ -1,63 +1,52 @@
-//! Implementation of the filter() builtin function.
-//!
-//! This module provides the filter() builtin which filters elements from an iterable
-//! based on a predicate function. The implementation supports:
-//! - `None` as predicate (filters falsy values)
-//! - Builtin functions (len, abs, etc.)
-//! - Type constructors (int, str, float, etc.)
-//! - User-defined functions (via `call_predicate`)
+//! Lazy filter state on ordinary, suspendable iterator-method frames.
 
 use crate::{
     args::ArgValues,
-    bytecode::VM,
-    defer_drop,
+    builtins::{Builtins, BuiltinsFunctions},
+    bytecode::{CallResult, VM},
     exception_private::RunResult,
-    heap::{DropGuard, HeapData},
-    predicate::call_predicate,
-    types::{List, PyTrait},
+    frozen::FrozenFunction,
+    types::BuiltinType,
     value::Value,
 };
 
-/// Implementation of the filter() builtin function.
-///
-/// Filters elements from an iterable based on a predicate function.
-/// If the predicate is None, filters out falsy values.
-///
-/// Note: In Python this returns an iterator, but we return a list for simplicity.
-///
-/// Examples:
-/// ```python
-/// filter(lambda x: x > 0, [-1, 0, 1, 2])  # [1, 2]
-/// filter(None, [0, 1, False, True, ''])   # [1, True]
-/// ```
-pub fn builtin_filter(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+/// Acquire the source immediately; evaluate predicates only when advanced.
+pub fn builtin_filter(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let (function, iterable) = args.get_two_args("filter", vm.heap)?;
-    defer_drop!(function, vm);
-
-    let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
-    defer_drop!(iter, vm);
-    let mut iter = iter.read(vm);
-
-    let out: Vec<Value> = Vec::new();
-    let mut out_guard = DropGuard::new(out, vm);
-    let (out, vm) = out_guard.as_parts_mut();
-
-    while let Some(item) = iter.py_next(vm)? {
-        let mut item_guard = DropGuard::new(item, vm);
-        let (item, vm) = item_guard.as_parts_mut();
-        let should_include = if let Value::None = function {
-            // No predicate - use truthiness of element
-            item.py_bool(vm)?
-        } else {
-            call_predicate(function, item, vm)?
-        };
-
-        if should_include {
-            out.push(item_guard.into_inner());
-        }
-    }
-
-    let (out, vm) = out_guard.into_parts();
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(out)));
-    Ok(Value::Ref(heap_id))
+    vm.call_frozen_exact(
+        FrozenFunction::Filter,
+        [
+            function,
+            iterable,
+            Value::Builtin(Builtins::Type(BuiltinType::Iterator)),
+            Value::Builtin(Builtins::Function(BuiltinsFunctions::Next)),
+        ],
+    )
 }
+
+/// A failed predicate consumes its item without closing the filter iterator.
+/// The active method frame owns the current item across suspension.
+pub(crate) const FILTER_SOURCE: &str = r"
+def __monty_filter(function, iterable, iter_, next_):
+    class filter:
+        def __init__(self, function, iterator):
+            self.function = function
+            self.iterator = iterator
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            while True:
+                item = next_(self.iterator)
+                if self.function is None:
+                    keep = item
+                else:
+                    keep = self.function(item)
+                if keep:
+                    return item
+                item = None
+                keep = None
+
+    return filter(function, iter_(iterable))
+";

@@ -88,7 +88,9 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 // Version 43 adds async generator bodies and the frozen asynccontextmanager adapter.
 // Version 44 changes enumerate from an eager list to a lazy frozen iterator.
 // Version 45 changes zip from an eager list to a lazy frozen iterator.
-pub const DUMP_VERSION: u16 = 45;
+// Version 46 changes filter from an eager list to a lazy frozen iterator.
+// Version 47 adds lazy map/reversed and defaulted reverse iterator cursors.
+pub const DUMP_VERSION: u16 = 47;
 
 /// Experimental snapshots have no cross-version compatibility guarantee.
 /// This build also accepts the frozen v40 baseline without conversion.

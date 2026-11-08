@@ -11,7 +11,7 @@ mod chr;
 mod divmod;
 pub(crate) mod enumerate;
 pub(crate) mod eval_exec;
-mod filter;
+pub(crate) mod filter;
 mod format;
 mod getattr;
 mod hasattr;
@@ -22,7 +22,7 @@ pub(crate) mod isinstance;
 pub(crate) mod iter;
 mod len;
 mod locals;
-mod map;
+pub(crate) mod map;
 mod min_max; // min and max share implementation
 pub(crate) use min_max::candidate_wins;
 pub(crate) mod next;
@@ -33,7 +33,7 @@ mod ord;
 mod pow;
 mod print;
 mod repr;
-mod reversed;
+pub(crate) mod reversed;
 mod round;
 mod setattr;
 mod sorted;
@@ -146,7 +146,7 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Chr => chr::builtin_chr(vm, args),
             Self::Divmod => divmod::builtin_divmod(vm, args),
             Self::Enumerate => return enumerate::builtin_enumerate(vm, args),
-            Self::Filter => filter::builtin_filter(vm, args),
+            Self::Filter => return filter::builtin_filter(vm, args),
             Self::Format => format::builtin_format(vm, args),
             // `getattr()` / `hasattr()` may suspend a lazy host attribute lookup.
             Self::Getattr => return getattr::builtin_getattr(vm, args),
@@ -156,7 +156,7 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Id => id::builtin_id(vm, args),
             Self::Isinstance => isinstance::builtin_isinstance(vm, args),
             Self::Len => len::builtin_len(vm, args),
-            Self::Map => map::builtin_map(vm, args),
+            Self::Map => return map::builtin_map(vm, args),
             Self::Max => min_max::builtin_max(vm, args),
             Self::Min => min_max::builtin_min(vm, args),
             // `next()` on an unread file yields the read that loads it.
@@ -168,7 +168,7 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Pow => pow::builtin_pow(vm, args),
             Self::Print => print::builtin_print(vm, args),
             Self::Repr => repr::builtin_repr(vm, args),
-            Self::Reversed => reversed::builtin_reversed(vm, args),
+            Self::Reversed => return reversed::builtin_reversed(vm, args),
             Self::Round => round::builtin_round(vm, args),
             Self::Setattr => setattr::builtin_setattr(vm, args),
             Self::ObjectSetattr => object_setattr::builtin_object_setattr(vm, args),

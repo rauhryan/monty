@@ -120,26 +120,6 @@ objects except `tee`, which is a plain function — so `isinstance(x, count)`,
     Monty reads the next pair instead, which is what CPython's own loop
     condition intends, so the call ends in an ordinary `StopIteration`.
 
-## Infinite iterators and the eager builtins
-
-`map()` and `filter()` are **eager** in Monty: each drains its
-source into a list and returns a concrete result, rather than the lazy iterator
-CPython returns. Applied to an infinite `itertools` iterator they therefore
-never return, where CPython yields lazily:
-
-```python test="skip"
-import itertools
-
-map(str, itertools.count())  # CPython: lazy. Monty: runs until a limit trips.
-filter(bool, itertools.repeat(1))  # likewise
-```
-
-`zip()` stops at the shortest input, so `zip(itertools.count(), 'ab')` behaves
-as in CPython, as does slicing an infinite iterator by hand via `next()`. This
-is a pre-existing property of those builtins rather than something `itertools`
-introduces, but `count()`/`repeat()` are the first easy way for sandboxed code
-to reach it.
-
 ## Resource limits
 
 `count()` and `repeat(x)` are infinite, so consuming one without a bound

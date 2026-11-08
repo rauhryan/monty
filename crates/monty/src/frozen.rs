@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     annotations,
     args::ArgValues,
-    builtins::{enumerate, next, zip},
+    builtins::{enumerate, filter, map, next, reversed, zip},
     bytecode::{CallResult, Compiler, VM},
     exception_private::RunResult,
     intern::{CompileInterns, FunctionId, Interns},
@@ -67,6 +67,15 @@ pub(crate) enum FrozenFunction {
     /// Lazy enumeration using suspendable iterator methods.
     #[serde(rename = "builtins.enumerate")]
     Enumerate,
+    /// Lazy filter factory.
+    #[serde(rename = "builtins.filter")]
+    Filter,
+    /// Lazy mapping over parallel inputs.
+    #[serde(rename = "builtins.map")]
+    Map,
+    /// Lazy built-in sequence reversal.
+    #[serde(rename = "builtins.reversed")]
+    Reversed,
     /// Lazy parallel iteration using suspendable iterator methods.
     #[serde(rename = "builtins.zip")]
     Zip,
@@ -140,6 +149,9 @@ impl FrozenFunction {
             Self::DelegateIterable => iter::DELEGATE_ITERABLE_SOURCE,
             Self::Contextmanager => contextlib::CONTEXTMANAGER_SOURCE,
             Self::Enumerate => enumerate::ENUMERATE_SOURCE,
+            Self::Filter => filter::FILTER_SOURCE,
+            Self::Map => map::MAP_SOURCE,
+            Self::Reversed => reversed::REVERSED_SOURCE,
             Self::Zip => zip::ZIP_SOURCE,
             Self::Closing => contextlib::CLOSING_SOURCE,
             Self::Asynccontextmanager => contextlib::ASYNCCONTEXTMANAGER_SOURCE,

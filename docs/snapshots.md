@@ -389,7 +389,7 @@ Calling a loader after a feed or a previous load is rejected before restoration,
 - **Dumps carry a format version.** The bytes are Monty's own dump format, a `MONTY\0` magic followed by a dump-format
     version, then the state encoded as CBOR with every field and variant named.
     This pre-release fork makes no cross-version snapshot compatibility guarantee.
-    This build writes format 45 and accepts formats 40 through 45.
+    This build writes format 47 and accepts formats 40 through 47.
     The frozen v40 baseline loads without conversion; older readers reject the new loop-adapter format.
     Incompatible representation or captured-code changes raise the format and minimum version;
     older snapshots are rejected before their payload is decoded.

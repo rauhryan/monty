@@ -40,6 +40,9 @@ None
 #[test]
 fn generator_composition_execution_limits() {
     for source in [
+        "import itertools\nfor x in map(lambda x: x, itertools.count()):\n    pass",
+        "for x in reversed(range(10**12)):\n    pass",
+        "import itertools\nnext(filter(lambda x: False, itertools.count()))",
         "import itertools\nfor item in zip(itertools.count(), itertools.count(), strict=True):\n    pass",
         "import itertools\nfor item in enumerate(itertools.count()):\n    pass",
         "def values():\n    while True:\n        yield 1\nlist(values())",
@@ -149,4 +152,26 @@ fn zip_snapshot_ownership() {
 #[test]
 fn zip_semantics_and_ownership() {
     checked_run(include_str!("../../test_cases/builtin__zip_lazy.py"));
+}
+
+#[test]
+fn filter_semantics_and_ownership() {
+    checked_run(include_str!("../../test_cases/builtin__filter_lazy.py"));
+}
+
+#[test]
+fn filter_snapshot_ownership() {
+    check_public_fixture_snapshots(include_str!("../fixtures/concurrency/filter/suspension.py"));
+}
+
+#[test]
+fn map_reverse_semantics_and_ownership() {
+    checked_run(include_str!("../../test_cases/builtin__map_lazy.py"));
+    checked_run(include_str!("../../test_cases/builtin__reversed_lazy.py"));
+}
+
+#[test]
+fn map_reverse_snapshot_ownership() {
+    check_public_fixture_snapshots(include_str!("../fixtures/concurrency/map/suspension.py"));
+    check_public_fixture_snapshots(include_str!("../fixtures/concurrency/reversed/suspension.py"));
 }

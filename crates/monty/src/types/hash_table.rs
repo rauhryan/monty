@@ -246,9 +246,26 @@ impl<E: TableEntry> PyHashTable<E> {
     /// cursor changes on an error too (an error is sticky, as in CPython), so
     /// the caller must store it back whatever the outcome.
     pub(crate) fn step(&self, cursor: &mut TableCursor) -> RunResult<Option<&E>> {
+        let reverse = cursor.reverse;
         Ok(cursor
-            .advance::<E>(self.len(), |from| self.next_live_slot(from))?
+            .advance::<E>(self.len(), |from| {
+                if reverse {
+                    (0..from.min(self.entries.len()))
+                        .rev()
+                        .find(|&i| self.entries[i].is_live())
+                } else {
+                    self.next_live_slot(from)
+                }
+            })?
             .map(|slot| &self.entries[slot]))
+    }
+
+    /// Starts a reverse cursor at the end of the insertion-order slots.
+    pub(crate) fn reverse_cursor(&self) -> TableCursor {
+        let mut cursor = TableCursor::new(self.len());
+        cursor.slot = self.entries.len();
+        cursor.reverse = true;
+        cursor
     }
 
     /// The live entry at `slot`, or `None` if the slot is out of range or was
@@ -798,6 +815,8 @@ pub(crate) struct TableCursor {
     /// Set by a size-change error. CPython makes that error sticky
     /// (`di_used = -1`), so it repeats even once the size is restored.
     size_changed: bool,
+    #[serde(default)]
+    reverse: bool,
 }
 
 /// A [`TableCursor`] as any supported dump stores it.
@@ -815,6 +834,8 @@ struct DumpedCursor {
     exhausted: bool,
     #[serde(default)]
     size_changed: bool,
+    #[serde(default)]
+    reverse: bool,
 }
 
 impl From<DumpedCursor> for TableCursor {
@@ -827,6 +848,7 @@ impl From<DumpedCursor> for TableCursor {
                 .unwrap_or_else(|| dumped.expected_len.saturating_sub(dumped.index)),
             exhausted: dumped.exhausted,
             size_changed: dumped.size_changed,
+            reverse: dumped.reverse,
         }
     }
 }
@@ -840,6 +862,7 @@ impl TableCursor {
             remaining: expected_len,
             exhausted: false,
             size_changed: false,
+            reverse: false,
         }
     }
 
@@ -883,15 +906,15 @@ impl TableCursor {
                     self.exhausted = true;
                     Ok(None)
                 }
-                Some(_) if self.remaining == 0 => {
+                Some(_) if self.remaining == 0 && !self.reverse => {
                     // With no such guard for this container, stop rather than
                     // yield an entry the walk was never owed.
                     self.exhausted = true;
                     E::changed_keys_error().map_or(Ok(None), Err)
                 }
                 Some(slot) => {
-                    self.slot = slot + 1;
-                    self.remaining -= 1;
+                    self.slot = if self.reverse { slot } else { slot + 1 };
+                    self.remaining = self.remaining.saturating_sub(1);
                     Ok(Some(slot))
                 }
             }

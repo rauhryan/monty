@@ -72,7 +72,7 @@ fn current_dump_loads_and_resumes() {
 /// Header-only protocol probes: unsupported versions must fail before CBOR decoding.
 #[test]
 fn unsupported_versions_are_rejected_before_payload() {
-    assert_eq!((MIN_SUPPORTED_DUMP_VERSION, DUMP_VERSION), (40, 45));
+    assert_eq!((MIN_SUPPORTED_DUMP_VERSION, DUMP_VERSION), (40, 47));
     for version in 0..MIN_SUPPORTED_DUMP_VERSION {
         let mut header = b"MONTY\0".to_vec();
         header.extend_from_slice(&version.to_le_bytes());
@@ -463,7 +463,7 @@ asyncio.run(main())
 /// cancellation signal before queue accounting. Never regenerate.
 #[test]
 fn historical_snapshots_are_rejected() {
-    assert_eq!((MIN_SUPPORTED_DUMP_VERSION, DUMP_VERSION), (40, 45));
+    assert_eq!((MIN_SUPPORTED_DUMP_VERSION, DUMP_VERSION), (40, 47));
     for (bytes, version) in [
         (include_bytes!("fixtures/dump_v14.bin").as_slice(), 14),
         (include_bytes!("fixtures/anyio_scope_v35.bin").as_slice(), 35),
