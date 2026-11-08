@@ -9,7 +9,7 @@ mod any;
 mod bin;
 mod chr;
 mod divmod;
-mod enumerate;
+pub(crate) mod enumerate;
 pub(crate) mod eval_exec;
 mod filter;
 mod format;
@@ -39,7 +39,7 @@ mod setattr;
 mod sorted;
 mod sum;
 mod type_;
-mod zip;
+pub(crate) mod zip;
 
 use std::{fmt, fmt::Write, str::FromStr};
 
@@ -145,7 +145,7 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Bin => bin::builtin_bin(vm, args),
             Self::Chr => chr::builtin_chr(vm, args),
             Self::Divmod => divmod::builtin_divmod(vm, args),
-            Self::Enumerate => enumerate::builtin_enumerate(vm, args),
+            Self::Enumerate => return enumerate::builtin_enumerate(vm, args),
             Self::Filter => filter::builtin_filter(vm, args),
             Self::Format => format::builtin_format(vm, args),
             // `getattr()` / `hasattr()` may suspend a lazy host attribute lookup.
@@ -175,7 +175,7 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Sorted => sorted::builtin_sorted(vm, args),
             Self::Sum => sum::builtin_sum(vm, args),
             Self::Type => type_::builtin_type(vm, args),
-            Self::Zip => zip::builtin_zip(vm, args),
+            Self::Zip => return zip::builtin_zip(vm, args),
             // `eval()` / `exec()` push the compiled snippet's frame.
             Self::Eval => return eval_exec::builtin_eval(vm, args),
             Self::Exec => return eval_exec::builtin_exec(vm, args),

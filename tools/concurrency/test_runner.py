@@ -109,7 +109,7 @@ class RunnerTests(unittest.TestCase):
                     run.authenticate(path)
 
     def test_suite_inventory(self):
-        self.assertEqual(len(run.preflight()), 27)
+        self.assertEqual(len(run.preflight()), 29)
         cases = run.preflight('asynccontextmanager')
         self.assertEqual(len(cases), 7)
         self.assertEqual(sum(case['oracle_labels'] is not None for case in cases.values()), 6)

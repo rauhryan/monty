@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     annotations,
     args::ArgValues,
-    builtins::next,
+    builtins::{enumerate, next, zip},
     bytecode::{CallResult, Compiler, VM},
     exception_private::RunResult,
     intern::{CompileInterns, FunctionId, Interns},
@@ -64,6 +64,12 @@ pub(crate) enum FrozenFunction {
     /// Factory for synchronous generator context managers.
     #[serde(rename = "contextlib.contextmanager")]
     Contextmanager,
+    /// Lazy enumeration using suspendable iterator methods.
+    #[serde(rename = "builtins.enumerate")]
+    Enumerate,
+    /// Lazy parallel iteration using suspendable iterator methods.
+    #[serde(rename = "builtins.zip")]
+    Zip,
     /// Resource-closing context manager factory.
     #[serde(rename = "contextlib.closing")]
     Closing,
@@ -133,6 +139,8 @@ impl FrozenFunction {
             Self::CollectGenerator => iter::COLLECT_GENERATOR_SOURCE,
             Self::DelegateIterable => iter::DELEGATE_ITERABLE_SOURCE,
             Self::Contextmanager => contextlib::CONTEXTMANAGER_SOURCE,
+            Self::Enumerate => enumerate::ENUMERATE_SOURCE,
+            Self::Zip => zip::ZIP_SOURCE,
             Self::Closing => contextlib::CLOSING_SOURCE,
             Self::Asynccontextmanager => contextlib::ASYNCCONTEXTMANAGER_SOURCE,
             Self::GetAnnotations => typing::GET_ANNOTATIONS_SOURCE,

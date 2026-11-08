@@ -892,5 +892,253 @@
       "interrupted_error": null,
       "value_export_error": null
     }
+  },
+  "enumerate/suspension": {
+    "source": "enumerate/suspension.py",
+    "steps": [
+      [
+        "call",
+        "iter"
+      ],
+      [
+        [],
+        [
+          "iter"
+        ]
+      ],
+      [
+        "call",
+        "next-1"
+      ],
+      [
+        [],
+        [
+          "next-1"
+        ]
+      ],
+      [
+        "call",
+        "next-2"
+      ],
+      [
+        [],
+        [
+          "next-2"
+        ]
+      ],
+      [
+        "call",
+        "next-3"
+      ],
+      [
+        [],
+        [
+          "next-3"
+        ]
+      ],
+      [
+        "call",
+        "generator"
+      ],
+      [
+        [],
+        [
+          "generator"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "$ack": true
+      },
+      {
+        "iter": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "next-1": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "next-2": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "next-3": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "generator": "ok"
+      }
+    ],
+    "result": "ok",
+    "step": true
+  },
+  "zip/suspension": {
+    "source": "zip/suspension.py",
+    "steps": [
+      [
+        "call",
+        "a-iter"
+      ],
+      [
+        "call",
+        "b-iter"
+      ],
+      [
+        [],
+        [
+          "a-iter",
+          "b-iter"
+        ]
+      ],
+      [
+        "call",
+        "a-1"
+      ],
+      [
+        "call",
+        "b-1"
+      ],
+      [
+        [],
+        [
+          "a-1",
+          "b-1"
+        ]
+      ],
+      [
+        "call",
+        "a-2"
+      ],
+      [
+        "call",
+        "b-2"
+      ],
+      [
+        [],
+        [
+          "a-2",
+          "b-2"
+        ]
+      ],
+      [
+        "call",
+        "a-3"
+      ],
+      [
+        "call",
+        "b-3"
+      ],
+      [
+        [],
+        [
+          "a-3",
+          "b-3"
+        ]
+      ],
+      [
+        "call",
+        "c-iter"
+      ],
+      [
+        "call",
+        "d-iter"
+      ],
+      [
+        [],
+        [
+          "c-iter",
+          "d-iter"
+        ]
+      ],
+      [
+        "call",
+        "c-1"
+      ],
+      [
+        "call",
+        "d-1"
+      ],
+      [
+        [],
+        [
+          "c-1",
+          "d-1"
+        ]
+      ]
+    ],
+    "batches": [
+      {
+        "$ack": true
+      },
+      {
+        "$ack": true
+      },
+      {
+        "a-iter": "ok",
+        "b-iter": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "$ack": true
+      },
+      {
+        "a-1": "ok",
+        "b-1": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "$ack": true
+      },
+      {
+        "a-2": "ok",
+        "b-2": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "$ack": true
+      },
+      {
+        "a-3": "ok",
+        "b-3": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "$ack": true
+      },
+      {
+        "c-iter": "ok",
+        "d-iter": "ok"
+      },
+      {
+        "$ack": true
+      },
+      {
+        "$ack": true
+      },
+      {
+        "c-1": "ok",
+        "d-1": "ok"
+      }
+    ],
+    "result": "ok",
+    "step": true
   }
 }

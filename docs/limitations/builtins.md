@@ -122,19 +122,25 @@ These raise `NameError`:
     begins, so mutating that one is never observed. Absent mutation every result
     agrees. Set-to-set operators do not re-hash at all, and dict-view equality
     (`d.keys() == s`) raises exactly where CPython does.
-- **`enumerate`, `zip`, `map`, `filter` and `reversed` are eager, not lazy** —
-    each drains its source and returns a `list`, so `type(enumerate(x)).__name__`
-    is `'list'` rather than `'enumerate'`. Observable several ways: a
+- **`map`, `filter` and `reversed` are eager, not lazy** —
+    each drains its source and returns a `list`, so `type(map(str, x)).__name__`
+    is `'list'` rather than `'map'`. Observable several ways: a
     side-effecting callable runs for every item at the call itself rather than as
     the result is consumed; the whole result is held in memory at once, so an
     infinite iterator (e.g. `map(f, itertools.count())`) never returns and runs
     until a resource limit trips; the result can be indexed and re-iterated, which
     CPython forbids; and mutating the source from inside the loop body is never
     observed, so containers that detect mutation during iteration (`dict`, `set`,
-    `collections.deque`) will not raise when looped over via one of these. `zip`
-    and multi-iterable `map` stop at the shortest input, so pairing an infinite
+    `collections.deque`) will not raise when looped over via one of these.
+    Multi-iterable `map` stops at the shortest input, so pairing an infinite
     iterable with a finite or empty one stays bounded. A plain `for x in container` is lazy and does detect mutation.
     See [itertools.md](itertools.md).
+- **`enumerate` and `zip` do not expose CPython's builtin iterator classes.** Type identity,
+    introspection, pickling and private attributes differ; these builtins are not subclassable classes.
+    They can suspend during construction and when driven by `next`, `for` or comprehensions.
+    Collection constructors and native iterator adaptors retain the synchronous callback restrictions
+    described in [iter.md](iter.md); materializing either iterator when a source calls the host can raise
+    `NotImplementedError`.
 - **Arity-error wording for some str/bytes methods** — a handful of
     keyword-accepting methods (e.g. `str.split`, `str.rsplit` and the `bytes`
     equivalents) report too-many-arguments as `split expected at most 2 arguments, got 3`, where CPython 3.14's Argument

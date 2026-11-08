@@ -133,7 +133,7 @@ Each links to the page that owns it, which is where the full account lives:
     empty `AssertionError`.
     Turn it off with `assert_message_annotations=False` on `checkout()`
     ([assert.md](assert.md)).
-- **`enumerate`, `zip`, `map`, `filter` and `reversed` are eager**, not lazy.
+- **`map`, `filter` and `reversed` are eager**, not lazy.
     So `map(f, itertools.count())` runs until a resource limit trips
     ([builtins.md](builtins.md)).
 - **`re` is backed by Rust's `fancy-regex`**, not CPython's engine: no `bytes` patterns, no `re.VERBOSE` constant, and some

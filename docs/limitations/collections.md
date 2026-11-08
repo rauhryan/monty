@@ -30,14 +30,14 @@ too, rather than something that type-checks and then fails at runtime.
 - **Returned to the host as a plain `list`**, so the `maxlen` bound and the
     deque-ness are lost; sending it back yields a `list`. (Same as
     defaultdict/Counter, which arrive as plain dicts.)
-- **Mutation during iteration is not detected through `enumerate`/`zip`/`map`/
+- **Mutation during iteration is not detected through `map`/
     `filter`/`reversed`**: those are eager (see [builtins.md](builtins.md)), so
     the deque is fully read before the loop body runs. `for x in d` and explicit
     `iter()`/`next()` detect it exactly as CPython does.
 - **Extending from an eager builtin loses the partial result when it raises.**
     `extend`/`extendleft`/`+=` append each item as the source yields it, so an
     iterator raising part-way leaves the earlier items in place, as in CPython.
-    But `map`/`filter`/`zip`/`enumerate` are eager (see
+    But `map`/`filter` are eager (see
     [builtins.md](builtins.md)), so `d += map(f, xs)` with a raising `f` raises
     before the extend begins and appends nothing, where CPython appends whatever
     was yielded first.

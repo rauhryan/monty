@@ -122,7 +122,7 @@ objects except `tee`, which is a plain function — so `isinstance(x, count)`,
 
 ## Infinite iterators and the eager builtins
 
-`map()`, `filter()` and `enumerate()` are **eager** in Monty: each drains its
+`map()` and `filter()` are **eager** in Monty: each drains its
 source into a list and returns a concrete result, rather than the lazy iterator
 CPython returns. Applied to an infinite `itertools` iterator they therefore
 never return, where CPython yields lazily:
@@ -132,7 +132,6 @@ import itertools
 
 map(str, itertools.count())  # CPython: lazy. Monty: runs until a limit trips.
 filter(bool, itertools.repeat(1))  # likewise
-enumerate(itertools.count())  # likewise
 ```
 
 `zip()` stops at the shortest input, so `zip(itertools.count(), 'ab')` behaves

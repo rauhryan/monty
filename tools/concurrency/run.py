@@ -84,7 +84,7 @@ def preflight(suite='regression'):
         for name, case in json.loads((frozen / 'contract.json').read_text())['cases'].items()
     }
     cases.update(replay.strict_json((ROOT / 'cases.json').read_text()))
-    replay.check(len(cases) == 27, 'unexpected case inventory')
+    replay.check(len(cases) == 29, 'unexpected case inventory')
     if suite == 'asynccontextmanager':
         cases = replay.strict_json((ROOT / 'asynccontextmanager.json').read_text())
         replay.check(

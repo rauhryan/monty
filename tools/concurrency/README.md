@@ -26,7 +26,7 @@ python3 tools/concurrency/run.py run --output playground/concurrency-check-1
 ```
 
 Use a new output directory each time. `run` builds the native example and actual
-Wasm component, then replays 27 programs on each backend. Every real suspension
+Wasm component, then replays 29 programs on each backend. Every real suspension
 cut is independently restored twice and disposed; the original bytes are checked
 and the full trace must equal uninterrupted execution. Results, raw commands,
 snapshots, input/artifact hashes and build receipts are saved under the output.
@@ -113,7 +113,7 @@ This builds under the same guard as `run`.
 The output `baseline.json` is a candidate manifest, not a compatibility promise or a frozen fixture set.
 It records the producer source/artifact association, build receipts, tool versions, Git status, snapshot hashes, state census and continuation oracle.
 Only the six files under `snapshots/` are candidates for retention; the other cuts are review evidence.
-The current writer uses format 43 and accepts formats 40 through 43.
+The current writer uses format 45 and accepts formats 40 through 45.
 The retained baseline remains v40; capture produces candidates in the current format.
 
 The selected states are idle common state, a user handler, generator unwinding, an internal annotation fallback handler, a draining group with queue cancellation and a shield, and sticky host cancellation.

@@ -36,10 +36,14 @@ linting so these test inputs remain stable, including host-injected names.
 - `iterator_loop`: custom iterator acquisition and advancement, active host cuts, exhaustion, exceptions and cancellation.
 
 New fixtures follow the same one-time formatting and routine Ruff exclusion policy.
-The maintained replay default inventory contains 27 programs; additional source fixtures support native semantic and ownership tests.
+The maintained replay default inventory contains 29 programs; additional source fixtures support native semantic and ownership tests.
 
 Keep genuine serialized fixtures in the parent directory unchanged. This source
 fixture directory does not replace version rejection or compatibility tests.
 
 - `asynccontextmanager`: acceptance cases for the sync-generator-backed async manager adapter.
     The focused runner suite checks CPython semantics, native ownership, and native/Wasm restores.
+
+- `enumerate`: lazy advancement, exception retry, large indices and generator composition across host-call cuts.
+
+- `zip`: left-to-right suspension, retry after source errors and strict length checks with cyclic values.
