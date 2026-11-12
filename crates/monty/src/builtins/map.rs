@@ -1,32 +1,19 @@
 //! Implementation of the map() builtin function.
 
-use std::{iter, mem};
-
 use crate::{
-    args::{ArgValues, FromArgs, KwargsValues},
-    bytecode::VM,
-    defer_drop, defer_drop_mut,
+    args::{ArgValues, FromArgs},
+    builtins::{Builtins, BuiltinsFunctions},
+    bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, DropWithContext, HeapData},
-    types::{List, iter::checked_preallocation_hint},
+    frozen::FrozenFunction,
+    heap::{DropWithContext, HeapData},
+    types::List,
     value::Value,
 };
 
-/// Implementation of the map() builtin function.
-///
-/// Applies a function to every item of one or more iterables and returns a list of results.
-/// With multiple iterables, stops when the shortest iterable is exhausted.
-///
-/// Note: In Python this returns an iterator, but we return a list for simplicity.
-/// Note: The `strict=` parameter is not yet supported.
-///
-/// Examples:
-/// ```python
-/// map(abs, [-1, 0, 1, 2])           # [1, 0, 1, 2]
-/// map(pow, [2, 3], [3, 2])          # [8, 9]
-/// map(str, [1, 2, 3])               # ['1', '2', '3']
-/// ```
-pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+/// Acquire sources eagerly and apply the callback only when advanced.
+/// The Python 3.14 `strict` keyword remains unsupported.
+pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     // CPython's map() uses a bespoke arity message
     // (`map() must have at least two arguments.`) rather than the generic
     // "missing N required positional arguments" wording the macro would
@@ -51,72 +38,36 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         first_iterable,
         extra_iterables,
     } = MapArgs::from_args(args, vm)?;
-    defer_drop!(function, vm);
-    defer_drop_mut!(extra_iterables, vm);
-
-    let first_iter = first_iterable.into_py_iter(vm)?.require_synchronous(vm)?;
-    defer_drop!(first_iter, vm);
-    let mut first_iter = first_iter.read(vm);
-
-    let extra_iterators: Vec<Value> = Vec::with_capacity(extra_iterables.len());
-    defer_drop_mut!(extra_iterators, vm);
-
-    for iterable in extra_iterables.drain(..) {
-        extra_iterators.push(iterable.into_py_iter(vm)?.require_synchronous(vm)?);
-    }
-
-    // Validate and clamp the iterator's hint before reserving native memory.
-    let hint = first_iter.iter_size_hint(vm);
-    let capacity = checked_preallocation_hint(hint, mem::size_of::<Value>(), &vm.heap.tracker)?;
-    let out = Vec::with_capacity(capacity);
-    defer_drop_mut!(out, vm);
-
-    // map function over iterables until the shortest iter is exhausted
-    match extra_iterators.as_mut_slice() {
-        // map(f, iter)
-        [] => {
-            while let Some(item) = first_iter.py_next(vm)? {
-                let args = ArgValues::One(item);
-                out.push(vm.evaluate_function(function, args)?);
-            }
-        }
-        // map(f, iter1, iter2)
-        [single] => {
-            while let Some(arg1) = first_iter.py_next(vm)? {
-                let mut arg1_guard = DropGuard::new(arg1, vm);
-                let Some(arg2) = single.py_next(arg1_guard.ctx())? else {
-                    break;
-                };
-                let (arg1, vm) = arg1_guard.into_parts();
-                let args = ArgValues::Two(arg1, arg2);
-                out.push(vm.evaluate_function(function, args)?);
-            }
-        }
-        // map(f, iter1, iter2, *iterables)
-        multiple => 'outer: loop {
-            let items = Vec::with_capacity(1 + multiple.len());
-            defer_drop_mut!(items, vm);
-
-            for result in iter::once(first_iter.py_next(vm)).chain(multiple.iter_mut().map(|iter| iter.py_next(vm))) {
-                if let Some(item) = result? {
-                    items.push(item);
-                } else {
-                    break 'outer;
-                }
-            }
-
-            let args = ArgValues::ArgsKargs {
-                args: mem::take(items),
-                kwargs: KwargsValues::Empty,
-            };
-
-            out.push(vm.evaluate_function(function, args)?);
-        },
-    }
-
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(mem::take(out))));
-    Ok(Value::Ref(heap_id))
+    let mut sources = vec![first_iterable];
+    sources.extend(extra_iterables);
+    let sources = Value::Ref(vm.heap.allocate(HeapData::List(List::new(sources))));
+    vm.call_frozen_exact(
+        FrozenFunction::Map,
+        [
+            function,
+            sources,
+            Value::Builtin(Builtins::Function(BuiltinsFunctions::Zip)),
+            Value::Builtin(Builtins::Function(BuiltinsFunctions::Next)),
+        ],
+    )
 }
+
+/// Ordinary method frames allow retry after source or callback errors.
+pub(crate) const MAP_SOURCE: &str = r"
+def __monty_map(function, sources, zip_, next_):
+    class map:
+        def __init__(self, function, rows):
+            self.function = function
+            self.rows = rows
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return self.function(*next_(self.rows))
+
+    return map(function, zip_(*sources))
+";
 
 /// Argument shape for `map(function, iterable, *iterables)`.
 ///

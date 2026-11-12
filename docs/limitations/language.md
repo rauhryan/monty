@@ -39,7 +39,9 @@ Synchronous generator functions support direct `next(g[, default])`, `g.send(val
 - `__next__`, saved method attributes such as `resume = g.send`,
     and generator inspection attributes are unavailable.
 - Other collection constructors and native iterator consumers cannot advance these generators.
-- Generator lambdas and async generators are rejected with `SyntaxError`.
+- Generator lambdas are rejected with `SyntaxError`.
+- Async generator bodies are supported for [`contextlib.asynccontextmanager`](contextlib.md),
+    but general async iteration and the async generator method API are unavailable.
 - Releasing a generator, including one suspended in `try/finally`, does not run
     guest cleanup.
 - Generator *expressions* (`(x for x in ...)`) still materialize to a `list`

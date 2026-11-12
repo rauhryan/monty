@@ -84,7 +84,13 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 // Version 39 adds RaiseFrom, inline strings, module namespaces and annotation state.
 // Version 40 removes experimental migration and private cancellation/contextmanager compatibility.
 // Version 41 adds the frozen custom-iterator loop adapter; v40 state loads unchanged.
-pub const DUMP_VERSION: u16 = 41;
+// Version 42 adds the frozen closing factory; v40 and v41 state load unchanged.
+// Version 43 adds async generator bodies and the frozen asynccontextmanager adapter.
+// Version 44 changes enumerate from an eager list to a lazy frozen iterator.
+// Version 45 changes zip from an eager list to a lazy frozen iterator.
+// Version 46 changes filter from an eager list to a lazy frozen iterator.
+// Version 47 adds lazy map/reversed and defaulted reverse iterator cursors.
+pub const DUMP_VERSION: u16 = 47;
 
 /// Experimental snapshots have no cross-version compatibility guarantee.
 /// This build also accepts the frozen v40 baseline without conversion.

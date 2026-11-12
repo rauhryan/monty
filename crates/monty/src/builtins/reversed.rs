@@ -2,10 +2,17 @@
 
 use crate::{
     args::{ArgValues, FromArgs},
-    bytecode::VM,
+    builtins::{Builtins, BuiltinsFunctions},
+    bytecode::{CallResult, VM},
+    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
+    frozen::FrozenFunction,
     heap::HeapData,
-    types::{List, iter::collect_owned_iterable},
+    types::{
+        deque::DequeIterator,
+        dict::{DictItemIterator, DictKeyIterator, DictValueIterator},
+        range::RangeIterator,
+    },
     value::Value,
 };
 
@@ -20,31 +27,78 @@ struct ReversedArgs {
     sequence: Value,
 }
 
-/// Implementation of the reversed() builtin function.
-///
-/// Returns a list with elements in reverse order.
-/// Note: In Python this returns an iterator, but we return a list for simplicity.
-pub fn builtin_reversed(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+/// Reverse supported built-in containers without collecting their contents.
+pub fn builtin_reversed(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let ReversedArgs { sequence } = ReversedArgs::from_args(args, vm)?;
-
-    // Being iterable is not enough: CPython needs `__reversed__`, or
-    // `__len__` + `__getitem__`. Check before iterating so unordered and
-    // one-shot iterables are rejected rather than silently reversed.
-    if !is_reversible(&sequence, vm) {
-        let err = ExcType::type_error_not_reversible(&sequence.py_type_name(vm));
-        sequence.drop_with(vm);
-        return Err(err);
+    defer_drop!(sequence, vm);
+    if !is_reversible(sequence, vm) {
+        return Err(ExcType::type_error_not_reversible(&sequence.py_type_name(vm)));
     }
-
-    // Collect all items
-    let mut items: Vec<_> = collect_owned_iterable(sequence, vm)?;
-
-    // Reverse in place
-    items.reverse();
-
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(items)));
-    Ok(Value::Ref(heap_id))
+    if let Value::Ref(id) = sequence {
+        if let HeapData::Range(range) = vm.heap.get(*id) {
+            let range = *range;
+            return Ok(CallResult::Value(RangeIterator::allocate_reversed(range, vm)));
+        }
+        let special = match vm.heap.get(*id) {
+            HeapData::Dict(_) => Some((*id, 0)),
+            HeapData::DictKeysView(view) => Some((view.dict_id(), 0)),
+            HeapData::DictItemsView(view) => Some((view.dict_id(), 1)),
+            HeapData::DictValuesView(view) => Some((view.dict_id(), 2)),
+            HeapData::Deque(_) => Some((*id, 3)),
+            _ => None,
+        };
+        if let Some((id, kind)) = special {
+            let iterator = match kind {
+                0 => DictKeyIterator::allocate_reversed(id, vm),
+                1 => DictItemIterator::allocate_reversed(id, vm),
+                2 => DictValueIterator::allocate_reversed(id, vm),
+                _ => {
+                    let iterator = DequeIterator::reversed(id, vm);
+                    let result = Value::Ref(vm.heap.allocate(HeapData::DequeIterator(iterator)));
+                    vm.heap.inc_ref(id);
+                    result
+                }
+            };
+            return Ok(CallResult::Value(iterator));
+        }
+    }
+    vm.call_frozen_exact(
+        FrozenFunction::Reversed,
+        [
+            sequence.clone_with_heap(vm.heap),
+            Value::Builtin(Builtins::Function(BuiltinsFunctions::Len)),
+            Value::Builtin(Builtins::ExcType(ExcType::StopIteration)),
+            Value::Builtin(Builtins::ExcType(ExcType::IndexError)),
+        ],
+    )
 }
+
+/// A fixed starting index observes list replacement/shrinkage without seeing later appends.
+pub(crate) const REVERSED_SOURCE: &str = r"
+def __monty_reversed(sequence, len_, stop_, index_error):
+    class reversed:
+        def __init__(self, sequence, index):
+            self.sequence = sequence
+            self.index = index
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self.index >= 0:
+                try:
+                    item = self.sequence[self.index]
+                except index_error:
+                    pass
+                else:
+                    self.index -= 1
+                    return item
+            self.sequence = None
+            self.index = -1
+            raise stop_
+
+    return reversed(sequence, len_(sequence) - 1)
+";
 
 /// Whether `reversed()` accepts this value, mirroring CPython's requirement of
 /// `__reversed__` or `__len__` + `__getitem__`.

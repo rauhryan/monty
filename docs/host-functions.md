@@ -479,3 +479,24 @@ authority.
     A hand-rolled `read_file` host function does not.
 - **Make callbacks idempotent if you plan to restore snapshots across a restart.** When a suspended session is dumped
     while the host is answering a call, restoring it re-announces that call and it runs again.
+
+## Sandbox platform capabilities
+
+The supplied `sandbox` platform module provides `from sandbox import read_file`. Calling it
+creates a lazy native coroutine; awaiting it emits a `sandbox.read_file`
+capability request with a `path` argument. There is no guest filesystem access.
+The host must authorize and fulfill the request, or raise a supported exception.
+This is a platform module, not a Python standard-library module.
+
+Variadic `asyncio.gather`, including starred generator expressions, accepts these
+coroutines directly. Direct `await`, public Tasks and supported task groups use
+the ordinary `asyncio.run` entry without a dialect import or private entry method.
+Ordinary `try/finally` and `async with` participate in protected host cancellation cleanup. See the [TaskGroup subset](limitations/asyncio.md#public-taskgroup-subset) for its restrictions.
+
+The playground also supplies `sandbox.ask`, `echo`, `random`, `sample`, `decision`,
+`document_create`, `document_read`, `document_edit`, `present_choices`, and
+`display_document`. These platform functions accept one positional request
+dictionary and return a lazy native coroutine. Their names grant no authority: the
+host validates the request against its installed contracts before performing any
+operation. Randomness and human replies are supplied and journaled by the host.
+They are not Python standard-library functions.

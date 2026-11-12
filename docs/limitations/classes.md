@@ -141,7 +141,7 @@ order and error wording, but with these divergences:
     outcome, though not its exact depth), but a deep-but-finite chain that
     CPython's default 1000-frame limit would still render may raise
     `RecursionError` in Monty. The same cap applies to synchronous callback
-    evaluation such as `map()`, `filter()`, `sorted()`/`list.sort(key=...)`,
+    evaluation such as `sorted()`/`list.sort(key=...)`,
     `min()`/`max(key=...)`, arithmetic and subscript dunders, and exotic `__init__` recursion.
     A chain of callable instances stored as class-level `__call__` members also has this cap;
     ordinary Python-function `__call__` recursion uses the normal frame limit

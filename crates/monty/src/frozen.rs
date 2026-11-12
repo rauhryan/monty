@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     annotations,
     args::ArgValues,
-    builtins::next,
+    builtins::{enumerate, filter, map, next, reversed, zip},
     bytecode::{CallResult, Compiler, VM},
     exception_private::RunResult,
     intern::{CompileInterns, FunctionId, Interns},
@@ -64,6 +64,27 @@ pub(crate) enum FrozenFunction {
     /// Factory for synchronous generator context managers.
     #[serde(rename = "contextlib.contextmanager")]
     Contextmanager,
+    /// Lazy enumeration using suspendable iterator methods.
+    #[serde(rename = "builtins.enumerate")]
+    Enumerate,
+    /// Lazy filter factory.
+    #[serde(rename = "builtins.filter")]
+    Filter,
+    /// Lazy mapping over parallel inputs.
+    #[serde(rename = "builtins.map")]
+    Map,
+    /// Lazy built-in sequence reversal.
+    #[serde(rename = "builtins.reversed")]
+    Reversed,
+    /// Lazy parallel iteration using suspendable iterator methods.
+    #[serde(rename = "builtins.zip")]
+    Zip,
+    /// Resource-closing context manager factory.
+    #[serde(rename = "contextlib.closing")]
+    Closing,
+    /// Factory for async context managers using generator continuations.
+    #[serde(rename = "contextlib.asynccontextmanager")]
+    Asynccontextmanager,
     /// Evaluate annotations for `annotationlib.get_annotations` and `typing.get_type_hints`.
     #[serde(rename = "annotationlib.get_annotations")]
     GetAnnotations,
@@ -127,6 +148,13 @@ impl FrozenFunction {
             Self::CollectGenerator => iter::COLLECT_GENERATOR_SOURCE,
             Self::DelegateIterable => iter::DELEGATE_ITERABLE_SOURCE,
             Self::Contextmanager => contextlib::CONTEXTMANAGER_SOURCE,
+            Self::Enumerate => enumerate::ENUMERATE_SOURCE,
+            Self::Filter => filter::FILTER_SOURCE,
+            Self::Map => map::MAP_SOURCE,
+            Self::Reversed => reversed::REVERSED_SOURCE,
+            Self::Zip => zip::ZIP_SOURCE,
+            Self::Closing => contextlib::CLOSING_SOURCE,
+            Self::Asynccontextmanager => contextlib::ASYNCCONTEXTMANAGER_SOURCE,
             Self::GetAnnotations => typing::GET_ANNOTATIONS_SOURCE,
             Self::ForwardRefEvaluate => forward_ref::EVALUATE_SOURCE,
             Self::ClassAnnotations => annotations::CLASS_ANNOTATIONS_SOURCE,

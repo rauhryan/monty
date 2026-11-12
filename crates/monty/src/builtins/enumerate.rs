@@ -1,60 +1,57 @@
-//! Implementation of the enumerate() builtin function.
-
-use smallvec::smallvec;
+//! Lazy enumerate state on ordinary, suspendable iterator-method frames.
 
 use crate::{
     args::ArgValues,
-    bytecode::VM,
+    builtins::{Builtins, BuiltinsFunctions},
+    bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
-    heap::{DropGuard, DropWithContext, HeapData},
-    types::{List, allocate_tuple},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
+    frozen::FrozenFunction,
+    heap::DropWithContext,
+    types::BuiltinType,
     value::Value,
 };
 
-/// Implementation of the enumerate() builtin function.
-///
-/// Returns a list of (index, value) tuples.
-/// Note: In Python this returns an iterator, but we return a list for simplicity.
-pub fn builtin_enumerate(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+/// Validate the index before acquiring the iterator, without consuming any items.
+pub fn builtin_enumerate(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let (iterable, start) = extract_enumerate_args(args, vm)?;
-    // Guard `start` before building the iterator: a non-iterable `iterable`
-    // errors out of `py_iter`, and a heap-backed start must not leak.
+    defer_drop!(iterable, vm);
     defer_drop!(start, vm);
-    let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
-    defer_drop!(iter, vm);
-    let mut iter = iter.read(vm);
-
-    // Get start index (default 0)
-    let mut index: i64 = match start {
-        Some(Value::Int(n)) => *n,
-        Some(Value::Bool(b)) => i64::from(*b),
-        Some(v) => {
-            let type_name = v.py_type_name(vm);
-            return Err(SimpleException::new_msg(
-                ExcType::TypeError,
-                format!("'{type_name}' object cannot be interpreted as an integer"),
-            )
-            .into());
-        }
-        None => 0,
+    let index = match start {
+        Some(value) => value.py_index(vm)?,
+        None => Value::Int(0),
     };
-
-    let result: Vec<Value> = Vec::new();
-    let mut result_guard = DropGuard::new(result, vm);
-    let (result, vm) = result_guard.as_parts_mut();
-
-    while let Some(item) = iter.py_next(vm)? {
-        // Create tuple (index, item)
-        let tuple_val = allocate_tuple(smallvec![Value::Int(index), item], vm.heap);
-        result.push(tuple_val);
-        index += 1;
-    }
-
-    let (result, vm) = result_guard.into_parts();
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(result)));
-    Ok(Value::Ref(heap_id))
+    vm.call_frozen_exact(
+        FrozenFunction::Enumerate,
+        [
+            iterable.clone_with_heap(vm.heap),
+            index,
+            Value::Builtin(Builtins::Type(BuiltinType::Iterator)),
+            Value::Builtin(Builtins::Function(BuiltinsFunctions::Next)),
+        ],
+    )
 }
+
+/// A method frame can fail without closing the iterator, unlike a generator body.
+/// Only the source iterator and next index remain owned between successful calls.
+pub(crate) const ENUMERATE_SOURCE: &str = r"
+def __monty_enumerate(iterable, index, iter_, next_):
+    class enumerate:
+        def __init__(self, iterator, index):
+            self.iterator = iterator
+            self.index = index
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            item = next_(self.iterator)
+            index = self.index
+            self.index = index + 1
+            return (index, item)
+
+    return enumerate(iter_(iterable), index)
+";
 
 /// Extracts `enumerate(iterable, start=0)` arguments, faithfully mirroring
 /// CPython's hand-written `enumerate_vectorcall` (Objects/enumobject.c) —

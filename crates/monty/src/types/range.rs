@@ -335,6 +335,9 @@ pub(crate) struct RangeIterator {
     next: i64,
     step: i64,
     remaining: usize,
+    /// Reverse ranges keep their exact count independently of the host pointer width.
+    #[serde(default)]
+    reverse_remaining: Option<u64>,
 }
 
 impl RangeIterator {
@@ -344,12 +347,30 @@ impl RangeIterator {
             next: range.start,
             step: range.step,
             remaining: range.len(),
+            reverse_remaining: None,
         })))
     }
 
-    /// Returns the exact number of values not yet yielded.
+    /// Copies range bounds into an exact reverse cursor, including on 32-bit Wasm.
+    pub(crate) fn allocate_reversed(range: Range, vm: &mut VM<'_>) -> Value {
+        let count = range.len_i128();
+        let next = if count == 0 {
+            range.start
+        } else {
+            i64::try_from(i128::from(range.start) + (count - 1) * i128::from(range.step)).expect("range values fit i64")
+        };
+        Value::Ref(vm.heap.allocate(HeapData::RangeIterator(Self {
+            next,
+            step: range.step,
+            remaining: 0,
+            reverse_remaining: Some(u64::try_from(count).expect("i64 range length fits u64")),
+        })))
+    }
+
+    /// Returns a host-sized allocation hint without truncating the reverse cursor.
     pub(crate) fn size_hint(&self) -> usize {
-        self.remaining
+        self.reverse_remaining
+            .map_or(self.remaining, |count| usize::try_from(count).unwrap_or(usize::MAX))
     }
 }
 
@@ -380,6 +401,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RangeIterator> {
 
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let iter = self.get_mut(vm.heap);
+        if let Some(remaining) = &mut iter.reverse_remaining {
+            if *remaining == 0 {
+                return Ok(None);
+            }
+            let value = iter.next;
+            *remaining -= 1;
+            if *remaining > 0 {
+                iter.next = iter.next.checked_sub(iter.step).expect("reverse range values fit i64");
+            }
+            return Ok(Some(Value::Int(value)));
+        }
         if iter.remaining == 0 {
             Ok(None)
         } else {

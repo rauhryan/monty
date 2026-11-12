@@ -1,6 +1,6 @@
 //! Calling a user-supplied predicate and taking its truthiness.
 //!
-//! Shared by `filter` and the `itertools` adaptors `takewhile`, `dropwhile`
+//! Shared by the `itertools` adaptors `takewhile`, `dropwhile`
 //! and `filterfalse`, which differ only in what they do with the answer.
 
 use crate::{args::ArgValues, bytecode::VM, defer_drop, exception_private::RunResult, types::PyTrait, value::Value};
@@ -14,7 +14,7 @@ use crate::{args::ArgValues, bytecode::VM, defer_drop, exception_private::RunRes
 pub(crate) fn call_predicate(predicate: &Value, item: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
     let arg = item.clone_with_heap(vm.heap);
     let result = vm.evaluate_function(predicate, ArgValues::One(arg))?;
-    // Guarded because `py_bool` can raise through a user `__bool__`.
+    // Keep the predicate result owned until truth testing completes.
     defer_drop!(result, vm);
     result.py_bool(vm)
 }

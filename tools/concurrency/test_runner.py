@@ -108,6 +108,59 @@ class RunnerTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     run.authenticate(path)
 
+    def test_suite_inventory(self):
+        self.assertEqual(len(run.preflight()), 32)
+        cases = run.preflight('asynccontextmanager')
+        self.assertEqual(len(cases), 7)
+        self.assertEqual(sum(case['oracle_labels'] is not None for case in cases.values()), 6)
+        original = run.replay.strict_json
+
+        def missing_case(source):
+            result = original(source)
+            if 'host_cancel' in result:
+                del result['host_cancel']
+            return result
+
+        with patch.object(run.replay, 'strict_json', side_effect=missing_case):
+            with self.assertRaisesRegex(ValueError, 'case inventory changed'):
+                run.preflight('asynccontextmanager')
+
+    def test_suite_rejects_aliased_oracle_calls(self):
+        original = run.replay.strict_json
+
+        def duplicate_label(source):
+            result = original(source)
+            if 'host_cancel' in result:
+                result['exceptions']['oracle_labels'] = ['caught', 'caught']
+            return result
+
+        with patch.object(run.replay, 'strict_json', side_effect=duplicate_label):
+            with self.assertRaisesRegex(ValueError, 'aliased oracle call'):
+                run.preflight('asynccontextmanager')
+
+    def test_oracle_failure_keeps_evidence(self):
+        cases = {'example': {'source': 'example.py', 'result': [], 'oracle_labels': []}}
+        for code, stdout in ((1, ''), (0, '{"result": [], "labels": ["unexpected"]}')):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory)
+                result = subprocess.CompletedProcess(['oracle'], code, stdout, '')
+                with patch.object(run.replay.subprocess, 'run', return_value=result):
+                    with self.assertRaises(ValueError):
+                        run.oracle(cases, output)
+                self.assertEqual(json.loads((output / 'oracle.json').read_text())[0]['exit'], code)
+
+    def test_ownership_requires_all_tests(self):
+        for passed, ignored in ((0, 0), (7, 1), (8, 0)):
+            with self.subTest(passed=passed, ignored=ignored), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory)
+                (output / 'ownership.log').write_text(f'test result: ok. {passed} passed; 0 failed; {ignored} ignored;')
+                with patch.object(run.guard, 'execute'):
+                    if passed == 8:
+                        run.ownership(output)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'all eight tests'):
+                            run.ownership(output)
+
     def test_frozen_negative_controls(self):
         run.preflight()
 

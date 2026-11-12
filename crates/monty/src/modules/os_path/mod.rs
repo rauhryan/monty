@@ -719,7 +719,7 @@ fn lexists(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let LexistsArgs { path } = LexistsArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
     let path = extract_os_path(path, "lstat", "path", PathAccepts::NoFd, vm)?;
-    // answered locally: a call made from a builtin such as `map()` cannot suspend
+    // answered locally: a callback evaluated by `sorted()` cannot suspend
     if path.is_empty() {
         Ok(CallResult::Value(Value::Bool(false)))
     } else {
@@ -764,7 +764,7 @@ fn samefile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     defer_drop!(f1, vm);
     defer_drop!(f2, vm);
     let first = extract_os_path(f1, "stat", "path", PathAccepts::Fd, vm)?;
-    // raised locally, as a call from a builtin such as `map()` cannot suspend;
+    // raised locally, as a callback evaluated by `sorted()` cannot suspend;
     // `prepare_os_call` rejects an empty second path
     if first.is_empty() {
         return Err(ExcType::file_not_found_error(""));

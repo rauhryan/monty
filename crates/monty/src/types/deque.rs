@@ -709,6 +709,10 @@ pub(crate) struct DequeIterator {
     /// The deque's mutation counter captured at creation; any change means the
     /// deque was structurally mutated and iteration must raise `RuntimeError`.
     state: u64,
+    #[serde(default)]
+    reverse: bool,
+    #[serde(default)]
+    reverse_remaining: usize,
 }
 
 impl DequeIterator {
@@ -722,6 +726,20 @@ impl DequeIterator {
             deque,
             index: 0,
             state: d.state(),
+            reverse: false,
+            reverse_remaining: 0,
+        }
+    }
+
+    /// Takes ownership of a deque reference and walks from the right.
+    pub(crate) fn reversed(deque: HeapId, vm: &VM<'_>) -> Self {
+        let HeapData::Deque(source) = vm.heap.get(deque) else {
+            unreachable!("deque iterator source")
+        };
+        Self {
+            reverse: true,
+            reverse_remaining: source.len(),
+            ..Self::new(deque, vm)
         }
     }
 
@@ -735,7 +753,11 @@ impl DequeIterator {
         let HeapData::Deque(deque) = heap.get(self.deque) else {
             unreachable!("deque iterator must reference a deque")
         };
-        deque.len().saturating_sub(self.index)
+        if self.reverse {
+            self.reverse_remaining
+        } else {
+            deque.len().saturating_sub(self.index)
+        }
     }
 }
 
@@ -771,24 +793,41 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DequeIterator> {
     }
 
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let (deque_id, index, state) = {
+        let (deque_id, index, state, reverse) = {
             let iterator = self.get(vm.heap);
-            (iterator.deque, iterator.index, iterator.state)
+            (iterator.deque, iterator.index, iterator.state, iterator.reverse)
         };
+        if reverse && self.get(vm.heap).reverse_remaining == 0 {
+            return Ok(None);
+        }
         let item = {
             let HeapData::Deque(deque) = vm.heap.get(deque_id) else {
                 unreachable!("deque iterator must reference a deque")
             };
             // A structural mutation invalidates the iterator, matching CPython's
-            // `RuntimeError: deque mutated during iteration`. Checked BEFORE the
-            // exhaustion test so a mutation on the final step still raises.
+            // `RuntimeError: deque mutated during iteration`. Reverse cursors
+            // check exhaustion first and exhaust after the first mutation error.
             if deque.state() != state {
+                if reverse {
+                    self.get_mut(vm.heap).reverse_remaining = 0;
+                }
                 return Err(ExcType::runtime_error_deque_mutated());
             }
-            deque.get(index).map(|item| item.clone_with_heap(vm.heap))
+            let position = if reverse {
+                deque.len().checked_sub(index + 1)
+            } else {
+                Some(index)
+            };
+            position
+                .and_then(|position| deque.get(position))
+                .map(|item| item.clone_with_heap(vm.heap))
         };
         if item.is_some() {
-            self.get_mut(vm.heap).index += 1;
+            let iterator = self.get_mut(vm.heap);
+            iterator.index += 1;
+            if reverse {
+                iterator.reverse_remaining -= 1;
+            }
         }
         Ok(item)
     }

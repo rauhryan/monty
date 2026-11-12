@@ -40,6 +40,11 @@ None
 #[test]
 fn generator_composition_execution_limits() {
     for source in [
+        "import itertools\nfor x in map(lambda x: x, itertools.count()):\n    pass",
+        "for x in reversed(range(10**12)):\n    pass",
+        "import itertools\nnext(filter(lambda x: False, itertools.count()))",
+        "import itertools\nfor item in zip(itertools.count(), itertools.count(), strict=True):\n    pass",
+        "import itertools\nfor item in enumerate(itertools.count()):\n    pass",
         "def values():\n    while True:\n        yield 1\nlist(values())",
         "def values():\n    while True:\n        yield 1\ntuple(values())",
         "import itertools\ndef values():\n    yield from itertools.count()\nfor item in values():\n    pass",
@@ -118,4 +123,55 @@ fn contextmanager_cause_snapshot_ownership() {
     check_public_fixture_snapshots(include_str!(
         "../fixtures/concurrency/contextmanager_cause/suspension.py"
     ));
+}
+
+/// Closing preserves exception identity and releases resources through suspended exit calls.
+#[test]
+fn closing_semantics_and_ownership() {
+    checked_run(include_str!("../../test_cases/contextlib__closing.py"));
+    check_public_fixture_snapshots(include_str!("../fixtures/concurrency/contextlib_closing/suspension.py"));
+}
+
+/// Lazy iterator state releases cycles after completed, failed and abandoned resumes.
+#[test]
+fn enumerate_snapshot_ownership() {
+    check_public_fixture_snapshots(include_str!("../fixtures/concurrency/enumerate/suspension.py"));
+}
+
+#[test]
+fn enumerate_semantics_and_ownership() {
+    checked_run(include_str!("../../test_cases/builtin__enumerate_lazy.py"));
+}
+
+/// Partial rows and source errors retain no orphaned owners across restoration.
+#[test]
+fn zip_snapshot_ownership() {
+    check_public_fixture_snapshots(include_str!("../fixtures/concurrency/zip/suspension.py"));
+}
+
+#[test]
+fn zip_semantics_and_ownership() {
+    checked_run(include_str!("../../test_cases/builtin__zip_lazy.py"));
+}
+
+#[test]
+fn filter_semantics_and_ownership() {
+    checked_run(include_str!("../../test_cases/builtin__filter_lazy.py"));
+}
+
+#[test]
+fn filter_snapshot_ownership() {
+    check_public_fixture_snapshots(include_str!("../fixtures/concurrency/filter/suspension.py"));
+}
+
+#[test]
+fn map_reverse_semantics_and_ownership() {
+    checked_run(include_str!("../../test_cases/builtin__map_lazy.py"));
+    checked_run(include_str!("../../test_cases/builtin__reversed_lazy.py"));
+}
+
+#[test]
+fn map_reverse_snapshot_ownership() {
+    check_public_fixture_snapshots(include_str!("../fixtures/concurrency/map/suspension.py"));
+    check_public_fixture_snapshots(include_str!("../fixtures/concurrency/reversed/suspension.py"));
 }

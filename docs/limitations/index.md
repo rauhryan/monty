@@ -31,7 +31,8 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - List, dict and set comprehensions
 - `try` / `except` / `else` / `finally`, `raise ... from ...`
 - `for`, `while`, `if` / `elif` / `else`, `break`, `continue`, `pass`, `assert`, `global`, `nonlocal`, `return`
-- `with` statements, for files and for classes implementing `__enter__` / `__exit__`
+- `with` statements, for files and for classes implementing `__enter__` / `__exit__`;
+    `contextlib.contextmanager`, `contextlib.asynccontextmanager` and `contextlib.closing`
 - `match` statements with every PEP 634 pattern kind and guards, see [match.md](match.md)
 - f-strings (including the `=` debug form), `str.format()` and `format()`, with `!r` / `!s` / `!a` conversions,
     format specs and nested replacement fields
@@ -132,9 +133,6 @@ Each links to the page that owns it, which is where the full account lives:
     empty `AssertionError`.
     Turn it off with `assert_message_annotations=False` on `checkout()`
     ([assert.md](assert.md)).
-- **`enumerate`, `zip`, `map`, `filter` and `reversed` are eager**, not lazy.
-    So `map(f, itertools.count())` runs until a resource limit trips
-    ([builtins.md](builtins.md)).
 - **`re` is backed by Rust's `fancy-regex`**, not CPython's engine: no `bytes` patterns, no `re.VERBOSE` constant, and some
     error messages differ ([re.md](re.md)).
 - **Only the class dunders listed above are dispatched.** `__lt__` and `__len__` raise
@@ -147,7 +145,7 @@ Each links to the page that owns it, which is where the full account lives:
     Queue, TaskGroup, Task cancellation and inspection have bounded
     [supported subsets](asyncio.md#public-queue-subset).
     Host cancellation supports concurrent coroutine cleanup with protected host replies
-    ([asyncio.md](asyncio.md#host-cancellation-and-experimental-native-entry)).
+    ([asyncio.md](asyncio.md#host-cancellation-and-protected-cleanup)).
 - **Only UTF-8, ASCII, UTF-16 and UTF-32 codecs exist.** `latin-1` and friends raise `LookupError`
     ([encoding.md](encoding.md)).
 
@@ -159,6 +157,5 @@ verbatim.
 If you hit something that is neither in the subset nor on these pages, [open an
 issue](https://github.com/pydantic/monty/issues).
 
-The experimental platform also supplies a host-mediated `sandbox.read_file`
-capability and direct variadic gathering of durable host continuations; see
-[asyncio.md](asyncio.md#supplied-host-read-capability).
+The supplied `sandbox` module exposes host-mediated platform capabilities; see
+[host functions](../host-functions.md#sandbox-platform-capabilities).
