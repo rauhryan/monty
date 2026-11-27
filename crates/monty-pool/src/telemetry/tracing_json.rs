@@ -256,7 +256,7 @@ impl Serialize for JsonEncoded<'_> {
             // like logfire: `str(d)`, which keeps every digit a JSON number would round
             MontyNode::Decimal(d) => s.serialize_str(d),
             MontyNode::Cycle(_) => s.serialize_str("<circular reference>"),
-            MontyNode::Repr(r) | MontyNode::TypedRepr { value: r, .. } => s.serialize_str(r),
+            MontyNode::Repr(r) => s.serialize_str(r),
             MontyNode::Ellipsis => s.serialize_str("Ellipsis"),
             MontyNode::NotImplemented => s.serialize_str("NotImplemented"),
             MontyNode::BuiltinFunction(func) => s.collect_str(&format_args!("<built-in function {func}>")),

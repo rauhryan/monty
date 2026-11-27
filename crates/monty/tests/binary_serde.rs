@@ -604,7 +604,7 @@ ext_fn(0)
         MontyObject::string("None | list[int]".to_owned()),
         MontyObject::tuple([
             MontyObject::type_object(MontyType::NoneType),
-            MontyObject::repr_with_type("list[int]", "types.GenericAlias"),
+            MontyObject::repr("list[int]"),
         ]),
         MontyObject::bool(true),
         MontyObject::bool(true),

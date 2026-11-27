@@ -44,8 +44,7 @@ pub mod worker;
 // Version 10 adds GeneratorExit; older peers cannot decode this exception type.
 // Version 11 integrates gRPC liveness, module-file replies and execution-clock negotiation.
 // Pre-merge version 10 workers do not implement these contracts.
-// Version 12 adds output-only TypedRepr diagnostics.
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
 ///

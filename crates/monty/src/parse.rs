@@ -2617,6 +2617,14 @@ impl<'a, 'i> Parser<'a, 'i> {
                         self.convert_range(comp.range),
                     ));
                 }
+                // PEP 572 also forbids assignments inside lambdas nested in this expression.
+                self.check_expression_depth(&comp.iter)?;
+                if expression_contains_walrus(&comp.iter) {
+                    return Err(ParseError::syntax(
+                        "assignment expression cannot be used in a comprehension iterable expression",
+                        self.convert_range(comp.iter.range()),
+                    ));
+                }
                 // Only the first iterable is evaluated in the enclosing scope.
                 let iter = if index == 0 {
                     self.parse_expression(comp.iter)?
@@ -3522,4 +3530,21 @@ impl ConstantNumber {
             }
         }
     }
+}
+
+/// Searches an already depth-checked iterable expression, including nested scopes.
+fn expression_contains_walrus(expr: &AstExpr) -> bool {
+    struct Finder(bool);
+    impl<'a> Visitor<'a> for Finder {
+        fn visit_expr(&mut self, expr: &'a AstExpr) {
+            if matches!(expr, AstExpr::Named(_)) {
+                self.0 = true;
+            } else if !self.0 {
+                walk_expr(self, expr);
+            }
+        }
+    }
+    let mut finder = Finder(false);
+    finder.visit_expr(expr);
+    finder.0
 }

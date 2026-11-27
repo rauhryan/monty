@@ -34,21 +34,23 @@ before any code runs. Other restrictions are described in their feature sections
 Synchronous generator functions and generator expressions support direct `next(g[, default])`, `g.send(value)`,
 `g.throw(exception)`, explicit `g.close()`, `for` loops, collection constructors and iterable delegation.
 Generator expressions acquire their outermost iterator immediately; their elements, filters and inner iterables run when advanced.
-`all`, `any`, `sum`, and generator inputs to `min`, `max`, `sorted` and string `join` can suspend for host calls.
+`all`, `any`, `sum`, `min`, `max`, `sorted`, string `join`, `list`, `tuple`, and unpacking
+can suspend while consuming generators and custom iterables.
 
 - `throw` accepts one exception instance or built-in exception class. The legacy
     multiple-argument throw form is unavailable.
 - `__next__`, saved method attributes such as `resume = g.send`,
     and generator inspection attributes are unavailable.
-- Other native iterator consumers advance generators synchronously.
+- Native-only consumers, including `dict`, `set`, `list.extend`, and `math.fsum`, advance generators synchronously.
     A host call inside such a generator raises `NotImplementedError` at the call site; the Rust consumer cannot be checkpointed mid-call.
+    Materialize with `list` first when these consumers need items produced by host calls.
+- `sorted` and `list.sort` still evaluate `key` callbacks synchronously; a host call from the key raises
+    `NotImplementedError`. `min` and `max` key callbacks can suspend.
 - Generator lambdas are rejected with `SyntaxError`.
 - Async generator bodies are supported for [`contextlib.asynccontextmanager`](contextlib.md),
     but general async iteration and the async generator method API are unavailable.
 - Releasing a generator, including one suspended in `try/finally`, does not run
     guest cleanup.
-- Generator *expressions* (`(x for x in ...)`) still materialize to a `list`
-    rather than a lazy iterator.
 
 ## Starred unpacking
 

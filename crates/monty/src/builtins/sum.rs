@@ -35,10 +35,11 @@ struct SumArgs {
 /// rejected, pointing at `''.join(seq)` / `b''.join(seq)` instead.
 pub fn builtin_sum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let SumArgs { iterable, start } = SumArgs::from_args(args, vm)?;
-    if !matches!(
-        iterable.read_heap(vm),
-        Some(HeapReadOutput::Generator(_) | HeapReadOutput::Instance(_))
-    ) {
+    // Ranges yield only integers and these start values cannot call Python.
+    // All other inputs use the same suspendable implementation.
+    if matches!(iterable.read_heap(vm), Some(HeapReadOutput::Range(_)))
+        && matches!(start, Value::Int(_) | Value::Float(_))
+    {
         return sum_native(iterable, start, vm).map(CallResult::Value);
     }
     vm.call_frozen_exact(
@@ -53,7 +54,7 @@ pub fn builtin_sum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     )
 }
 
-/// Built-in iterators retain the native fold; they do not need a suspendable frame.
+/// Numeric range summation avoids per-item Python call overhead.
 fn sum_native(iterable: Value, start: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop_mut!(start, vm);
     let iterator = iterable.into_py_iter(vm)?.require_synchronous(vm)?;

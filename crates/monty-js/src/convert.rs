@@ -158,9 +158,7 @@ fn decode_node<'e>(node: &MontyNode, graph: &MontyGraph, built: &[Unknown<'e>], 
         }
         MontyNode::Path(p) => env.create_string(p)?.into_unknown(env),
         MontyNode::FileHandle(handle) => create_js_file_handle(handle, env),
-        MontyNode::Repr(s) | MontyNode::TypedRepr { value: s, .. } | MontyNode::Cycle(s) => {
-            env.create_string(s)?.into_unknown(env)
-        }
+        MontyNode::Repr(s) | MontyNode::Cycle(s) => env.create_string(s)?.into_unknown(env),
         // Function objects are internal to the name lookup protocol and should not normally
         // appear as final output values. If they do, represent as a string with the function name.
         MontyNode::Function { name, .. } => env.create_string(name)?.into_unknown(env),

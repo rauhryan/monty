@@ -114,7 +114,7 @@ fn monty_object_repr_or_error_success() {
     let code = "range(0, 10, 2)".to_string();
     let mut run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("should parse");
     let result = run.run_no_limits(vec![]).expect("should run");
-    assert_eq!(result, MontyObject::repr_with_type("range(0, 10, 2)", "range"));
+    assert_eq!(result, MontyObject::repr("range(0, 10, 2)"));
 }
 
 #[test]
@@ -123,7 +123,7 @@ fn monty_object_repr_or_error_slice() {
     let code = "slice(1, 10, 2)".to_string();
     let mut run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("should parse");
     let result = run.run_no_limits(vec![]).expect("should run");
-    assert_eq!(result, MontyObject::repr_with_type("slice(1, 10, 2)", "slice"));
+    assert_eq!(result, MontyObject::repr("slice(1, 10, 2)"));
 }
 
 #[test]
@@ -132,7 +132,7 @@ fn monty_object_repr_or_error_dict_keys() {
     let code = "{1: 'a', 2: 'b'}.keys()".to_string();
     let mut run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("should parse");
     let result = run.run_no_limits(vec![]).expect("should run");
-    assert_eq!(result, MontyObject::repr_with_type("dict_keys([1, 2])", "dict_keys"));
+    assert_eq!(result, MontyObject::repr("dict_keys([1, 2])"));
 }
 
 #[test]
@@ -145,9 +145,8 @@ fn monty_object_repr_or_error_with_huge_int() {
     let result = run.run_no_limits(vec![]).expect("should run, not raise");
     assert_eq!(
         result,
-        MontyObject::repr_with_type(
-            "<dict_keys object, error on repr(): ValueError('Exceeds the limit (4300 digits) for integer string conversion; use sys.set_int_max_str_digits() to increase the limit')>",
-            "dict_keys"
+        MontyObject::repr(
+            "<dict_keys object, error on repr(): ValueError('Exceeds the limit (4300 digits) for integer string conversion; use sys.set_int_max_str_digits() to increase the limit')>"
         )
     );
 }

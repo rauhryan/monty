@@ -1,18 +1,21 @@
 //! Shared helpers for Python's iteration protocol.
 //!
 //! Concrete iterator state lives beside its iterable type. This module only
-//! provides suspendable iterator validation and synchronous collection machinery.
+//! provides iterator validation, suspendable collection and native-only drains.
 
 use monty_types::{ResourceError, ResourceTracker};
 
 use crate::{
     args::ArgValues,
+    builtins::sorted,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, DropWithContext, HeapReadOutput},
+    frozen::{FrozenFunction, FrozenFunctions},
+    heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
+    modules::ModuleFunctions,
     resource_checks::check_estimated_size,
-    types::PyTrait,
+    types::{List, PyTrait, Tuple, Type, str},
     value::{VALUE_SIZE, Value, ValueRead},
 };
 
@@ -191,7 +194,8 @@ pub fn collect_iterable_bounded(value: &Value, limit: usize, vm: &mut VM<'_>) ->
     Ok(items_guard.into_inner())
 }
 
-/// Collection advances through the outer VM loop, so generator calls may suspend.
+/// The collection calling convention retained by snapshots written before format 48.
+/// New execution uses COLLECT_SOURCE; restored callers keep their original arguments.
 pub(crate) const COLLECT_GENERATOR_SOURCE: &str = r"
 def __monty_collect_generator(generator, as_tuple, tuple_):
     result = []
@@ -248,3 +252,87 @@ pub(crate) const GENERATOR_NEXT_SOURCE: &str = r"
 def __monty_generator_next(generator, next_):
     return next_(generator)
 ";
+
+/// Native operation applied after the VM has finished collecting an iterable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub(crate) enum CollectionResult {
+    List,
+    Tuple,
+    Sorted,
+    Join,
+    /// Validate before replay so a collected iterator does not acquire list error wording.
+    Unpack,
+}
+
+/// Exact sequences can be copied without running iterator methods or host calls.
+pub(crate) fn is_materialized(value: &Value, vm: &VM<'_>) -> bool {
+    matches!(value.py_type(vm), Type::List | Type::Tuple)
+}
+
+/// Collects on normal VM frames, then applies a native operation to the resulting list.
+/// Exact sequences and integer ranges cannot call user code; native collection
+/// also preserves their exact capacity hints instead of growing a list incrementally.
+pub(crate) fn collect_then(
+    iterable: Value,
+    result: CollectionResult,
+    context: Value,
+    limit: Option<usize>,
+    vm: &mut VM<'_>,
+) -> RunResult<CallResult> {
+    if is_materialized(&iterable, vm) || iterable.py_type(vm) == Type::Range {
+        let mut owned = DropGuard::new((iterable, context), vm);
+        let ((iterable, _), vm) = owned.as_parts();
+        let items = match limit {
+            Some(limit) => collect_iterable_bounded(iterable, limit, vm)?,
+            None => collect_iterable(iterable, vm)?,
+        };
+        let ((iterable, context), vm) = owned.into_parts();
+        iterable.drop_with(vm);
+        let items = Value::Ref(vm.heap.allocate(HeapData::List(List::new(items))));
+        return finish_collection(result, ArgValues::Two(items, context), vm).map(CallResult::Value);
+    }
+    vm.call_frozen_exact(
+        FrozenFunction::Collect,
+        [
+            iterable,
+            Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::FinishCollection(result))),
+            context,
+            limit.map_or(Value::None, |limit| {
+                Value::Int(i64::try_from(limit).expect("collection limit fits i64"))
+            }),
+        ],
+    )
+}
+
+/// One collection loop serves syntax, constructors, sorting and joining.
+/// A bounded request stops before pulling another item once the limit is reached.
+pub(crate) const COLLECT_SOURCE: &str = r"
+def __monty_collect(iterable, finish, context, remaining):
+    items = []
+    if remaining != 0:
+        for item in iterable:
+            items.append(item)
+            if remaining is not None:
+                remaining -= 1
+                if remaining == 0:
+                    break
+    return finish(items, context)
+";
+
+/// Consumes the collected list and the continuation's owned context.
+pub(crate) fn finish_collection(result: CollectionResult, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
+    let (items, context) = args.get_two_args("finish_collection", vm.heap)?;
+    match result {
+        CollectionResult::List => {
+            context.drop_with(vm);
+            Ok(items)
+        }
+        CollectionResult::Tuple => {
+            context.drop_with(vm);
+            Tuple::init(vm, ArgValues::One(items))
+        }
+        CollectionResult::Sorted => sorted::finish_sorted(items, context, vm),
+        CollectionResult::Join => str::finish_join(items, context, vm),
+        CollectionResult::Unpack => vm.validate_collected_unpack(items, context),
+    }
+}

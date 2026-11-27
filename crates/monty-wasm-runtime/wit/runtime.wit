@@ -174,19 +174,12 @@ interface worker {
         module(module-node),
         /// A `decimal.Decimal` as its exact string form, `str(d)`.
         decimal(string),
-        /// Output-only diagnostic display and runtime Python type.
-        typed-repr(typed-repr-node),
     }
 
     /// The values of one message: a post-order node arena. Every child
     /// index is strictly lower than its holder's, so a receiver builds it in
     /// one forward pass; an index used twice is a shared object. Each
     /// message names its roots by index.
-    record typed-repr-node {
-        value: string,
-        python-type: string,
-    }
-
     record arena {
         nodes: list<value-node>,
     }

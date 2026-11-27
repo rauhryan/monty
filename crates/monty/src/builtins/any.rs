@@ -1,34 +1,15 @@
-//! Suspendable implementation of the any() builtin function.
+//! Implementation of any on the VM's suspendable iteration protocol.
 
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
-    defer_drop,
     exception_private::RunResult,
     frozen::FrozenFunction,
-    heap::HeapReadOutput,
-    types::PyTrait,
-    value::Value,
 };
 
-/// Consume an iterable on ordinary VM frames, preserving short-circuit evaluation.
+/// Iterate on ordinary frames, including user iterators and host callbacks.
 pub fn builtin_any(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let iterable = args.get_one_arg("any", vm.heap)?;
-    if !matches!(
-        iterable.read_heap(vm),
-        Some(HeapReadOutput::Generator(_) | HeapReadOutput::Instance(_))
-    ) {
-        let iterator = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
-        defer_drop!(iterator, vm);
-        let mut iterator = iterator.read(vm);
-        while let Some(item) = iterator.py_next(vm)? {
-            defer_drop!(item, vm);
-            if item.py_bool(vm)? {
-                return Ok(CallResult::Value(Value::Bool(true)));
-            }
-        }
-        return Ok(CallResult::Value(Value::Bool(false)));
-    }
     vm.call_frozen_exact(FrozenFunction::Any, [iterable])
 }
 

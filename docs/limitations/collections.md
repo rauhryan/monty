@@ -45,7 +45,7 @@ divergences. `repr(Point)` is `<class 'Point'>` where CPython gives
 
 - **A `default_factory` cannot call an external or `os` function**; a
     missing-key access then raises `NotImplementedError`. Plain factories (`int`,
-    `list`, `lambda`, ordinary functions) work. This also applies to synchronous callbacks such as the `key=` of `sorted`/`min`/`max`,
+    `list`, `lambda`, ordinary functions) work. This also applies to synchronous callbacks such as the `key=` of `sorted`/`list.sort`,
     and `__repr__`.
 - **Crosses the host boundary as a plain `dict`**: the `default_factory` is a
     function and cannot cross, so sending the dict back yields a plain `dict`.

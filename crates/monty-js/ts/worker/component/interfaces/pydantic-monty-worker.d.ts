@@ -88,10 +88,6 @@ export interface FunctionNode {
   name: string
   docstring?: string
 }
-export interface TypedReprNode {
-  value: string
-  pythonType: string
-}
 export type ValueNode =
   | ValueNodeEllipsis
   | ValueNodeNotImplemented
@@ -126,7 +122,6 @@ export type ValueNode =
   | ValueNodeCycle
   | ValueNodeModule
   | ValueNodeDecimal
-  | ValueNodeTypedRepr
 export interface ValueNodeEllipsis {
   tag: 'ellipsis'
 }
@@ -255,10 +250,6 @@ export interface ValueNodeModule {
 export interface ValueNodeDecimal {
   tag: 'decimal'
   val: string
-}
-export interface ValueNodeTypedRepr {
-  tag: 'typed-repr'
-  val: TypedReprNode
 }
 export interface Arena {
   nodes: Array<ValueNode>

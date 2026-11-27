@@ -2281,6 +2281,19 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 collect_assigned_names_from_expr(condition, &mut assigned, self.interner);
             }
         }
+        let mut targets = AHashSet::new();
+        for generator in &generators {
+            collect_names_from_unpack_target(&generator.target, &mut targets, self.interner);
+        }
+        if let Some(name) = assigned.intersection(&targets).next() {
+            return Err(ParseError::syntax(
+                format!(
+                    "assignment expression cannot rebind comprehension iteration variable '{}'",
+                    self.interner.get_str(*name)
+                ),
+                position,
+            ));
+        }
         for &name in &assigned {
             self.ensure_scope_slot(name, position)?;
             self.names_assigned_in_order.insert(name);

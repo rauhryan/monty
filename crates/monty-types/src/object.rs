@@ -211,15 +211,6 @@ impl MontyObject {
         Self::leaf(MontyNode::Repr(value.into()))
     }
 
-    /// Output-only display with the original runtime Python type for diagnostics.
-    #[must_use]
-    pub fn repr_with_type(value: impl Into<String>, python_type: impl Into<String>) -> Self {
-        Self::leaf(MontyNode::TypedRepr {
-            value: value.into(),
-            python_type: python_type.into(),
-        })
-    }
-
     /// Output-only: a reference back to an enclosing container, as its placeholder.
     #[must_use]
     pub fn cycle(placeholder: impl Into<String>) -> Self {
@@ -809,7 +800,7 @@ impl<'a> ObjectRef<'a> {
             MontyNode::Function { name, .. } => write!(f, "<function '{name}' external>"),
             // a module's repr names it without listing its attrs, as CPython's does
             MontyNode::Module { name, .. } => write!(f, "<module {}>", StringRepr(name)),
-            MontyNode::Repr(s) | MontyNode::TypedRepr { value: s, .. } => write!(f, "Repr({})", StringRepr(s)),
+            MontyNode::Repr(s) => write!(f, "Repr({})", StringRepr(s)),
             MontyNode::Cycle(placeholder) => f.write_str(placeholder),
             MontyNode::List(_)
             | MontyNode::Tuple(_)

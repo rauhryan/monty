@@ -1257,10 +1257,7 @@ functools.partial(f, Bad())
         .unwrap();
     assert_eq!(
         result,
-        MontyObject::repr_with_type(
-            "<functools.partial object, error on repr(): ValueError()>",
-            "functools.partial"
-        )
+        MontyObject::repr("<functools.partial object, error on repr(): ValueError()>")
     );
     let baseline = repl.heap_entry_count();
     repl.feed_run("token = error = None\n[]", vec![], PrintWriter::Stdout)

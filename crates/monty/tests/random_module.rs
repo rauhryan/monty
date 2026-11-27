@@ -68,20 +68,12 @@ fn random_instances_and_types_cross_as_repr() {
     let Some(values) = result.as_ref().items() else {
         panic!("expected a list");
     };
-    let MontyNode::TypedRepr {
-        value: instance,
-        python_type,
-    } = unstable::node(values[0])
-    else {
+    let MontyNode::Repr(instance) = unstable::node(values[0]) else {
         panic!("expected an instance repr");
     };
-    assert_eq!(python_type, "Random");
     assert!(instance.starts_with("<random.Random object at 0x"));
     assert!(instance.ends_with('>'));
-    assert_eq!(
-        values[1],
-        MontyObject::repr_with_type("<class 'random.Random'>", "type")
-    );
+    assert_eq!(values[1], MontyObject::repr("<class 'random.Random'>".to_owned()));
     assert_eq!(values[2], values[1]);
     assert_eq!(values[3], MontyObject::type_object(MontyType::Int));
     assert!(MontyType::from_type_name("random.Random").is_none());
