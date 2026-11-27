@@ -164,11 +164,7 @@ def outer_shadow_unpack():
 
 assert outer_shadow_unpack() == [3, 7]
 
-# === Generator expressions (temporary: treated as list comprehensions) ===
-# TODO: When proper generators are implemented, these should return generator objects
-# instead of lists. For now, generator expressions are parsed as list comprehensions.
-# See iter__generator_expr.py for tests, and iter__generator_expr_type.py for
-# a type check test (an xfail on CPython since CPython has real generators).
+# === Lazy generator expressions ===
 
 # Generator in list() call - works identically in both Monty and CPython
 assert list(x for x in [1, 2, 3]) == [1, 2, 3]

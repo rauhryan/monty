@@ -31,14 +31,17 @@ before any code runs. Other restrictions are described in their feature sections
 
 ## Generator functions
 
-Synchronous generator functions support direct `next(g[, default])`, `g.send(value)`,
-`g.throw(exception)`, explicit `g.close()`, `for` loops, `list(g)`, `tuple(g)` and iterable delegation.
+Synchronous generator functions and generator expressions support direct `next(g[, default])`, `g.send(value)`,
+`g.throw(exception)`, explicit `g.close()`, `for` loops, collection constructors and iterable delegation.
+Generator expressions acquire their outermost iterator immediately; their elements, filters and inner iterables run when advanced.
+`all`, `any`, `sum`, and generator inputs to `min`, `max`, `sorted` and string `join` can suspend for host calls.
 
 - `throw` accepts one exception instance or built-in exception class. The legacy
     multiple-argument throw form is unavailable.
 - `__next__`, saved method attributes such as `resume = g.send`,
     and generator inspection attributes are unavailable.
-- Other collection constructors and native iterator consumers cannot advance these generators.
+- Other native iterator consumers advance generators synchronously.
+    A host call inside such a generator raises `NotImplementedError` at the call site; the Rust consumer cannot be checkpointed mid-call.
 - Generator lambdas are rejected with `SyntaxError`.
 - Async generator bodies are supported for [`contextlib.asynccontextmanager`](contextlib.md),
     but general async iteration and the async generator method API are unavailable.
@@ -262,8 +265,7 @@ another order (`Counter(a=x, b=x, c=x).most_common(2)` is
 
 - Functions (`def`, `async def`), nested functions, closures, and decorators on
     them, but not on methods (see above).
-- List / dict / set comprehensions; generator comprehensions degrade to
-    lists (see above).
+- List / dict / set comprehensions and lazy generator expressions (see above).
 - `try` / `except` / `else` / `finally`, `raise ... from ...`.
 - `for` / `while` / `if` / `elif` / `else`, `break`, `continue`, `pass`,
     `assert`, `global`, `nonlocal`, `return`.

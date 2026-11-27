@@ -1,23 +1,42 @@
-//! Implementation of the any() builtin function.
+//! Suspendable implementation of the any() builtin function.
 
-use crate::{args::ArgValues, bytecode::VM, defer_drop, exception_private::RunResult, types::PyTrait, value::Value};
+use crate::{
+    args::ArgValues,
+    bytecode::{CallResult, VM},
+    defer_drop,
+    exception_private::RunResult,
+    frozen::FrozenFunction,
+    heap::HeapReadOutput,
+    types::PyTrait,
+    value::Value,
+};
 
-/// Implementation of the any() builtin function.
-///
-/// Returns True if any element of the iterable is true.
-/// Returns False for an empty iterable. Short-circuits on the first truthy value.
-pub fn builtin_any(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+/// Consume an iterable on ordinary VM frames, preserving short-circuit evaluation.
+pub fn builtin_any(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let iterable = args.get_one_arg("any", vm.heap)?;
-    let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
-    defer_drop!(iter, vm);
-    let mut iter = iter.read(vm);
-
-    while let Some(item) = iter.py_next(vm)? {
-        defer_drop!(item, vm);
-        if item.py_bool(vm)? {
-            return Ok(Value::Bool(true));
+    if !matches!(
+        iterable.read_heap(vm),
+        Some(HeapReadOutput::Generator(_) | HeapReadOutput::Instance(_))
+    ) {
+        let iterator = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
+        defer_drop!(iterator, vm);
+        let mut iterator = iterator.read(vm);
+        while let Some(item) = iterator.py_next(vm)? {
+            defer_drop!(item, vm);
+            if item.py_bool(vm)? {
+                return Ok(CallResult::Value(Value::Bool(true)));
+            }
         }
+        return Ok(CallResult::Value(Value::Bool(false)));
     }
-
-    Ok(Value::Bool(false))
+    vm.call_frozen_exact(FrozenFunction::Any, [iterable])
 }
+
+/// Iterator methods may suspend; truth conversion follows ordinary VM rules.
+pub(crate) const ANY_SOURCE: &str = r"
+def __monty_any(iterable):
+    for item in iterable:
+        if item:
+            return True
+    return False
+";

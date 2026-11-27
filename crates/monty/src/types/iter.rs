@@ -240,3 +240,11 @@ def __monty_delegate(iterable, iter_, next_, getattr_, stop_, exit_, base_, attr
             except stop_ as done:
                 return done.value
 ";
+
+/// Native iterator consumers have a synchronous activation boundary. The ordinary
+/// frame drives generator state without retaining a Rust stack across host calls;
+/// such calls are rejected by the existing synchronous-boundary policy.
+pub(crate) const GENERATOR_NEXT_SOURCE: &str = r"
+def __monty_generator_next(generator, next_):
+    return next_(generator)
+";

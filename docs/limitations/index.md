@@ -58,8 +58,8 @@ They exist for development and for agents debugging code that runs on Monty; mos
 **Missing in other ways:**
 
 - Generator functions support `next`, `send`, `throw`, explicit `close`, `for` loops and delegation to
-    iterables; `list` and `tuple` collect generators, while other native consumers remain unsupported. Generator expressions
-    still materialise to a list; see [language.md](language.md#generator-functions).
+    iterables, including lazy generator expressions. Some native consumers cannot suspend for host calls;
+    see [language.md](language.md#generator-functions).
 
 - User-defined exception classes.
     The built-in exception types are a fixed set, and without inheritance you cannot add to it.

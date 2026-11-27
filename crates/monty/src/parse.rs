@@ -833,6 +833,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                     ));
                 }
                 Ok(Node::For {
+                    iter_is_iterator: false,
                     target: self.parse_unpack_target_root(*target)?,
                     iter: self.parse_expression(*iter)?,
                     body: self.parse_statements(body)?,
@@ -2016,17 +2017,25 @@ impl<'a, 'i> Parser<'a, 'i> {
             AstExpr::Generator(ast::ExprGenerator {
                 elt, generators, range, ..
             }) => {
-                // TODO: When proper generators are implemented, this should produce
-                // Expr::Generator instead of Expr::ListComp. Currently we treat generator
-                // expressions as list comprehensions since we don't have generator support.
+                // Lowering introduces nested for/if statements. Charge them before
+                // constructing a tree that prepare, compile and drop walk recursively.
+                let mut levels = 0;
+                for generator in &generators {
+                    for _ in 0..=generator.ifs.len() {
+                        self.decr_depth_remaining(|| range)?;
+                        levels += 1;
+                    }
+                }
                 let elt = Box::new(self.parse_comprehension_expression(*elt)?);
                 let generators = self.parse_comprehension_generators(generators)?;
+                self.depth_remaining += levels;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
-                    Expr::ListComp {
+                    Expr::GeneratorComp {
+                        name_id: self.interner.intern("<genexpr>"),
+                        parameter_id: self.interner.intern(".0"),
                         elt,
                         generators,
-                        captured_slots: Vec::new(),
                     },
                 ))
             }

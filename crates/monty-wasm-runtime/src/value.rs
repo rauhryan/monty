@@ -18,7 +18,8 @@ use monty_types::{
 
 use crate::bindings::exports::pydantic::monty::worker::{
     Arena, ClassInstanceNode, ClassTypeNode, ComplexNode, DateNode, DatetimeNode, ExceptionValueNode, FileHandleNode,
-    FunctionNode, ModuleNode, NamedTupleNode, NodePair, TimeNode, TimedeltaNode, TimezoneNode, ValueNode,
+    FunctionNode, ModuleNode, NamedTupleNode, NodePair, TimeNode, TimedeltaNode, TimezoneNode, TypedReprNode,
+    ValueNode,
 };
 
 /// Remaining expanded-value allowance for one request's arena.
@@ -83,6 +84,7 @@ fn node_decoded_size(node: &ValueNode) -> usize {
         | ValueNode::Repr(value)
         | ValueNode::Cycle(value)
         | ValueNode::Decimal(value) => value.len(),
+        ValueNode::TypedRepr(value) => value.value.len().saturating_add(value.python_type.len()),
         ValueNode::Bytes(value) => value.len(),
         ValueNode::ListValue(items)
         | ValueNode::TupleValue(items)
@@ -246,6 +248,10 @@ fn node_from_component(node: ValueNode) -> Result<MontyNode, String> {
             docstring: value.docstring,
         },
         ValueNode::Repr(value) => MontyNode::Repr(value),
+        ValueNode::TypedRepr(value) => MontyNode::TypedRepr {
+            value: value.value,
+            python_type: value.python_type,
+        },
         ValueNode::Cycle(value) => MontyNode::Cycle(value),
         ValueNode::Module(value) => MontyNode::Module {
             name: value.name,
@@ -350,6 +356,7 @@ fn node_into_component(node: MontyNode) -> ValueNode {
         }),
         MontyNode::Function { name, docstring } => ValueNode::Function(FunctionNode { name, docstring }),
         MontyNode::Repr(value) => ValueNode::Repr(value),
+        MontyNode::TypedRepr { value, python_type } => ValueNode::TypedRepr(TypedReprNode { value, python_type }),
         MontyNode::Cycle(placeholder) => ValueNode::Cycle(placeholder),
         MontyNode::Module { name, id, attrs } => ValueNode::Module(ModuleNode {
             name,

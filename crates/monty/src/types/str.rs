@@ -16,10 +16,11 @@ use crate::{
     codecs::Codec,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
+    frozen::FrozenFunction,
     hash::{HashValue, hash_python_str},
     heap::{
-        DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReader, HeapView,
-        heap_read_ref_as_field,
+        DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput, HeapReader,
+        HeapView, heap_read_ref_as_field,
     },
     identity::Identity,
     intern::{Interns, StaticStrings, StringId},
@@ -293,14 +294,14 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
                     return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
                 };
                 let text = vm.heap.protect(vm.interns.get_str(*id));
-                call_str_method_impl(&*text, method, args, vm).map(CallResult::Value)
+                call_str_method(&*text, method, args, vm)
             }
             Self::Inline(text) => {
                 let Some(method) = attr.static_string(vm.interns) else {
                     args.drop_with(vm);
                     return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
                 };
-                call_str_method_impl(text, method, args, vm).map(CallResult::Value)
+                call_str_method(text, method, args, vm)
             }
             Self::Heap(value) => value.py_call_attr(vm, attr, args),
         }
@@ -540,7 +541,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
 
         let s = heap_read_ref_as_field!(self, Str, 0);
         let s = s.as_box_value();
-        call_str_method_impl(&s, method, args, vm).map(CallResult::Value)
+        call_str_method(&s, method, args, vm)
     }
 }
 
@@ -615,6 +616,35 @@ pub(crate) fn copy_format_template(template: &str, tracker: &ResourceTracker) ->
     tracker.check_time()?;
     copy.finish_raw()
 }
+
+/// Join collects its input before validating strings, as CPython does.
+fn call_str_method<'h>(
+    s: &impl HeapView<'h, str>,
+    method: StaticStrings,
+    args: ArgValues,
+    vm: &mut VM<'h>,
+) -> RunResult<CallResult> {
+    if method == StaticStrings::Join
+        && args
+            .first_positional()
+            .is_some_and(|value| matches!(value.read_heap(vm), Some(HeapReadOutput::Generator(_))))
+    {
+        let iterable = args.get_one_arg("str.join", vm.heap)?;
+        let separator = allocate_string(s.get(vm.heap), vm.heap);
+        vm.call_frozen_exact(FrozenFunction::Join, [separator, iterable])
+    } else {
+        call_str_method_impl(s, method, args, vm).map(CallResult::Value)
+    }
+}
+
+/// Keep collection in a suspendable frame; native join owns string validation.
+pub(crate) const JOIN_SOURCE: &str = r"
+def __monty_join(separator, iterable):
+    items = []
+    for item in iterable:
+        items.append(item)
+    return separator.join(items)
+";
 
 /// Dispatches methods for both logical strings and concrete heap strings.
 /// The protected text can remain live while a method re-enters Python.

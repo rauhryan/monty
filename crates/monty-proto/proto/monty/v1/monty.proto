@@ -64,6 +64,8 @@ message Arena {
 // `repr` and `cycle` are OUTPUT-ONLY: the child may emit them (e.g. inside a
 // `Complete` value) but rejects them as inputs.
 message MontyNode {
+  // Output-only metadata for repr. Older peers still decode the display string.
+  optional string repr_python_type = 34;
   oneof kind {
     Unit ellipsis = 1;
     Unit none = 2;

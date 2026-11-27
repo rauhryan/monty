@@ -382,7 +382,7 @@ fn external_function_in_next_suspends() {
 
 /// Iterator acquisition reports both the synchronous consumer and the suspended method in its traceback.
 #[test]
-fn synchronous_sum_acquisition_has_traceback() {
+fn sum_acquisition_without_host_has_traceback() {
     let code = "class Iterable:\n    def __iter__(self):\n        return ext_fn()\n\nsum(Iterable())";
     let mut runner = MontyRun::new(
         code.to_owned(),
@@ -402,7 +402,7 @@ fn synchronous_sum_acquisition_has_traceback() {
       File "test.py", line 3, in __iter__
         return ext_fn()
                ~~~~~~~~
-    NotImplementedError: external function 'ext_fn' cannot suspend in this synchronous context
+    NameError: name 'ext_fn' is not defined
     "#);
 }
 

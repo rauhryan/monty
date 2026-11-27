@@ -4,11 +4,13 @@ use std::{cmp::Ordering, mem};
 
 use crate::{
     args::{ArgValues, FromArgs},
-    bytecode::VM,
+    builtins::Builtins,
+    bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::DropGuard,
-    types::{CmpOrder, PyTrait},
+    frozen::FrozenFunction,
+    heap::{DropGuard, HeapReadOutput},
+    types::{CmpOrder, PyTrait, str::allocate_string},
     value::Value,
 };
 
@@ -18,9 +20,9 @@ use crate::{
 /// Supports two forms:
 /// - `min(iterable)` - returns smallest item from iterable
 /// - `min(arg1, arg2, ...)` - returns smallest of the arguments
-pub fn builtin_min(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_min(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let MinArgs { args, key, default } = MinArgs::from_args(args, vm)?;
-    run_min_max(vm, args, key, default, true)
+    dispatch_min_max(vm, args, key, default, true)
 }
 
 /// Implementation of the max() builtin function.
@@ -29,10 +31,65 @@ pub fn builtin_min(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Supports two forms:
 /// - `max(iterable)` - returns largest item from iterable
 /// - `max(arg1, arg2, ...)` - returns largest of the arguments
-pub fn builtin_max(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_max(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let MaxArgs { args, key, default } = MaxArgs::from_args(args, vm)?;
-    run_min_max(vm, args, key, default, false)
+    dispatch_min_max(vm, args, key, default, false)
 }
+
+/// Generators need an ordinary frame so advancement and key calls can suspend.
+fn dispatch_min_max(
+    vm: &mut VM<'_>,
+    mut args: Vec<Value>,
+    key: Value,
+    default: Option<Value>,
+    is_min: bool,
+) -> RunResult<CallResult> {
+    if args.len() == 1 && matches!(args[0].read_heap(vm), Some(HeapReadOutput::Generator(_))) {
+        let iterable = args.pop().expect("one argument checked");
+        let supplied = Value::Bool(default.is_some());
+        let message = allocate_string(
+            if is_min {
+                "min() iterable argument is empty"
+            } else {
+                "max() iterable argument is empty"
+            },
+            vm.heap,
+        );
+        vm.call_frozen_exact(
+            FrozenFunction::MinMax,
+            [
+                iterable,
+                key,
+                default.unwrap_or(Value::None),
+                supplied,
+                Value::Bool(is_min),
+                Value::Builtin(Builtins::ExcType(ExcType::ValueError)),
+                message,
+            ],
+        )
+    } else {
+        run_min_max(vm, args, key, default, is_min).map(CallResult::Value)
+    }
+}
+
+/// Retain only the current winner; ties preserve the first item.
+pub(crate) const MIN_MAX_SOURCE: &str = r"
+def __monty_min_max(iterable, key, default, supplied, is_min, error, message):
+    found = False
+    result = None
+    result_key = None
+    for item in iterable:
+        item_key = item if key is None else key(item)
+        if not found or (item_key < result_key if is_min else item_key > result_key):
+            result = item
+            result_key = item_key
+            found = True
+    if found:
+        return result
+    if supplied:
+        return default
+    raise error(message)
+";
 
 /// Shared implementation for min() and max() after argument extraction.
 ///

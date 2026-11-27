@@ -90,7 +90,8 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 // Version 45 changes zip from an eager list to a lazy frozen iterator.
 // Version 46 changes filter from an eager list to a lazy frozen iterator.
 // Version 47 adds lazy map/reversed and defaulted reverse iterator cursors.
-pub const DUMP_VERSION: u16 = 47;
+// Version 48 adds lazy generator expressions, native-consumer adapters and typed repr metadata.
+pub const DUMP_VERSION: u16 = 48;
 
 /// Experimental snapshots have no cross-version compatibility guarantee.
 /// This build also accepts the frozen v40 baseline without conversion.
