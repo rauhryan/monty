@@ -159,6 +159,13 @@ pub enum MontyNode {
         /// The module's attributes as `(name, value)` id pairs.
         attrs: Vec<(NodeId, NodeId)>,
     },
+    /// Output-only fallback with the original Python type, without parsing repr text.
+    TypedRepr {
+        /// Python display representation.
+        value: String,
+        /// Runtime Python type name.
+        python_type: String,
+    },
 }
 
 impl MontyNode {
@@ -261,6 +268,7 @@ impl MontyNode {
 
         let payload = match self {
             Self::String(s) | Self::Path(s) | Self::Repr(s) | Self::Cycle(s) | Self::Decimal(s) => s.len(),
+            Self::TypedRepr { value, python_type } => value.len().saturating_add(python_type.len()),
             Self::Bytes(b) => b.len(),
             // Saturate rather than truncate on a 32-bit `usize`: an over-large
             // estimate only trips a budget sooner, which is the safe direction.
@@ -327,6 +335,16 @@ impl PartialEq for MontyNode {
             | (Self::Repr(a), Self::Repr(b))
             | (Self::Cycle(a), Self::Cycle(b))
             | (Self::Decimal(a), Self::Decimal(b)) => a == b,
+            (
+                Self::TypedRepr {
+                    value: a,
+                    python_type: at,
+                },
+                Self::TypedRepr {
+                    value: b,
+                    python_type: bt,
+                },
+            ) => a == b && at == bt,
             (Self::Bytes(a), Self::Bytes(b)) => a == b,
             (Self::Date(a), Self::Date(b)) => a == b,
             (Self::DateTime(a), Self::DateTime(b)) => a == b,
@@ -572,6 +590,7 @@ impl MontyGraph {
             MontyNode::BuiltinFunction(_) => "builtin_function_or_method",
             MontyNode::Function { .. } => "function",
             MontyNode::Repr(_) => "repr",
+            MontyNode::TypedRepr { python_type, .. } => python_type,
             MontyNode::Cycle(_) => "cycle",
         }
     }

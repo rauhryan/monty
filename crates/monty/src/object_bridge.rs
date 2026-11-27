@@ -295,7 +295,7 @@ impl GraphExporter {
             Value::Dereferenced => panic!("Dereferenced found while exporting a value"),
             _ => repr_node(value, vm)?,
         };
-        Ok(self.push_node(node))
+        Ok(self.push_node(with_repr_type(node, value, vm)))
     }
 
     /// Exports a heap object through the memo: a finished object is reused, one
@@ -333,7 +333,7 @@ impl GraphExporter {
                 }
                 output => {
                     let node = self.convert_heap_object(id, output, value, vm)?;
-                    Ok(self.push_node(node))
+                    Ok(self.push_node(with_repr_type(node, value, vm)))
                 }
             }
         })();
@@ -1208,7 +1208,9 @@ fn import_node(
         ))),
         MontyNode::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
         MontyNode::Function { name, .. } => Ok(vm.heap.get_ext_function(&name)),
-        MontyNode::Repr(_) => Err(InvalidInputError::invalid_type("'Repr' is not a valid input value")),
+        MontyNode::Repr(_) | MontyNode::TypedRepr { .. } => {
+            Err(InvalidInputError::invalid_type("'Repr' is not a valid input value"))
+        }
         MontyNode::Cycle(_) => Err(InvalidInputError::invalid_type("'Cycle' is not a valid input value")),
     }
 }
@@ -1316,4 +1318,15 @@ fn repr_node(value: &Value, vm: &mut VM<'_>) -> Result<MontyNode, ExportError> {
             MontyNode::Repr(format!("<{ty} object, error on repr(): {msg}>"))
         }
     })
+}
+
+/// Keep diagnostic type information separate from user-controlled display text.
+fn with_repr_type(node: MontyNode, value: &Value, vm: &VM<'_>) -> MontyNode {
+    match node {
+        MontyNode::Repr(repr) => MontyNode::TypedRepr {
+            value: repr,
+            python_type: value.py_type_name(vm).into_owned(),
+        },
+        node => node,
+    }
 }

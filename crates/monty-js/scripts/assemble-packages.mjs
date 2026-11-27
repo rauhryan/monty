@@ -100,6 +100,7 @@ for (const triple of triples) {
   packAndValidate(platformDirectory, `monty-${triple}.tgz`, ['package.json', `monty.${triple}.node`, binary])
 }
 
+const { COMPONENT_MODULE_NAMES } = await import('../dist/worker/componentModules.js')
 const component = join(root, 'dist', 'worker', 'component', 'monty.component.js')
 if (!existsSync(component)) throw new Error(`missing wasm component bindings: ${component}`)
 const mainDirectory = join(root, 'npm', 'main')
@@ -111,10 +112,7 @@ packAndValidate(mainDirectory, 'monty-main.tgz', [
   'dist/worker/index.js',
   'dist/worker/index.node.js',
   'dist/worker/component/monty.component.js',
-  'dist/worker/component/monty.component.core.wasm',
-  'dist/worker/component/monty.component.core2.wasm',
-  'dist/worker/component/monty.component.core3.wasm',
-  'dist/worker/component/monty.component.core4.wasm',
+  ...COMPONENT_MODULE_NAMES.map((name) => `dist/worker/component/${name}`),
   'native-addon.js',
   'native-addon.d.ts',
 ])

@@ -341,6 +341,7 @@ mod tag {
     pub const COMPLEX: u32 = 31;
     pub const MODULE: u32 = 32;
     pub const DECIMAL: u32 = 33;
+    pub const REPR_PYTHON_TYPE: u32 = 34;
 }
 
 // ============================================================================
@@ -484,6 +485,10 @@ fn encode_node(node: &MontyNode, buf: &mut impl BufMut) {
             encode_opt_str(2, docstring.as_deref(), buf);
         }
         MontyNode::Repr(r) => encoding::string::encode(tag::REPR, r, buf),
+        MontyNode::TypedRepr { value, python_type } => {
+            encoding::string::encode(tag::REPR, value, buf);
+            encoding::string::encode(tag::REPR_PYTHON_TYPE, python_type, buf);
+        }
         MontyNode::Cycle(placeholder) => encoding::string::encode(tag::CYCLE, placeholder, buf),
     }
 }
@@ -540,6 +545,10 @@ fn node_len(node: &MontyNode) -> usize {
             submessage_len(tag::FUNCTION, str_len(1, name) + opt_str_len(2, docstring.as_deref()))
         }
         MontyNode::Repr(r) => encoding::string::encoded_len(tag::REPR, r),
+        MontyNode::TypedRepr { value, python_type } => {
+            encoding::string::encoded_len(tag::REPR, value)
+                + encoding::string::encoded_len(tag::REPR_PYTHON_TYPE, python_type)
+        }
         MontyNode::Cycle(placeholder) => encoding::string::encoded_len(tag::CYCLE, placeholder),
     }
 }
@@ -865,7 +874,11 @@ fn node_from_proto(node: pb::MontyNode) -> Result<MontyNode, DecodeError> {
             name: value.name,
             docstring: value.docstring,
         },
-        Kind::Repr(value) => MontyNode::Repr(value),
+        Kind::Repr(value) => match node.repr_python_type {
+            Some(python_type) => MontyNode::TypedRepr { value, python_type },
+            None => MontyNode::Repr(value),
+        },
+
         Kind::Cycle(value) => MontyNode::Cycle(value),
         Kind::Bigint(value) => MontyNode::BigInt(bigint_from_proto(value)?),
         Kind::Type(value) => type_to_node(value)?,

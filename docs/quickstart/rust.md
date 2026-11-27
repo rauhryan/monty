@@ -44,6 +44,11 @@ accept owned values; their iterators return [`ObjectRef`](../api/rust/monty-type
 Representation APIs under [`monty_types::unstable`](../api/rust/monty-types.md#unstable)
 carry no API compatibility guarantee.
 
+Output-only representations retain the Python runtime type name in `ObjectRef::type_name()` and display text in `py_repr()`.
+`MontyObject::repr_with_type` constructs this form; it cannot be passed back as sandbox input.
+Its equality includes the type name, unlike the legacy `MontyObject::repr` form.
+Names follow Monty's diagnostics and can include a module prefix, such as `functools.partial`.
+
 ## Two ways to run Monty
 
 - **[`monty-pool`](../api/rust/monty-pool.md)** runs the interpreter only in `monty` worker subprocesses.

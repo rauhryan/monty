@@ -567,6 +567,8 @@ function decodeNode(node: ValueNode, holder: number, child: (index: number, hold
     case 'repr':
     case 'cycle':
       return node.val
+    case 'typed-repr':
+      return node.val.value
     case 'file-handle':
       if (node.val.position > BigInt(Number.MAX_SAFE_INTEGER)) {
         throw new TypeError("MontyFileHandle position exceeds JavaScript's maximum safe integer")

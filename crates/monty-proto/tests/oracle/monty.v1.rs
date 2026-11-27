@@ -36,6 +36,9 @@ pub struct Arena {
 /// `Complete` value) but rejects them as inputs.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MontyNode {
+    /// Output-only metadata for repr. Older peers still decode the display string.
+    #[prost(string, optional, tag = "34")]
+    pub repr_python_type: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(
         oneof = "monty_node::Kind",
         tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33"
