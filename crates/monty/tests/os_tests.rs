@@ -1236,7 +1236,7 @@ fn os_open_fds_are_closed_in_the_sandbox() {
 
 #[test]
 fn os_listdir_rejected_in_sync_context_leaves_no_stale_effect() {
-    // Regression: `map()` evaluates its function in a synchronous context
+    // Regression: `sorted()` evaluates its key in a synchronous context
     // that cannot suspend, so the listdir OsCall is rejected and dropped
     // undispatched. The `ListdirNames` effect must travel with the dropped
     // call — if it leaked onto the VM, the next OS call's result (getenv
@@ -1244,7 +1244,7 @@ fn os_listdir_rejected_in_sync_context_leaves_no_stale_effect() {
     let code = r"
 import os
 try:
-    list(map(os.listdir, ['/mnt']))
+    sorted(['/mnt'], key=os.listdir)
 except NotImplementedError:
     pass
 os.getenv('PROBE')

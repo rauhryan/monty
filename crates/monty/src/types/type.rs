@@ -8,8 +8,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    frozen::FrozenFunction,
-    heap::{DropWithContext, Heap, HeapId, HeapReadOutput},
+    heap::{DropWithContext, Heap, HeapId},
     intern::{Interns, StaticStrings},
     modules::{
         ModuleFunctions, collections, csv,
@@ -19,12 +18,13 @@ use crate::{
     },
     py_value::PyValue,
     types::{
-        BuiltinType, Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait,
-        Random, Range, Set, Slice, Str, TimeZone, Tuple,
+        Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range,
+        Set, Slice, Str, TimeZone, Tuple,
         bytes::{bytes_fromhex, bytes_repr},
         complex, date, datetime, decimal,
         dict::{DictKind, dict_fromkeys},
         instance::class_name,
+        iter::{CollectionResult, collect_then},
         long_int::INT_MAX_STR_DIGITS,
         path,
         str::{StringRepr, allocate_string},
@@ -808,21 +808,20 @@ impl Type {
     ///
     /// Iterator acquisition and generator collection may suspend in user code.
     pub(crate) fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-        if matches!(self, Self::List | Self::Tuple)
-            && args
-                .first_positional()
-                .is_some_and(|value| matches!(value.read_heap(vm), Some(HeapReadOutput::Generator(_))))
-        {
+        if matches!(self, Self::List | Self::Tuple) {
             let name = if self == Self::List { "list" } else { "tuple" };
-            let generator = args.get_zero_one_arg(name, vm.heap)?.expect("first argument checked");
-            vm.call_frozen_exact(
-                FrozenFunction::CollectGenerator,
-                [
-                    generator,
-                    Value::Bool(self == Self::Tuple),
-                    Value::Builtin(Builtins::Type(BuiltinType::Tuple)),
-                ],
-            )
+            let Some(iterable) = args.get_zero_one_arg(name, vm.heap)? else {
+                return self.call_native(vm, ArgValues::Empty).map(CallResult::Value);
+            };
+            if self == Self::Tuple && iterable.py_type(vm) == Self::Tuple {
+                return Ok(CallResult::Value(iterable));
+            }
+            let result = if self == Self::List {
+                CollectionResult::List
+            } else {
+                CollectionResult::Tuple
+            };
+            collect_then(iterable, result, Value::None, None, vm)
         } else if self == Self::Iterator {
             builtin_iter(vm, args)
         } else {

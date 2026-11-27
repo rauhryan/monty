@@ -335,6 +335,13 @@ pub enum Expr {
         /// Lexical target slots captured by callables in this comprehension.
         captured_slots: Vec<u16>,
     },
+    /// Lazy generator expression, lowered to an anonymous generator during preparation.
+    GeneratorComp {
+        name_id: StringId,
+        parameter_id: StringId,
+        elt: Box<ExprLoc>,
+        generators: Vec<Comprehension>,
+    },
     /// Set comprehension: `{elt for target in iter if cond...}`
     ///
     /// Builds a new set by iterating and optionally filtering. Duplicate values
@@ -769,6 +776,9 @@ pub enum Node<F> {
         object: ExprLoc,
     },
     For {
+        /// The implicit generator-expression loop receives an already acquired iterator.
+        #[serde(default)]
+        iter_is_iterator: bool,
         /// Loop target - either a single identifier or tuple unpacking pattern.
         target: UnpackTarget,
         iter: ExprLoc,

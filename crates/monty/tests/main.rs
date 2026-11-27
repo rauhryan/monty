@@ -284,7 +284,7 @@ fn frozen_reduce_frame_is_hidden_from_traceback() {
         .resume(ExtFunctionResult::Error(error), PrintWriter::Stdout)
         .unwrap_err();
 
-    insta::assert_snapshot!(error, @r#"
+    assert_snapshot!(error, @r#"
     Traceback (most recent call last):
       File "test.py", line 3, in <module>
         functools.reduce(ext_fn, [1, 2])
@@ -380,9 +380,9 @@ fn external_function_in_next_suspends() {
     }
 }
 
-/// Iterator acquisition reports both the synchronous consumer and the suspended method in its traceback.
+/// A missing host during suspendable acquisition reports the caller and user iterator.
 #[test]
-fn synchronous_sum_acquisition_has_traceback() {
+fn sum_acquisition_without_host_has_traceback() {
     let code = "class Iterable:\n    def __iter__(self):\n        return ext_fn()\n\nsum(Iterable())";
     let mut runner = MontyRun::new(
         code.to_owned(),
@@ -402,7 +402,7 @@ fn synchronous_sum_acquisition_has_traceback() {
       File "test.py", line 3, in __iter__
         return ext_fn()
                ~~~~~~~~
-    NotImplementedError: external function 'ext_fn' cannot suspend in this synchronous context
+    NameError: name 'ext_fn' is not defined
     "#);
 }
 
@@ -440,19 +440,19 @@ class DirectNext:
     __next__ = functools.partial(ext_fn, ['owned'])
 
 for _ in range(3):
-    assert list(RecoverIter()) == [1, 2]
-    assert list(RecoverNext()) == []
+    assert set(RecoverIter()) == {1, 2}
+    assert set(RecoverNext()) == set()
     try:
-        list(FailIter())
+        set(FailIter())
         assert False, 'expected synchronous acquisition to fail'
     except NotImplementedError as exc:
         assert str(exc) == "external function 'ext_fn' cannot suspend in this synchronous context"
     try:
-        list(DirectNext())
+        set(DirectNext())
         assert False, 'expected synchronous advancement to fail'
     except NotImplementedError as exc:
         assert str(exc) == "external function 'ext_fn' cannot suspend in this synchronous context"
-    assert list(RecoverIter()) == [1, 2]
+    assert set(RecoverIter()) == {1, 2}
 42
 "#;
     let mut runner = MontyRun::new(
@@ -476,7 +476,7 @@ fn synchronous_iteration_reentry_limit_restores_state() {
     let code = r"
 class Recursive:
     def __iter__(self):
-        list(self)
+        set(self)
         return iter([])
 
 class Ordinary:
@@ -485,7 +485,7 @@ class Ordinary:
 
 for _ in range(3):
     try:
-        list(Recursive())
+        set(Recursive())
         assert False, 'expected the native re-entry limit'
     except RecursionError as exc:
         assert str(exc) == 'maximum recursion depth exceeded'
@@ -840,4 +840,30 @@ p = functools.partial(len, Mutator())
         ex.run_no_limits(vec![]).unwrap().py_repr(),
         "[[[1, 2, 3]], Repr('functools.partial(<built-in function len>, m)'), Holder(x=[9])]"
     );
+}
+
+/// Native-only consumers retain both caller and iterator locations on rejection.
+#[test]
+fn native_consumer_acquisition_has_traceback() {
+    let mut runner = MontyRun::new(
+        "import math\nclass Source:\n    def __iter__(self):\n        return ext_fn()\nmath.fsum(Source())".to_owned(),
+        "native.py",
+        vec!["ext_fn".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let error = runner
+        .run_no_limits(vec![MontyObject::function("ext_fn", None)])
+        .unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::NotImplementedError);
+    assert_snapshot!(error, @r#"
+    Traceback (most recent call last):
+      File "native.py", line 5, in <module>
+        math.fsum(Source())
+        ~~~~~~~~~~~~~~~~~~~
+      File "native.py", line 4, in __iter__
+        return ext_fn()
+               ~~~~~~~~
+    NotImplementedError: external function 'ext_fn' cannot suspend in this synchronous context
+    "#);
 }

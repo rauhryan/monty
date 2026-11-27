@@ -307,7 +307,7 @@ def combine(a, b, c):
     return (a, b, c)
 
 try:
-    map(combine, [[1]], [[2]], RaisingIterator())
+    list(map(combine, [[1]], [[2]], RaisingIterator()))
 except ValueError:
     pass
 
@@ -329,7 +329,7 @@ fn map_later_iterator_exhaustion_drops_current_arguments() {
 def combine(a, b, c):
     return a[0] + b[0] + c[0]
 
-result = map(combine, [[1], [4]], [[2], [5]], [[3]])
+result = list(map(combine, [[1], [4]], [[2], [5]], [[3]]))
 result
 ";
     let mut run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");

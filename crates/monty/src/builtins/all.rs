@@ -1,24 +1,23 @@
-//! Implementation of the all() builtin function.
+//! Implementation of all on the VM's suspendable iteration protocol.
 
-use crate::{args::ArgValues, bytecode::VM, defer_drop, exception_private::RunResult, types::PyTrait, value::Value};
+use crate::{
+    args::ArgValues,
+    bytecode::{CallResult, VM},
+    exception_private::RunResult,
+    frozen::FrozenFunction,
+};
 
-/// Implementation of the all() builtin function.
-///
-/// Returns True if all elements of the iterable are true (or if the iterable is empty).
-/// Short-circuits on the first falsy value.
-pub fn builtin_all(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+/// Iterate on ordinary frames, including user iterators and host callbacks.
+pub fn builtin_all(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let iterable = args.get_one_arg("all", vm.heap)?;
-    defer_drop!(iterable, vm);
-    let iter = iterable.py_iter(vm)?.require_synchronous(vm)?;
-    defer_drop!(iter, vm);
-    let mut iter = iter.read(vm);
-
-    while let Some(item) = iter.py_next(vm)? {
-        defer_drop!(item, vm);
-        if !item.py_bool(vm)? {
-            return Ok(Value::Bool(false));
-        }
-    }
-
-    Ok(Value::Bool(true))
+    vm.call_frozen_exact(FrozenFunction::All, [iterable])
 }
+
+/// Iterator methods may suspend; truth conversion follows ordinary VM rules.
+pub(crate) const ALL_SOURCE: &str = r"
+def __monty_all(iterable):
+    for item in iterable:
+        if not item:
+            return False
+    return True
+";

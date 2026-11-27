@@ -1675,6 +1675,10 @@ impl<'h> VM<'h> {
                     try_catch!(self, self.build_slice());
                 }
                 Opcode::ListExtend => {
+                    if self.needs_operand_collection() {
+                        handle_call_result!(self, self.collect_operand(None));
+                        continue;
+                    }
                     try_catch!(self, self.list_extend());
                 }
                 Opcode::ListToTuple => {
@@ -1695,6 +1699,10 @@ impl<'h> VM<'h> {
                 }
                 Opcode::SetExtend => {
                     let depth = self.current_frame.fetch_u8() as usize;
+                    if self.needs_operand_collection() {
+                        handle_call_result!(self, self.collect_operand(None));
+                        continue;
+                    }
                     try_catch!(self, self.set_extend(depth));
                 }
                 // Comprehension Building - append/add/set items during iteration
@@ -2241,10 +2249,18 @@ impl<'h> VM<'h> {
                 // Unpacking - route through exception handling
                 Opcode::UnpackSequence => {
                     let count = self.current_frame.fetch_u8() as usize;
+                    if self.needs_operand_collection() {
+                        handle_call_result!(self, self.collect_operand(Some(count + 1)));
+                        continue;
+                    }
                     try_catch!(self, self.unpack_sequence(count));
                 }
                 Opcode::UnpackEx => {
                     let (before, after) = self.current_frame.fetch_u8_u8();
+                    if self.needs_operand_collection() {
+                        handle_call_result!(self, self.collect_operand(None));
+                        continue;
+                    }
                     try_catch!(self, self.unpack_ex(before as usize, after as usize));
                 }
                 // Pattern matching

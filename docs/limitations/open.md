@@ -130,22 +130,17 @@ Everything else raises `AttributeError`, including: `truncate()`,
     the worker's allocator-backed `max_memory`. The buffer is **never
     invalidated**, so external modifications to the underlying file after
     the first read are not visible to subsequent reads.
-- Iterating a file that has not been read yet needs that host load, which
-    only the `for` statement and the `next()` builtin can issue. Any other
-    consumer of the iterator protocol (`list(f)`, `enumerate(f)`, `zip(f, …)`,
-    `sorted(f)`, `''.join(f)`, …)
-    raises `NotImplementedError: iterating an unread _io.TextIOWrapper is only supported by 'for' loops and next(); call seek(0) first to load it`
-    (`_io.BufferedReader` in binary mode).
-    Once any read, `seek()` or iteration step has loaded the buffer, every
-    consumer works. Comprehensions and generator expressions compile to `for`
-    loops and are unaffected, so `list(x for x in f)` reads an unread file.
+- Native-only iterator consumers such as `set(f)` and `[].extend(f)` cannot load an unread file.
+    They raise `NotImplementedError`; call `seek(0)` first to load the buffer.
+    The `for` statement, `next()`, `list`, `tuple`, `sorted`, string `join`, unpacking and the
+    suspendable folds can issue the host load. See [language.md](language.md) for the iteration boundary.
 - `close()` releases the cached buffer (matching CPython), returning its memory
     when no other value, such as `data = f.read()`, retains it.
 - Reading a closed file always raises `ValueError: I/O operation on closed file.`,
     CPython's text-mode wording; CPython's binary files say `read of closed file`.
 - File I/O is rejected inside callbacks the interpreter evaluates in a
     synchronous context that cannot suspend to the host — the `key` of
-    `sorted()`/`list.sort()`/`min()`/`max()`,
+    `sorted()`/`list.sort()`,
     `iter(callable, sentinel)`, `defaultdict`'s `default_factory`, and dunder
     methods that cannot suspend (see [classes.md](classes.md)).
     The first read that needs the host raises

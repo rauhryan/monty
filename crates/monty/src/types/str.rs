@@ -29,6 +29,7 @@ use crate::{
     string_builder::StringBuilder,
     types::{
         LazyHeapSet, Type,
+        iter::{CollectionResult, collect_then},
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range, slice_collect_iterator},
     },
@@ -293,14 +294,14 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
                     return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
                 };
                 let text = vm.heap.protect(vm.interns.get_str(*id));
-                call_str_method_impl(&*text, method, args, vm).map(CallResult::Value)
+                call_str_method(&*text, Value::InternString(*id), method, args, vm)
             }
             Self::Inline(text) => {
                 let Some(method) = attr.static_string(vm.interns) else {
                     args.drop_with(vm);
                     return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
                 };
-                call_str_method_impl(text, method, args, vm).map(CallResult::Value)
+                call_str_method(text, Value::InlineString(*text), method, args, vm)
             }
             Self::Heap(value) => value.py_call_attr(vm, attr, args),
         }
@@ -540,7 +541,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
 
         let s = heap_read_ref_as_field!(self, Str, 0);
         let s = s.as_box_value();
-        call_str_method_impl(&s, method, args, vm).map(CallResult::Value)
+        call_str_method(&s, self.clone_value(vm.heap), method, args, vm)
     }
 }
 
@@ -614,6 +615,49 @@ pub(crate) fn copy_format_template(template: &str, tracker: &ResourceTracker) ->
     }
     tracker.check_time()?;
     copy.finish_raw()
+}
+
+/// Join collects through the shared VM loop before validating item types.
+fn call_str_method<'h>(
+    s: &impl HeapView<'h, str>,
+    receiver: Value,
+    method: StaticStrings,
+    args: ArgValues,
+    vm: &mut VM<'h>,
+) -> RunResult<CallResult> {
+    if method == StaticStrings::Join {
+        defer_drop!(receiver, vm);
+        let iterable = args.get_one_arg("str.join", vm.heap)?;
+        if !iterable.py_is_iterable(vm) {
+            iterable.drop_with(vm);
+            return Err(ExcType::type_error_join_not_iterable());
+        }
+        let receiver = receiver.clone_with_heap(vm);
+        collect_then(iterable, CollectionResult::Join, receiver, None, vm)
+    } else {
+        receiver.drop_with(vm);
+        call_str_method_impl(s, method, args, vm).map(CallResult::Value)
+    }
+}
+
+/// Native joining only sees a materialized list; the separator retains its identity.
+pub(crate) fn finish_join(items: Value, separator: Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    defer_drop!(separator, vm);
+    let Some(text) = PyStr::from_value(separator, vm) else {
+        unreachable!("join receiver is a string")
+    };
+    match text {
+        PyStr::Interned(id) => {
+            let text = vm.heap.protect(vm.interns.get_str(id));
+            str_join(&*text, items, vm)
+        }
+        PyStr::Inline(text) => str_join(&text, items, vm),
+        PyStr::Heap(value) => {
+            let value = &value;
+            let text = heap_read_ref_as_field!(value, Str, 0);
+            str_join(&text.as_box_value(), items, vm)
+        }
+    }
 }
 
 /// Dispatches methods for both logical strings and concrete heap strings.

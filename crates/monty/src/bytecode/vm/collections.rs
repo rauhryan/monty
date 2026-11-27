@@ -1,6 +1,6 @@
 //! Collection building and unpacking helpers for the VM.
 
-use super::VM;
+use super::{CallResult, VM};
 use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -9,7 +9,9 @@ use crate::{
     resource_checks::check_estimated_size,
     types::{
         Dict, List, PyTrait, Set, Slice, allocate_tuple, collect_iterable, collect_iterable_bounded,
-        instance::instance_defines_iter, slice::value_to_option_i64,
+        instance::instance_defines_iter,
+        iter::{CollectionResult, collect_then, is_materialized},
+        slice::value_to_option_i64,
     },
     value::{VALUE_SIZE, Value},
 };
@@ -683,4 +685,73 @@ fn unpack_type_error(value: &Value, vm: &VM<'_>) -> RunError {
 /// so `slot_tp_iter`'s own error survives.
 fn opts_out_of_iter(value: &Value, vm: &VM<'_>) -> bool {
     matches!(value, Value::Ref(id) if instance_defines_iter(*id, vm))
+}
+
+impl VM<'_> {
+    /// Native collection opcodes run only after their source is materialized.
+    /// Non-iterables remain with the opcode so its specific error wording is retained.
+    pub(super) fn needs_operand_collection(&self) -> bool {
+        let value = self.peek();
+        value.py_is_iterable(self) && !is_materialized(value, self)
+    }
+
+    /// Re-dispatch the opcode with its collected operand before any native mutation.
+    /// The frozen frame and caller IP are captured by ordinary session snapshots.
+    pub(super) fn collect_operand(&mut self, limit: Option<usize>) -> RunResult<CallResult> {
+        let iterable = self.pop();
+        let (result, context) = match limit {
+            Some(limit) => {
+                let total = match iterable.read_heap(self) {
+                    Some(HeapReadOutput::Dict(dict)) => {
+                        Value::Int(i64::try_from(dict.get(self.heap).len()).expect("allocated length fits i64"))
+                    }
+                    _ => Value::None,
+                };
+                let context = allocate_tuple(
+                    vec![
+                        Value::Int(i64::try_from(limit - 1).expect("unpack count fits i64")),
+                        total,
+                    ]
+                    .into(),
+                    self.heap,
+                );
+                (CollectionResult::Unpack, context)
+            }
+            None => (CollectionResult::List, Value::None),
+        };
+        self.current_frame.ip = self.instruction_ip;
+        collect_then(iterable, result, context, limit, self)
+    }
+
+    /// Preserve the original source's length knowledge before replaying an unpack.
+    pub(crate) fn validate_collected_unpack(&mut self, items: Value, context: Value) -> RunResult<Value> {
+        let this = self;
+        defer_drop!(context, this);
+        let Some(HeapReadOutput::Tuple(tuple)) = context.read_heap(this) else {
+            unreachable!("unpack context holds the expected and known lengths")
+        };
+        let [Value::Int(expected), total] = tuple.get(this.heap).as_slice() else {
+            unreachable!("unpack context holds two lengths")
+        };
+        let expected = usize::try_from(*expected).expect("unpack count fits usize");
+        let total = match total {
+            Value::Int(total) => Some(usize::try_from(*total).expect("allocated length fits usize")),
+            Value::None => None,
+            _ => unreachable!("known length is an integer or None"),
+        };
+        let Some(HeapReadOutput::List(list)) = items.read_heap(this) else {
+            unreachable!("collection produces a list")
+        };
+        let actual = list.get(this.heap).len();
+        if actual == expected {
+            Ok(items)
+        } else {
+            items.drop_with(this);
+            Err(if actual > expected && total.is_none() {
+                unpack_too_many_unknown_error(expected)
+            } else {
+                ExcType::unpack_size_error(expected, total.unwrap_or(actual))
+            })
+        }
+    }
 }

@@ -14,7 +14,8 @@ use crate::{
     intern::{CompileInterns, StringId},
     name_map::{NameMap, namespace_overflow},
     namespace::NamespaceId,
-    parse::{CodeRange, ExceptHandler, ParseError, ParseNode, ParsedSignature, RawFunctionDef, Try},
+    parse::{CodeRange, ExceptHandler, ParseError, ParseNode, ParsedParam, ParsedSignature, RawFunctionDef, Try},
+    types::BuiltinType,
 };
 
 /// Mutable handle to the module's global [`NameMap`], threaded through
@@ -819,6 +820,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     new_nodes.push(Node::ChainAssign { targets, object });
                 }
                 Node::For {
+                    iter_is_iterator,
                     target,
                     iter,
                     body,
@@ -827,6 +829,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     // Prepare target with normal scoping (not comprehension isolation)
                     let target = self.prepare_unpack_target(target)?;
                     new_nodes.push(Node::For {
+                        iter_is_iterator,
                         target,
                         iter: self.prepare_expression(iter)?,
                         body: self.prepare_nodes(body)?,
@@ -1213,6 +1216,14 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     generators: prepared.generators,
                     captured_slots: prepared.captured_slots,
                 }
+            }
+            Expr::GeneratorComp {
+                name_id,
+                parameter_id,
+                elt,
+                generators,
+            } => {
+                return self.prepare_generator_expression(name_id, parameter_id, *elt, generators, position);
             }
             Expr::LambdaRaw {
                 name_id,
@@ -2240,6 +2251,123 @@ impl<'i, 'g> Prepare<'i, 'g> {
         ))
     }
 
+    /// Lowers a generator expression to an ordinary durable generator frame.
+    /// The first iterator is acquired by the caller; all filters and inner loops
+    /// execute lazily inside the anonymous function's lexical scope.
+    fn prepare_generator_expression(
+        &mut self,
+        name_id: StringId,
+        parameter: StringId,
+        elt: ExprLoc,
+        mut generators: Vec<Comprehension>,
+        position: CodeRange,
+    ) -> Result<ExprLoc, ParseError> {
+        let first = mem::replace(
+            &mut generators[0].iter,
+            ExprLoc::new(position, Expr::Name(Identifier::new(parameter, position))),
+        );
+        let first = self.prepare_expression(first)?;
+        let argument = ExprLoc::new(
+            position,
+            Expr::Call {
+                callable: Callable::Builtin(Builtins::Type(BuiltinType::Iterator)),
+                args: Box::new(ArgExprs::One(first)),
+            },
+        );
+        let mut assigned = AHashSet::new();
+        collect_assigned_names_from_expr(&elt, &mut assigned, self.interner);
+        for generator in &generators {
+            for condition in &generator.ifs {
+                collect_assigned_names_from_expr(condition, &mut assigned, self.interner);
+            }
+        }
+        let mut targets = AHashSet::new();
+        for generator in &generators {
+            collect_names_from_unpack_target(&generator.target, &mut targets, self.interner);
+        }
+        if let Some(name) = assigned.intersection(&targets).next() {
+            return Err(ParseError::syntax(
+                format!(
+                    "assignment expression cannot rebind comprehension iteration variable '{}'",
+                    self.interner.get_str(*name)
+                ),
+                position,
+            ));
+        }
+        for &name in &assigned {
+            self.ensure_scope_slot(name, position)?;
+            self.names_assigned_in_order.insert(name);
+        }
+        let enclosing = self.child_enclosing_locals();
+        let mut body = vec![Node::Expr(ExprLoc::new(position, Expr::Yield(Box::new(elt))))];
+        for (index, generator) in generators.into_iter().enumerate().rev() {
+            for condition in generator.ifs.into_iter().rev() {
+                body = vec![Node::If {
+                    test: condition,
+                    body,
+                    or_else: Vec::new(),
+                }];
+            }
+            body = vec![Node::For {
+                iter_is_iterator: index == 0,
+                target: generator.target,
+                iter: generator.iter,
+                body,
+                or_else: Vec::new(),
+            }];
+        }
+        // Assignment expressions bind outside the implicit generator scope.
+        for name in assigned {
+            body.insert(
+                0,
+                if enclosing.contains(&name) {
+                    Node::Nonlocal {
+                        position,
+                        names: vec![name],
+                    }
+                } else {
+                    Node::Global {
+                        position,
+                        names: vec![name],
+                    }
+                },
+            );
+        }
+        let name = Identifier::new_with_scope(
+            name_id,
+            position,
+            NamespaceId::new(0).expect("slot zero fits"),
+            NameScope::Local,
+        );
+        let function = self.prepare_function_scope(RawFunctionDef {
+            name,
+            signature: ParsedSignature {
+                pos_args: vec![ParsedParam {
+                    name: parameter,
+                    default: None,
+                }],
+                ..ParsedSignature::default()
+            },
+            body,
+            is_async: false,
+            is_generator: true,
+            annotate: None,
+            is_annotate: false,
+        })?;
+        Ok(ExprLoc::new(
+            position,
+            Expr::IndirectCall {
+                callable: Box::new(ExprLoc::new(
+                    position,
+                    Expr::Lambda {
+                        func_def: Box::new(function),
+                    },
+                )),
+                args: Box::new(ArgExprs::One(argument)),
+            },
+        ))
+    }
+
     /// Resolves an identifier to its namespace index and scope, creating a new entry if needed.
     ///
     /// TODO This whole implementation seems ugly at best.
@@ -2658,6 +2786,7 @@ fn collect_scope_info_from_node(
             collect_assigned_names_from_expr(object, assigned_names, interner);
         }
         Node::For {
+            iter_is_iterator: _,
             target,
             iter,
             body,
@@ -2888,7 +3017,9 @@ fn collect_assigned_names_from_expr(
             collect_assigned_names_from_expr(orelse, assigned_names, interner);
         }
         // Per PEP 572, walrus in comprehensions assigns to the ENCLOSING scope
-        Expr::ListComp { elt, generators, .. } | Expr::SetComp { elt, generators, .. } => {
+        Expr::ListComp { elt, generators, .. }
+        | Expr::SetComp { elt, generators, .. }
+        | Expr::GeneratorComp { elt, generators, .. } => {
             collect_assigned_names_from_expr(elt, assigned_names, interner);
             for generator in generators {
                 collect_assigned_names_from_expr(&generator.iter, assigned_names, interner);
@@ -3044,6 +3175,7 @@ fn collect_cell_vars_from_node(
         }
         // Recurse into control flow structures
         Node::For {
+            iter_is_iterator: _,
             target,
             iter,
             body,
@@ -3420,6 +3552,14 @@ fn collect_cell_vars_from_expr(
             collect_cell_vars_from_expr(body, our_locals, cell_vars, interner);
             collect_cell_vars_from_expr(orelse, our_locals, cell_vars, interner);
         }
+        Expr::GeneratorComp { elt, generators, .. } => {
+            let mut referenced = AHashSet::new();
+            collect_referenced_names_from_comprehension(generators, Some(elt), None, &mut referenced, interner);
+            collect_assigned_names_from_expr(expr, &mut referenced, interner);
+            cell_vars.extend(referenced.intersection(our_locals).copied());
+            // Nested callables in the first iterable run in our scope.
+            collect_cell_vars_from_expr(&generators[0].iter, our_locals, cell_vars, interner);
+        }
         Expr::ListComp { elt, generators, .. } | Expr::SetComp { elt, generators, .. } => {
             collect_cell_vars_from_expr(elt, our_locals, cell_vars, interner);
             for generator in generators {
@@ -3596,6 +3736,7 @@ fn collect_referenced_names_from_node(
             collect_referenced_names_from_expr(object, referenced, interner);
         }
         Node::For {
+            iter_is_iterator: _,
             target,
             iter,
             body,
@@ -3828,7 +3969,9 @@ fn collect_referenced_names_from_expr(
             collect_referenced_names_from_expr(body, referenced, interner);
             collect_referenced_names_from_expr(orelse, referenced, interner);
         }
-        Expr::ListComp { elt, generators, .. } | Expr::SetComp { elt, generators, .. } => {
+        Expr::ListComp { elt, generators, .. }
+        | Expr::SetComp { elt, generators, .. }
+        | Expr::GeneratorComp { elt, generators, .. } => {
             collect_referenced_names_from_comprehension(generators, Some(elt), None, referenced, interner);
         }
         Expr::DictComp {

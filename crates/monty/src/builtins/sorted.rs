@@ -1,47 +1,61 @@
-//! Implementation of the sorted() builtin function.
+//! Sorting after collection through the VM's iteration protocol.
 
 use crate::{
-    args::ArgValues,
-    bytecode::VM,
+    args::{ArgValues, FromArgs, KwargsValues},
+    bytecode::{CallResult, VM},
+    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, DropWithContext, HeapData},
-    sorting::parse_and_sort,
-    types::{List, iter::collect_owned_iterable},
+    heap::{DropWithContext, HeapData, HeapReadOutput},
+    intern::StaticStrings,
+    types::{
+        Dict,
+        iter::{CollectionResult, collect_then},
+    },
     value::Value,
 };
 
-/// Implementation of the sorted() builtin function.
-///
-/// Returns a new sorted list from the items in an iterable. CPython's
-/// `sorted(iterable, /, *, key=None, reverse=False)` is implemented by
-/// converting the iterable to a list and delegating to `list.sort`, so
-/// the kwargs and any kwarg-related errors are owned by `sort`. We mirror
-/// that by extracting the iterable positionally and handing the rest off
-/// to [`parse_and_sort`] — the same entry point `list.sort` uses — so
-/// unknown-kwarg errors uniformly read `sort() got an unexpected keyword
-/// argument 'X'` without any wording overrides.
-pub fn builtin_sorted(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let (mut pos_iter, kwargs) = args.into_parts();
-    let pos_count = pos_iter.len();
-    if pos_count != 1 {
-        pos_iter.drop_with(vm);
+/// Sorting validates keywords after consuming its input, as list.sort does.
+pub fn builtin_sorted(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    let SortedArgs { mut positional, kwargs } = SortedArgs::from_args(args, vm)?;
+    if positional.len() != 1 {
+        let count = positional.len();
+        positional.drop_with(vm);
         kwargs.drop_with(vm);
-        return Err(ExcType::type_error_expected_exact("sorted", 1, pos_count));
+        return Err(ExcType::type_error_expected_exact("sorted", 1, count));
     }
-    let iterable = pos_iter.next().expect("checked pos_count == 1");
+    let iterable = positional.pop().expect("one argument checked");
+    defer_drop!(iterable, vm);
+    let kwargs = Dict::from_pairs(kwargs.into_iter().collect(), vm)?;
+    let context = Value::Ref(vm.heap.allocate(HeapData::Dict(kwargs)));
+    let iterable = iterable.clone_with_heap(vm);
+    collect_then(iterable, CollectionResult::Sorted, context, None, vm)
+}
 
-    let items: Vec<_> = collect_owned_iterable(iterable, vm)?;
-    let mut items_guard = DropGuard::new(items, vm);
-    let (items, vm) = items_guard.as_parts_mut();
+/// Preserve keywords for list.sort, which validates them after consuming the input.
+#[derive(FromArgs)]
+#[from_args(name = "sorted")]
+struct SortedArgs {
+    #[from_args(varargs)]
+    positional: Vec<Value>,
+    #[from_args(varkwargs)]
+    kwargs: KwargsValues,
+}
 
-    let sort_args = if kwargs.is_empty() {
-        ArgValues::Empty
-    } else {
-        ArgValues::Kwargs(kwargs)
+/// Sorts the newly collected list in place; no second collection is needed.
+pub(crate) fn finish_sorted(items: Value, kwargs: Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    defer_drop!(items, vm);
+    defer_drop!(kwargs, vm);
+    let Some(HeapReadOutput::Dict(dict)) = kwargs.read_heap(vm) else {
+        unreachable!("sorted context is a keyword dictionary")
     };
-    parse_and_sort(items, sort_args, vm)?;
-
-    let (items, vm) = items_guard.into_parts();
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(items)));
-    Ok(Value::Ref(heap_id))
+    let pairs = dict.clone_all_pairs(vm)?;
+    let args = ArgValues::Kwargs(KwargsValues::Pairs(pairs));
+    vm.call_attr(
+        items.clone_with_heap(vm.heap),
+        vm.interns.intern_static(StaticStrings::Sort),
+        args,
+    )?
+    .require_synchronous(vm)?
+    .drop_with(vm);
+    Ok(items.clone_with_heap(vm))
 }

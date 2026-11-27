@@ -17,8 +17,9 @@ enclosing scope.
 - **`locals()` while a comprehension is running.** CPython exposes the
     comprehension's active targets in `locals()` during the comprehension body.
     Monty does not implement `locals()` introspection.
-- **Generator expressions.** `(x for x in iterable)` parses but currently
-    materialises to a `list` rather than a lazy iterator.
+- **Generator expressions.** `(x for x in iterable)` is lazy.
+    Each `for` and `if` clause also counts toward the parser nesting limit because lowering creates nested statements.
+    See [generator functions](language.md#generator-functions) for host-suspension limits in native consumers.
 - **Maximum number of `for` clauses.** Monty caps a single comprehension at
     255 `for` clauses; exceeding this raises
     `SyntaxError: comprehension has too many nested clauses (N); maximum is 255`. Per-clause operand-stack

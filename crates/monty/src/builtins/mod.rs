@@ -4,8 +4,8 @@
 //! Each builtin function has its own submodule for organization.
 
 mod abs;
-mod all;
-mod any;
+pub(crate) mod all;
+pub(crate) mod any;
 mod bin;
 mod chr;
 mod divmod;
@@ -23,7 +23,7 @@ pub(crate) mod iter;
 mod len;
 mod locals;
 pub(crate) mod map;
-mod min_max; // min and max share implementation
+pub(crate) mod min_max; // min and max share implementation
 pub(crate) use min_max::candidate_wins;
 pub(crate) mod next;
 pub(crate) mod object_setattr;
@@ -36,8 +36,8 @@ mod repr;
 pub(crate) mod reversed;
 mod round;
 mod setattr;
-mod sorted;
-mod sum;
+pub(crate) mod sorted;
+pub(crate) mod sum;
 mod type_;
 pub(crate) mod zip;
 
@@ -140,8 +140,8 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
     fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         let r = match self {
             Self::Abs => abs::builtin_abs(vm, args),
-            Self::All => all::builtin_all(vm, args),
-            Self::Any => any::builtin_any(vm, args),
+            Self::All => return all::builtin_all(vm, args),
+            Self::Any => return any::builtin_any(vm, args),
             Self::Bin => bin::builtin_bin(vm, args),
             Self::Chr => chr::builtin_chr(vm, args),
             Self::Divmod => divmod::builtin_divmod(vm, args),
@@ -157,8 +157,8 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Isinstance => isinstance::builtin_isinstance(vm, args),
             Self::Len => len::builtin_len(vm, args),
             Self::Map => return map::builtin_map(vm, args),
-            Self::Max => min_max::builtin_max(vm, args),
-            Self::Min => min_max::builtin_min(vm, args),
+            Self::Max => return min_max::builtin_max(vm, args),
+            Self::Min => return min_max::builtin_min(vm, args),
             // `next()` on an unread file yields the read that loads it.
             Self::Next => return next::builtin_next(vm, args),
             Self::Oct => oct::builtin_oct(vm, args),
@@ -172,8 +172,8 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Round => round::builtin_round(vm, args),
             Self::Setattr => setattr::builtin_setattr(vm, args),
             Self::ObjectSetattr => object_setattr::builtin_object_setattr(vm, args),
-            Self::Sorted => sorted::builtin_sorted(vm, args),
-            Self::Sum => sum::builtin_sum(vm, args),
+            Self::Sorted => return sorted::builtin_sorted(vm, args),
+            Self::Sum => return sum::builtin_sum(vm, args),
             Self::Type => type_::builtin_type(vm, args),
             Self::Zip => return zip::builtin_zip(vm, args),
             // `eval()` / `exec()` push the compiled snippet's frame.

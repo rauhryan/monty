@@ -784,11 +784,24 @@ with open(root / 'iter_empty.txt') as f:
     for line in f:
         assert False, 'empty file yielded a line'
 
-# Consumers that cannot yield to the host see an unread file as not loaded yet.
+# Collection and unpacking can load an unread file through ordinary VM frames.
+with open(root / 'iter.txt') as f:
+    assert list(f) == ['first\n', 'second\n', 'third']
+with open(root / 'iter.txt') as f:
+    assert tuple(f) == ('first\n', 'second\n', 'third')
+with open(root / 'iter.txt') as f:
+    assert sorted(f) == ['first\n', 'second\n', 'third']
+with open(root / 'iter.txt') as f:
+    assert ''.join(f) == 'first\nsecond\nthird'
+with open(root / 'iter.txt') as f:
+    first, *rest = f
+    assert first == 'first\n' and rest == ['second\n', 'third']
+
+# Native-only consumers still cannot load an unread file.
 if is_monty:
     f = open(root / 'iter.txt')
     try:
-        list(f)
+        [].extend(f)
         assert False, 'expected NotImplementedError'
     except NotImplementedError as exc:
         assert (

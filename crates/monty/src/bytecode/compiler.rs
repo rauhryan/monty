@@ -793,11 +793,12 @@ impl<'a, 'i> Compiler<'a, 'i> {
             }
             Node::If { test, body, or_else } => self.compile_if(test, body, or_else)?,
             Node::For {
+                iter_is_iterator,
                 target,
                 iter,
                 body,
                 or_else,
-            } => self.compile_for(target, iter, body, or_else)?,
+            } => self.compile_for(target, iter, body, or_else, *iter_is_iterator)?,
             Node::While { test, body, or_else } => self.compile_while(test, body, or_else)?,
             Node::Assert { test, msg } => self.compile_assert(test, msg.as_ref())?,
             Node::Raise { exc, cause } => match (exc, cause) {
@@ -1487,9 +1488,9 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 self.compile_lambda(func_def)?;
             }
 
-            Expr::LambdaRaw { .. } => {
-                // LambdaRaw should be converted to Lambda during prepare phase
-                unreachable!("Expr::LambdaRaw should not exist after prepare phase")
+            Expr::LambdaRaw { .. } | Expr::GeneratorComp { .. } => {
+                // Raw callable expressions are lowered during preparation.
+                unreachable!("raw callable expression survived preparation")
             }
 
             Expr::Yield(value) | Expr::YieldFrom(value) => {
@@ -2715,11 +2716,14 @@ impl<'a, 'i> Compiler<'a, 'i> {
         iter: &ExprLoc,
         body: &'a [PreparedNode],
         or_else: &'a [PreparedNode],
+        iter_is_iterator: bool,
     ) -> Result<(), CompileError> {
         // Compile iterator expression
         self.compile_expr(iter)?;
-        // Convert to iterator
-        self.code.emit(Opcode::GetIter)?;
+        // The outer genexpr iterator was acquired eagerly by its caller.
+        if !iter_is_iterator {
+            self.code.emit(Opcode::GetIter)?;
+        }
 
         // Loop start
         let loop_start = self.code.current_jump_target();

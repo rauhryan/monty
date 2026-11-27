@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     annotations,
     args::ArgValues,
-    builtins::{enumerate, filter, map, next, reversed, zip},
+    builtins::{all, any, enumerate, filter, map, min_max, next, reversed, sum, zip},
     bytecode::{CallResult, Compiler, VM},
     exception_private::RunResult,
     intern::{CompileInterns, FunctionId, Interns},
@@ -55,9 +55,27 @@ pub(crate) enum FrozenFunction {
     /// Return a default when a suspendable user `__next__` method is exhausted.
     #[serde(rename = "builtins.next_default")]
     NextDefault,
-    /// Collect a generator on ordinary suspendable frames.
+    /// Retain the three-argument collector captured by older supported snapshots.
+    /// New calls use Collect; this entry must not resolve to its four-argument signature.
     #[serde(rename = "builtins.collect_generator")]
     CollectGenerator,
+    /// Short-circuit truth folds over suspendable iterators.
+    #[serde(rename = "builtins.all")]
+    All,
+    #[serde(rename = "builtins.any")]
+    Any,
+    /// Left-to-right addition over a suspendable iterator.
+    #[serde(rename = "builtins.sum")]
+    Sum,
+    /// Extremum over a suspendable iterable.
+    #[serde(rename = "builtins.min_max")]
+    MinMax,
+    /// Materialize through the VM, then invoke a native continuation.
+    #[serde(rename = "builtins.collect")]
+    Collect,
+    /// Native consumers advance within a bounded synchronous VM activation.
+    #[serde(rename = "generator.next_synchronous")]
+    GeneratorNext,
     /// Adapt an ordinary iterator to generator delegation.
     #[serde(rename = "generator.delegate_iterable")]
     DelegateIterable,
@@ -145,7 +163,13 @@ impl FrozenFunction {
             Self::ForIterator => iter::FOR_ITERATOR_SOURCE,
             Self::LruCacheMiss => lru_cache::CACHE_MISS_SOURCE,
             Self::NextDefault => next::NEXT_DEFAULT_SOURCE,
+            Self::GeneratorNext => iter::GENERATOR_NEXT_SOURCE,
+            Self::All => all::ALL_SOURCE,
+            Self::Any => any::ANY_SOURCE,
+            Self::Sum => sum::SUM_SOURCE,
+            Self::Collect => iter::COLLECT_SOURCE,
             Self::CollectGenerator => iter::COLLECT_GENERATOR_SOURCE,
+            Self::MinMax => min_max::MIN_MAX_SOURCE,
             Self::DelegateIterable => iter::DELEGATE_ITERABLE_SOURCE,
             Self::Contextmanager => contextlib::CONTEXTMANAGER_SOURCE,
             Self::Enumerate => enumerate::ENUMERATE_SOURCE,
@@ -183,6 +207,10 @@ pub(crate) enum FrozenFunctions {
     TypeRepr,
     /// Check the result returned by a user `__iter__` method.
     ValidateIterator,
+    /// Finish an operation after suspendable collection.
+    FinishCollection(iter::CollectionResult),
+    /// Validate sum start after iterator acquisition.
+    ValidateSumStart,
 }
 
 /// Dispatches private helpers using the same argument ownership rules as public natives.
@@ -197,6 +225,8 @@ pub(crate) fn call_helper(function: FrozenFunctions, args: ArgValues, vm: &mut V
         FrozenFunctions::GetIter => iter::call_get_iter(args, vm),
         FrozenFunctions::Store => lru_cache::call_store(args, vm).map(CallResult::Value),
         FrozenFunctions::TypeRepr => typing::call_type_repr(args, vm).map(CallResult::Value),
+        FrozenFunctions::FinishCollection(result) => iter::finish_collection(result, args, vm).map(CallResult::Value),
+        FrozenFunctions::ValidateSumStart => sum::validate_start(args, vm).map(CallResult::Value),
         FrozenFunctions::ValidateIterator => iter::call_validate_iterator(args, vm).map(CallResult::Value),
     }
 }

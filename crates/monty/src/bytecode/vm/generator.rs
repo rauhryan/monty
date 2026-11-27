@@ -187,8 +187,20 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Generator> {
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
-    fn py_next(&mut self, _: &mut VM<'h>) -> RunResult<Option<Value>> {
-        Err(ExcType::not_implemented("generator iteration requires an outer VM activation").into())
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let generator = self.clone_value(vm.heap);
+        let call = vm.call_frozen_exact(
+            FrozenFunction::GeneratorNext,
+            [generator, Value::Builtin(Builtins::Function(BuiltinsFunctions::Next))],
+        )?;
+        match call.require_synchronous(vm) {
+            Ok(value) => Ok(Some(value)),
+            Err(error) if error.is_stop_iteration() => {
+                error.drop_with(vm);
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
     }
     fn py_call_attr(&mut self, vm: &mut VM<'h>, name: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         if name.as_str(vm.interns) == "_native1" {
