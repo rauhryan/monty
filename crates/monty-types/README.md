@@ -84,3 +84,13 @@ and recorded consumption. WebAssembly workers accept wall mode only.
 ## License
 
 MIT
+
+## Output-only representations
+
+Values without a host representation carry their display text and Python runtime type name.
+`ObjectRef::type_name()` returns that name (for example, `dict_keys` or `functools.partial`);
+`py_repr()` still returns the display text.
+These names follow Monty's diagnostic naming, which can include a module prefix.
+`MontyObject::repr_with_type` constructs this output-only form; it is rejected as sandbox input.
+Equality includes the type name, so it differs from a legacy `MontyObject::repr` with the same text.
+Python and JavaScript bindings continue returning the display text as a string.

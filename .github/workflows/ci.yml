@@ -1315,7 +1315,11 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wasm-bindings
-          path: crates/monty-js/dist/worker/component
+          # Keep the generated loaders with the modules from this compiler build.
+          path: |
+            crates/monty-js/dist/worker/component
+            crates/monty-js/dist/worker/componentModules.*
+            crates/monty-js/dist/worker/loadModule.browser.*
           if-no-files-found: error
     env:
       CARGO_INCREMENTAL: '1'
@@ -1342,7 +1346,7 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: wasm-bindings
-          path: crates/monty-js/dist/worker/component
+          path: crates/monty-js/dist/worker
 
       # the wasm specs are node-only, and this is the job that has the module
       - name: Test wasm module in node
@@ -1401,7 +1405,7 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: wasm-bindings
-          path: crates/monty-js/dist/worker/component
+          path: crates/monty-js/dist/worker
 
       - name: Assemble, validate, and pack
         run: npm run assemble-packages

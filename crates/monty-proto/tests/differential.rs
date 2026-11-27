@@ -238,6 +238,8 @@ fn corpus() -> Vec<MontyObject> {
             )],
         ),
         MontyObject::repr(String::new()),
+        MontyObject::repr_with_type("dict_keys(['x'])", "dict_keys"),
+        MontyObject::repr_with_type("", ""),
         MontyObject::repr("<unrepresentable>".to_owned()),
         MontyObject::cycle("[...]".to_owned()),
         MontyObject::cycle("{...}".to_owned()),
@@ -406,9 +408,17 @@ fn node_to_oracle(node: &MontyNode) -> oracle::MontyNode {
             attrs: Some(oracle_pairs(attrs)),
         }),
         MontyNode::Repr(r) => Kind::Repr(r.clone()),
+        MontyNode::TypedRepr { value, .. } => Kind::Repr(value.clone()),
         MontyNode::Cycle(placeholder) => Kind::Cycle(placeholder.clone()),
     };
-    oracle::MontyNode { kind: Some(kind) }
+    let repr_python_type = match node {
+        MontyNode::TypedRepr { python_type, .. } => Some(python_type.clone()),
+        _ => None,
+    };
+    oracle::MontyNode {
+        kind: Some(kind),
+        repr_python_type,
+    }
 }
 
 /// Oracle mirror of a class node.
@@ -659,7 +669,10 @@ fn executed_cycle_value_is_byte_compatible() {
 /// Encodes an oracle `kind` arm as a one-node arena and decodes it through the
 /// hand-written codec, returning the decode error message.
 fn rejected(kind: Kind) -> String {
-    rejected_nodes(vec![oracle::MontyNode { kind: Some(kind) }])
+    rejected_nodes(vec![oracle::MontyNode {
+        repr_python_type: None,
+        kind: Some(kind),
+    }])
 }
 
 /// Encodes an oracle arena and decodes it through the hand-written codec,
@@ -738,6 +751,7 @@ fn invalid_values_are_rejected_during_decode() {
     );
     // a class instance's class must be a class node, not a builtin type leaf
     let builtin_int = oracle::MontyNode {
+        repr_python_type: None,
         kind: Some(Kind::Type(oracle::Type {
             name: "int".to_owned(),
             origin: oracle::TypeOrigin::Builtin as i32,
@@ -746,6 +760,7 @@ fn invalid_values_are_rejected_during_decode() {
     };
     let instance_of =
         |class_type: u32, instance_id: Option<oracle::Uuid>, attrs: Option<oracle::NodePairs>| oracle::MontyNode {
+            repr_python_type: None,
             kind: Some(Kind::ClassInstance(oracle::ClassInstanceNode {
                 class_type,
                 instance_id,
@@ -767,6 +782,7 @@ fn invalid_values_are_rejected_during_decode() {
     assert_eq!(
         rejected_nodes(vec![
             oracle::MontyNode {
+                repr_python_type: None,
                 kind: Some(Kind::Type(class_type("Foo")))
             },
             instance_of(0, None, Some(oracle::NodePairs::default())),
@@ -777,6 +793,7 @@ fn invalid_values_are_rejected_during_decode() {
     assert_eq!(
         rejected_nodes(vec![
             oracle::MontyNode {
+                repr_python_type: None,
                 kind: Some(Kind::Type(class_type("Foo")))
             },
             instance_of(0, Some(oracle::Uuid { data: vec![7; 16] }), None),
@@ -787,6 +804,7 @@ fn invalid_values_are_rejected_during_decode() {
     assert_eq!(
         rejected_nodes(vec![
             oracle::MontyNode {
+                repr_python_type: None,
                 kind: Some(Kind::Type(class_type("Foo")))
             },
             instance_of(
@@ -864,7 +882,10 @@ fn invalid_values_are_rejected_during_decode() {
     );
     // an absent kind is a valid empty message but not a node
     assert_eq!(
-        rejected_nodes(vec![oracle::MontyNode { kind: None }]),
+        rejected_nodes(vec![oracle::MontyNode {
+            repr_python_type: None,
+            kind: None
+        }]),
         "frame decode error: failed to decode Protobuf message: missing required field MontyNode.kind"
     );
 }
@@ -898,9 +919,11 @@ fn present_but_empty_class_attrs_decode_as_absent() {
         node_count: 2,
         nodes: vec![
             oracle::MontyNode {
+                repr_python_type: None,
                 kind: Some(Kind::Type(with_empty_attrs)),
             },
             oracle::MontyNode {
+                repr_python_type: None,
                 kind: Some(Kind::ClassInstance(oracle::ClassInstanceNode {
                     class_type: 0,
                     instance_id: Some(oracle::Uuid { data: vec![7; 16] }),
@@ -953,9 +976,11 @@ fn repeated_attrs_fields_merge_like_the_oracle() {
         node_count: 3,
         nodes: vec![
             oracle::MontyNode {
+                repr_python_type: None,
                 kind: Some(Kind::Str("a".to_owned())),
             },
             oracle::MontyNode {
+                repr_python_type: None,
                 kind: Some(Kind::Int(1)),
             },
         ],
@@ -1011,15 +1036,27 @@ fn repeated_node_kinds_merge_like_the_oracle() {
         ),
     ];
     for (first, second, expected) in cases {
-        let mut node = oracle::MontyNode { kind: Some(first) }.encode_to_vec();
-        node.extend(oracle::MontyNode { kind: Some(second) }.encode_to_vec());
+        let mut node = oracle::MontyNode {
+            repr_python_type: None,
+            kind: Some(first),
+        }
+        .encode_to_vec();
+        node.extend(
+            oracle::MontyNode {
+                repr_python_type: None,
+                kind: Some(second),
+            }
+            .encode_to_vec(),
+        );
         let mut bytes = oracle::Arena {
             node_count: 3,
             nodes: vec![
                 oracle::MontyNode {
+                    repr_python_type: None,
                     kind: Some(Kind::None(oracle::Unit {})),
                 },
                 oracle::MontyNode {
+                    repr_python_type: None,
                     kind: Some(Kind::Int(1)),
                 },
             ],
@@ -1319,4 +1356,24 @@ fn exclusive_creation_is_byte_compatible_with_generated_oracle() {
         decode_frame::<pb::OsCall>(oracle.encode_to_vec().as_slice()).unwrap(),
         hand
     );
+}
+
+/// The repr field understood by protocol 11, without the new optional metadata.
+#[derive(Clone, PartialEq, Message)]
+struct LegacyReprNode {
+    #[prost(string, tag = "29")]
+    repr: String,
+}
+
+/// Adding diagnostic metadata must not make older clients reject an output value.
+#[test]
+fn typed_repr_preserves_legacy_wire_display() {
+    let value = MontyObject::repr_with_type("dict_keys(['x'])", "dict_keys");
+    let (graph, _) = unstable::into_graph_parts(value);
+    let bytes = WireArena::new(graph).encode_to_vec();
+    let arena = oracle::Arena::decode(bytes.as_slice()).unwrap();
+    let node = &arena.nodes[0];
+    assert_eq!(node.repr_python_type.as_deref(), Some("dict_keys"));
+    let legacy = LegacyReprNode::decode(node.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(legacy.repr, "dict_keys(['x'])");
 }
